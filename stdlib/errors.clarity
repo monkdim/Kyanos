@@ -44,7 +44,21 @@ fn format_error(err, source, path) {
             thrown_line = err["line"]
         }
     }
-    let msg = str(thrown)
+    mut msg = str(thrown)
+    -- A host error — a stack overflow, most often — arrives as an object
+    -- whose properties are not enumerable, so str() rendered it as `{}` and
+    -- the program was told it had failed without being told anything else:
+    --
+    --   fn f(n) { return f(n + 1) }
+    --   show f(0)        ->   Clarity Error in x.clarity:  {}
+    --
+    -- Its name and message are there; they just have to be asked for. A
+    -- Clarity map with a "message" key has that key among its own, so the
+    -- empty-keys test is what tells the two apart.
+    if type(thrown) == "map" and len(keys(thrown)) == 0 and has(thrown, "message") {
+        let host_name = if has(thrown, "name") { str(thrown["name"]) } else { "Error" }
+        msg = host_name + ": " + str(thrown["message"])
+    }
     let where = if path != null { " in " + path } else { "" }
     mut out = "Clarity Error" + where + ":\n\n  " + msg + "\n"
 

@@ -97,6 +97,15 @@ the standard library's own guard (`if len(items) == 1 and type(items[0]) ==
 null for it. The moment that became an error, `Set()` stopped working under
 `--fast`. Both operators jump now.
 
+### A host error printed as `{}`
+Fixed. A stack overflow is not a Clarity throw: it arrives as a host error
+object whose properties are not enumerable, so `str()` rendered it as an empty
+map and both engines told the program it had failed without telling it
+anything else — `Clarity Error in x.clarity:` followed by `{}`. The name and
+the message were there all along and just had to be asked for; a Clarity map
+that happens to carry a `message` key is told apart by having that key among
+its own.
+
 ### Mid-run garbage collection kills a program on darwin-arm64
 `CLARITY_GC=1` turns on mid-run collection in a compiled binary. On
 darwin-arm64 a program that holds **two** live allocations across a collection
