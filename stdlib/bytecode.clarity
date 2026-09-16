@@ -2361,7 +2361,21 @@ class VM {
         }
         if t == "VMFunction" { return value.to_string() }
         if t == "VMClass" { return value.to_string() }
-        if t == "VMInstance" { return value.to_string() }
+        if t == "VMInstance" {
+            -- A class that says how it prints says so for every engine. The
+            -- interpreter calls the instance's own to_string() and displays
+            -- what that returns; the VM printed <P instance> instead, so a
+            -- class with a to_string() rendered one way under `clarity run`
+            -- and in a compiled binary, and another under `run --fast`.
+            -- A to_string that throws falls back to the default, as there.
+            let ts = value.klass.find_method("to_string")
+            if ts != null {
+                try {
+                    return this._display(this._call_method(value, ts, []))
+                } catch e_ts { }
+            }
+            return value.to_string()
+        }
         return str(value)
     }
 

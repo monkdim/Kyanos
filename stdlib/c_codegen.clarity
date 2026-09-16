@@ -648,13 +648,16 @@ static Value cl_dispatch(Value self, const char* m, Value* a, long n){
   return cl_null();
 }
 /* instances print via a to_string method if defined, else <Cls instance> */
-static char* cl_obj_display(Value v){
-  Obj* o=(Obj*)v.o;
-  ClMethod ts = cl_find_method(o->cls, "to_string");
-  if(ts){ Value r = ts(v, 0, 0); return cl_display(r); }
+static char* cl_obj_default_display(Obj* o){
   char* out=(char*)cl_alloc(strlen(o->cls)+16);
   sprintf(out, "<%s instance>", o->cls);
   return out;
+}
+static char* cl_obj_to_string(Value v);   /* with the exception machinery below */
+static char* cl_obj_display(Value v){
+  Obj* o=(Obj*)v.o;
+  if(cl_find_method(o->cls, "to_string")) return cl_obj_to_string(v);
+  return cl_obj_default_display(o);
 }
 
 /* ── closures ── */
@@ -886,6 +889,23 @@ static void cl_throw(Value v){
     exit(1);
   }
   longjmp(cl_handlers->buf, 1);
+}
+
+/* A to_string() that throws falls back to the default rendering, which is
+ * what the interpreter and the VM do: showing a value must not be able to
+ * end the program. It needs a handler, so it lives below cl_throw and
+ * cl_obj_display reaches it through the forward declaration above. */
+static char* cl_obj_to_string(Value v){
+  Obj* o=(Obj*)v.o;
+  ClMethod ts = cl_find_method(o->cls, "to_string");
+  ClHandler h; h.prev = cl_handlers; cl_handlers = &h;
+  if(setjmp(h.buf) == 0){
+    char* out = cl_display(ts(v, 0, 0));
+    cl_handlers = h.prev;
+    return out;
+  }
+  cl_handlers = h.prev;
+  return cl_obj_default_display(o);
 }
 
 static Value cl_hof_each(Value lst, Value fn){

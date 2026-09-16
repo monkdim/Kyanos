@@ -183,6 +183,14 @@ lands with codegen tests that diff native output against the interpreter.
   evaluates them in. One divergence, shared with the bytecode VM and inherent to resolving a name
   while compiling: the interpreter wraps each `{X}` in a try and falls back to the literal text on
   any failure, so `"a {nope} b"` prints itself there and is an error in the other two engines.
+- **`to_string()` decides how an instance prints, in every engine (done).** It did in the
+  interpreter and in a compiled binary, and did not in the bytecode VM: `show p`, `str(p)`,
+  `"" + p` and `"{p}"` were all `<P instance>` under `run --fast` for a class that defined
+  `to_string()`, and the class's own rendering everywhere else. The VM looks the method up on the
+  instance's class and calls it now, as the interpreter does. Found while fixing it: a `to_string`
+  that *throws* ended a compiled program outright, where both other engines fall back to the
+  default rendering — showing a value must not be able to abort the program, so the native display
+  path runs it under a handler. Seven parity cases and three codegen cases.
 - **Destructuring and spread in native builds.** With generators done, what stops the last two
   files in `examples/` compiling is `DestructureLetStatement`, `MultiAssignStatement` (`let [a, b]
   = pair`, `a, b = b, a`) and `SpreadExpression` in a call or a list. Fifteen of the seventeen
