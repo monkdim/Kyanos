@@ -499,8 +499,14 @@ class Interpreter {
             }
         }, true)
         this.global_env.set("tap", fn(v, f) { interp._call(f, [v], 0); return v }, true)
-        this.global_env.set("display", fn(v) { return display(v) }, true)
-        this.global_env.set("repr", fn(v) { return repr(v) }, true)
+        -- Through the interpreter's own display, not the runtime's. The
+        -- runtime's display does not know what a ClarityInstance is: it
+        -- fell into its generic-object branch and walked instance → class →
+        -- method closures → environment → instance, so `display(Q())` for
+        -- any class blew the stack. The interpreter's knows about
+        -- instances, and about to_string().
+        this.global_env.set("display", fn(v) { return interp._to_display(v) }, true)
+        this.global_env.set("repr", fn(v) { return interp._to_repr(v) }, true)
         this.global_env.set("set", fn(lst) { return set(lst) }, true)
         this.global_env.set("error", fn(msg) { return error(msg) }, true)
 

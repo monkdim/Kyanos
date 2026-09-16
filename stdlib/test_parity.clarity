@@ -118,6 +118,17 @@ show "-- Parity: builtins both engines must have --"
 same("hashing and base64", "show hash(\"abc\")\nshow encode64(\"hi\")\nshow decode64(encode64(\"hi\"))")
 same("padding", "show pad_left(\"7\", 3, \"0\")\nshow pad_right(\"7\", 3, \".\")")
 same("display and repr", "show display({\"a\": 1})\nshow repr(\"x\")\nshow repr(1.5)")
+-- display() and repr() became reachable only when the builtin tables were
+-- reconciled, and both engines had registered the *runtime's* display, which
+-- does not know what an instance is: it walked instance -> class -> method
+-- closures -> environment -> instance until the stack ran out, so
+-- `display(Q())` for any class was a RangeError under `clarity run` and an
+-- empty error body under --fast. They go through each engine's own display
+-- now, which knows about instances and about to_string().
+same("display of every kind of value", "show display(5)\nshow display(1.5)\nshow display(\"s\")\nshow display(true)\nshow display(null)\nshow display([1, 2])\nshow display([\"a\", \"b\"])\nshow display({\"a\": 1, \"b\": \"x\"})")
+same("display of an instance", "class Q {\n    fn init() { this.n = 1 }\n}\nshow display(Q())")
+same("display of an instance with to_string", "class P {\n    fn init(v) { this.v = v }\n    fn to_string() { return \"P<{this.v}>\" }\n}\nshow display(P(7))\nshow repr(P(8))")
+same("repr quotes a string and nothing else", "show repr(\"s\")\nshow repr(5)\nshow repr([1, \"a\"])\nshow repr({\"k\": \"v\"})")
 same("set drops duplicates", "show set([3, 1, 3, 2])")
 same("compose and tap", "let f = compose(fn(x) { return x + 1 }, fn(x) { return x * 2 })\nshow f(5)\nshow tap(7, fn(v) { show \"tapped \" + str(v) })")
 same("regular expressions", "show regex_match(\"[0-9]\", \"a1\")\nshow regex_find(\"[0-9]\", \"a1b2\")\nshow regex_replace(\"[0-9]\", \"a1b2\", \"#\")\nshow regex_split(\",\", \"a,b,c\")\nshow regex_search(\"z\", \"abc\")")

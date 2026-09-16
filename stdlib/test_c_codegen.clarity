@@ -303,6 +303,16 @@ if CC == null {
     same("to_string_throws", "class S {\n    fn init() {}\n    fn to_string() { throw \"nope\" }\n}\nshow S()\nshow \"after {S()}\"")
     same("to_string_throws_in_a_collection", "class S {\n    fn init() {}\n    fn to_string() { throw \"nope\" }\n}\nshow [S(), S()]")
     same("to_string_throw_does_not_break_a_real_try", "class S {\n    fn init() {}\n    fn to_string() { throw \"nope\" }\n}\ntry {\n    show S()\n    throw \"real\"\n} catch e { show \"caught \" + str(e) }")
+
+    -- ── display and repr ──
+    -- Builtins in both other engines and nothing here, so a program calling
+    -- one failed with a C compiler error about an undeclared `v_display`.
+    same("display_values", "show display(5)\nshow display(1.5)\nshow display(\"s\")\nshow display(true)\nshow display(null)\nshow display([1, 2])\nshow display([\"a\", \"b\"])\nshow display({\"a\": 1, \"b\": \"x\"})")
+    same("display_instance", "class Q {\n    fn init() { this.n = 1 }\n}\nclass P {\n    fn init(v) { this.v = v }\n    fn to_string() { return \"P<{this.v}>\" }\n}\nshow display(Q())\nshow display(P(7))")
+    same("repr_values", "show repr(\"s\")\nshow repr(5)\nshow repr([1, \"a\"])\nshow repr({\"k\": \"v\"})")
+    -- A builtin missing from _NATIVE_BUILTINS is captured rather than called
+    -- when a closure names it, so check both through one.
+    same("display_in_a_closure", "show map([1, [2, 3], \"s\"], fn(x) { return display(x) })\nshow map([\"a\", 1], fn(x) { return repr(x) })")
     -- The collection is a local holding heap values, so mid-run collection
     -- has to see it through the C stack.
     same_gc("gen_gc", "fn words(n) {\n    mut i = 0\n    while i < n {\n        yield \"item-\" + str(i)\n        i += 1\n    }\n}\nmut junk = []\nmut k = 0\nwhile k < 20000 {\n    junk = [str(k)]\n    k += 1\n}\nshow words(4)")

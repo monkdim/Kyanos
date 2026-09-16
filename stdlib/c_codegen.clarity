@@ -1785,7 +1785,8 @@ let _NATIVE_BUILTINS = {
     -- `v_sort` that nothing declares — and the failure landed in the C
     -- compiler, on generated code, naming a variable the program never wrote.
     -- test_c_codegen cross-checks the two lists against the source now.
-    "bool": 1, "cwd": 1, "decode64": 1, "encode64": 1, "entries": 1,
+    "bool": 1, "cwd": 1, "decode64": 1, "display": 1, "encode64": 1, "entries": 1,
+    "repr": 1,
     "every": 1, "find": 1, "flat": 1, "hash": 1, "merge": 1, "pop": 1,
     "pow": 1, "print": 1, "random": 1, "reverse": 1, "some": 1, "sort": 1,
     "unique": 1, "values": 1, "zip": 1
@@ -2279,6 +2280,12 @@ class CCodegen {
         if name == "len" and n == 1 { return "cl_int(cl_length(" + args[0] + "))" }
         if name == "push" and n == 2 { return "cl_list_add(" + args[0] + ", " + args[1] + ")" }
         if name == "str" and n == 1 { return "cl_str(cl_to_cstr(" + args[0] + "))" }
+        -- display() is str()'s rendering; repr() quotes a string, which is
+        -- what a value inside a collection already gets. Both were builtins
+        -- in the other two engines and nothing here, so a program calling
+        -- one failed with a C compiler error naming v_display.
+        if name == "display" and n == 1 { return "cl_str(cl_display(" + args[0] + "))" }
+        if name == "repr" and n == 1 { return "cl_str(cl_repr(" + args[0] + "))" }
         if name == "int" and n == 1 { return "cl_conv_int(" + args[0] + ")" }
         if name == "float" and n == 1 { return "cl_conv_float(" + args[0] + ")" }
         if name == "range" and n == 1 { return "cl_range2(cl_int(0), " + args[0] + ")" }
