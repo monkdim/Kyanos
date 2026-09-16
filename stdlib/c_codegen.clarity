@@ -838,6 +838,13 @@ static Value cl_closure_new(ClFn fn, Value* cap, int ncap){
 }
 static Value cl_call(Value f, Value* args, long n){
   if(f.t==T_CLOSURE){ Closure* c=(Closure*)f.o; return c->fn(args, c->cap, n); }
+  /* Calling something that is not a function is an error, as in both other
+     engines; it answered null here, so the mistake travelled. */
+  {
+    char buf[160];
+    snprintf(buf, sizeof buf, "TypeError: '%s' is not callable", cl_type_of(f).s);
+    cl_throw(cl_str(cl_strdup(buf)));
+  }
   return cl_null();
 }
 
@@ -2398,6 +2405,11 @@ class CCodegen {
         -- generator is a separate call with its own collection.
         let outer_generator = this.in_generator
         this.in_generator = _has_yield(_block_stmts(node.body))
+        -- Its own parameters and locals are what shadow a global inside it.
+        -- Only `function()` used to set this, so a closure's parameter named
+        -- after a top-level function was ignored in favour of that function.
+        let outer_locals = this.local_names
+        this.local_names = this._bound_names(node)
         mut body_lines = []
         for l in this._generator_prologue() { push(body_lines, l) }
         for s in _block_stmts(node.body) { for l in this.stmt(s, 1) { push(body_lines, l) } }
@@ -2405,6 +2417,7 @@ class CCodegen {
         for l in body_lines { push(lines, l) }
         this.volatile_locals = outer_volatile
         this.in_generator = outer_generator
+        this.local_names = outer_locals
         push(lines, "  return cl_null();")
         push(lines, "}")
         push(this.closure_defs, lines)
@@ -2540,6 +2553,16 @@ class CCodegen {
             return "cl_dispatch(" + obj + ", \"" + callee.property + "\", " + this._argv(args) + ")"
         }
         if callee.node_type == "Identifier" {
+            -- A local holding a function is what `f(...)` means when one is in
+            -- scope, whatever else the name also refers to. Every other branch
+            -- below resolves the name globally, so without this a parameter,
+            -- a `let`, a loop variable or a catch binding that shadowed a
+            -- top-level function, a class or a builtin was ignored and the
+            -- global thing was called instead: `fn outer(helper) {
+            -- return helper(7) }` called the top-level helper.
+            if contains(this.local_names, callee.name) {
+                return "cl_call(v_" + callee.name + ", " + this._argv(args) + ")"
+            }
             -- ClassName(args) → construct an instance
             if contains(this.classes, callee.name) {
                 return "cl_ctor_" + callee.name + "(" + this._argv(args) + ")"
@@ -3649,6 +3672,9 @@ class CCodegen {
         for m in class_node.methods {
             if m.node_type == "FnStatement" {
                 this.in_generator = _has_yield(_block_stmts(m.body))
+                -- A method's parameters and locals shadow a global inside it,
+                -- exactly as a function's do.
+                this.local_names = this._bound_names(m)
                 push(lines, "Value f_" + class_node.name + "_" + m.name + "(Value v_this, Value* __a, long __n) {")
                 push(lines, "  (void)__a; (void)__n;")
                 for l in this._generator_prologue() { push(lines, l) }
@@ -3662,6 +3688,7 @@ class CCodegen {
                 push(lines, "  return cl_null();")
                 push(lines, "}")
                 this.in_generator = false
+                this.local_names = []
             }
         }
         push(lines, "Value cl_ctor_" + class_node.name + "(Value* __a, long __n) {")
