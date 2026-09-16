@@ -6,7 +6,7 @@ No server-side rendering, no video: `compose()` paints into a byte buffer each
 frame and the page blits it to the canvas; DOM mouse events flow straight into
 the same `handle_mouse` path the native build uses.
 
-**Live:** https://monkdim.github.io/Clarity/os/
+**Live:** https://monkdim.github.io/Kyanos/os/
 
 ## How it works
 

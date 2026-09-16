@@ -20,7 +20,7 @@ from "theme_aurora.clarity" import aurora_gradient, AURORA_TEAL, AURORA_VIOLET, 
 
 let BRAND_NAME = "KyanOS"
 let BRAND_TAGLINE = "Simple code. Real power."
-let BRAND_DOMAIN = "monkdim.github.io/Clarity"
+let BRAND_DOMAIN = "monkdim.github.io/Kyanos"
 
 -- ── Design tokens ─────────────────────────
 

@@ -1,6 +1,6 @@
 -- Website generator — Phase 75 task 4.
 --
--- Static site for monkdim.github.io/Clarity. Single Clarity module that emits
+-- Static site for monkdim.github.io/Kyanos. Single Clarity module that emits
 -- HTML + CSS into a target directory; no template engine, no node
 -- toolchain, just Clarity strings with a tiny layout helper.
 --

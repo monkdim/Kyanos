@@ -38,7 +38,7 @@ Cleared during the mid-2026 hardening pass — recorded so the tiers below read 
 `native/runtime.js` is documented as auto-generated from `stdlib/runtime_spec.clarity`, but regenerating produces a large diff against the committed file — and (per AUDIT.md) blindly regenerating would revert behavioral fixes that live only in `runtime.js` (the `_clarityType` branch of `type()`, FFI string/BigInt marshalling, the `_ffi_read_view` GC workaround). Until spec ↔ runtime are reconciled, builtin edits must touch both by hand. Fragile; needs a careful, test-guarded reconciliation, not a blind regen.
 
 ### Brand-domain / naming
-`stdlib/branding.clarity` carries the brand name and domain in one place and the site is generated from it, so the KyanOS rename moved the whole set at once. The domain is the GitHub Pages URL REBRAND.md names as the interim (`monkdim.github.io/Clarity`); a real domain is a purchase, not a code change, and `BRAND_DOMAIN` is the single line it lands on.
+`stdlib/branding.clarity` carries the brand name and domain in one place and the site is generated from it, so the KyanOS rename moved the whole set at once. The domain is the GitHub Pages URL REBRAND.md names as the interim (`monkdim.github.io/Kyanos`); a real domain is a purchase, not a code change, and `BRAND_DOMAIN` is the single line it lands on.
 
 ---
 

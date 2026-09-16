@@ -226,7 +226,7 @@ show "-- Phase 75: branding --"
 
 assert_eq(BRAND_NAME, "KyanOS", "brand name")
 assert(contains(BRAND_TAGLINE, "Simple"), "tagline includes 'Simple'")
-assert_eq(BRAND_DOMAIN, "monkdim.github.io/Clarity", "domain")
+assert_eq(BRAND_DOMAIN, "monkdim.github.io/Kyanos", "domain")
 
 -- Typography + spacing + radius scales
 assert_eq(typography("display"), 48, "display = 48")

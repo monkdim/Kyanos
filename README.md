@@ -114,7 +114,7 @@ qemu-system-aarch64 \
 
 The boot log prints in your terminal and what you type there goes back in. When it says `clarity-sh: type help`, type `help`. Ctrl-A then X quits. Add `-device ramfb -device virtio-keyboard-device -display default` to see the framebuffer console instead. The x86_64 kernel builds with `zig build` and boots from a GRUB ISO; `kernel/RUNNING.md` has that command and the reasons behind every flag.
 
-To see the desktop today, run it hosted (`clarity desktop`, needs SDL2) or open the browser build at [monkdim.github.io/Clarity/os/](https://monkdim.github.io/Clarity/os/).
+To see the desktop today, run it hosted (`clarity desktop`, needs SDL2) or open the browser build at [monkdim.github.io/Kyanos/os/](https://monkdim.github.io/Kyanos/os/).
 
 ---
 
