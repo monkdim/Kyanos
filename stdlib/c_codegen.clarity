@@ -2629,9 +2629,21 @@ class CCodegen {
                 }
             }
             let parts = this._ordered_parts(node.elements)
-            mut e = "cl_list_new()"
-            for nm in parts["names"] { e = "cl_list_add(" + e + ", " + nm + ")" }
-            return this._wrap_seq(parts, e)
+            if not parts["seq"] {
+                mut e = "cl_list_new()"
+                for nm in parts["names"] { e = "cl_list_add(" + e + ", " + nm + ")" }
+                return e
+            }
+            -- Built through a named local rather than nested calls: each
+            -- cl_list_add allocates, and a list held only in a register
+            -- between two of them is invisible to a collector that scans the
+            -- stack. The same reason `yield` collects into a named local.
+            let lid = this.tmp_id
+            this.tmp_id += 1
+            let acc = "__lb" + str(lid)
+            mut body = "Value " + acc + " = cl_list_new(); "
+            for nm in parts["names"] { body = body + acc + " = cl_list_add(" + acc + ", " + nm + "); " }
+            return "({ " + parts["decls"] + body + acc + "; })"
         }
         if nt == "MapLiteral" {
             mut flat = []
@@ -2645,13 +2657,25 @@ class CCodegen {
             }
             let parts = this._ordered_parts(flat)
             let names = parts["names"]
-            mut e = "cl_map_new()"
-            mut i = 0
-            while i < len(names) {
-                e = "cl_map_put(" + e + ", cl_to_cstr(" + names[i] + "), " + names[i + 1] + ")"
-                i += 2
+            if not parts["seq"] {
+                mut e = "cl_map_new()"
+                mut i = 0
+                while i < len(names) {
+                    e = "cl_map_put(" + e + ", cl_to_cstr(" + names[i] + "), " + names[i + 1] + ")"
+                    i += 2
+                }
+                return e
             }
-            return this._wrap_seq(parts, e)
+            let mid = this.tmp_id
+            this.tmp_id += 1
+            let acc = "__mb" + str(mid)
+            mut body = "Value " + acc + " = cl_map_new(); "
+            mut j = 0
+            while j < len(names) {
+                body = body + acc + " = cl_map_put(" + acc + ", cl_to_cstr(" + names[j] + "), " + names[j + 1] + "); "
+                j += 2
+            }
+            return "({ " + parts["decls"] + body + acc + "; })"
         }
         if nt == "IndexExpression" {
             let parts = this._ordered_parts([node.object, node.index])
@@ -2689,7 +2713,13 @@ class CCodegen {
         if nt == "CallExpression" {
             -- The receiver of a method call is evaluated before the
             -- arguments, so it goes through the same ordering.
-            let is_member = node.callee.node_type == "MemberExpression"
+            -- An enum's name is not a value: `Level.names()` is a compile-time
+            -- table lookup, so the receiver is not evaluated and must not be
+            -- emitted as one.
+            mut is_member = node.callee.node_type == "MemberExpression"
+            if is_member and node.callee.object.node_type == "Identifier" {
+                if has(this.enums, node.callee.object.name) { is_member = false }
+            }
             mut operands = []
             if is_member { push(operands, node.callee.object) }
             for a in node.arguments { push(operands, a) }

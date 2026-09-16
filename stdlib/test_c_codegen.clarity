@@ -339,6 +339,11 @@ if CC == null {
     same("order_or_evaluates_once", "mut c = 0\nfn bump() { c += 1; return c }\nshow bump() or false\nshow c")
     same("order_and_evaluates_once", "mut c = 0\nfn zero() { c += 1; return 0 }\nshow zero() and true\nshow c")
     same("order_short_circuit_still_skips", "mut log = []\nfn t(name, v) { push(log, name); return v }\nshow false and t(\"skipped\", 1)\nshow true or t(\"also skipped\", 1)\nshow log")
+    -- Ordering binds the operands to temporaries, and the collection is
+    -- then built through a named local: every cl_list_add allocates, and a
+    -- half-built list living only in a register between two of them is
+    -- invisible to a collector that scans the stack.
+    same_gc("order_collection_gc", "mut junk = []\nmut i = 0\nwhile i < 20000 {\n    junk = [str(i), str(i + 1)]\n    i += 1\n}\nshow junk\nmut m = {}\nmut k = 0\nwhile k < 20000 {\n    m = { \"a\": str(k), \"b\": str(k + 1) }\n    k += 1\n}\nshow m")
     -- The collection is a local holding heap values, so mid-run collection
     -- has to see it through the C stack.
     same_gc("gen_gc", "fn words(n) {\n    mut i = 0\n    while i < n {\n        yield \"item-\" + str(i)\n        i += 1\n    }\n}\nmut junk = []\nmut k = 0\nwhile k < 20000 {\n    junk = [str(k)]\n    k += 1\n}\nshow words(4)")
