@@ -166,6 +166,52 @@ A name in scope is what a call means now, whatever else the name refers to at
 module level. Calling something that is not a function also raises the
 interpreter's error rather than answering null.
 
+### Comprehensions and nested functions in the three engines
+Fixed. A comprehension did not compile at all — `clarity cc` answered
+`unsupported expression ComprehensionExpression` — and a nested `fn`
+statement was compiled as though the name were a top-level function, so it
+did not see the enclosing scope:
+
+```clarity
+show [y * 2 for y in [1, 2, 3]]        -- interpreter [2, 4, 6], clarity cc refused
+fn f(n) {
+    let bump = 10
+    fn add(x) { return x + bump }      -- clarity cc did not see bump
+    return add(n)
+}
+```
+
+Both compile now. A comprehension becomes a loop inside a statement
+expression, over the same normalised sequence a `for` walks (a map by its
+keys, a string by its characters), and its loop variable is declared inside
+those braces, so it is scoped to the comprehension and an outer name it
+shadows survives. A nested `fn` becomes a local closure. A nested `fn` that
+*calls itself* is refused by name: the closure is built from the values in
+scope and its own name is not one of them yet, which needs by-reference
+capture — the same v2.0 item as by-reference scalar capture — and refusing it
+beats emitting a call to a variable the closure never captured.
+
+Three more things this turned up:
+
+- **`{k: v for k, v in entries(m)}` did not run under `--fast` at all.** The
+  bytecode VM refused every multi-variable map comprehension. It compiles one
+  now, through a `COMP_BIND` opcode carrying the interpreter's rule: a list
+  item is taken apart element by element with null past its end, anything
+  else goes whole to the first target and leaves the rest *unbound*, so
+  reading one raises the NameError `clarity run` raises.
+- **The VM worded an undefined name differently.** `RuntimeError: Undefined
+  variable: q` against the interpreter's `NameError: 'q' is not defined
+  (line 7)`, with no line at all — so a program that caught the error and
+  showed it read differently under `--fast`. Same words, same line now.
+- **`o?.a`, `await x` and `yield x` were missing from the C backend's
+  free-variable walk.** A closure over one of them never captured the name it
+  read, and the emitted C named a variable nothing declared — a C compiler
+  error about code the program did write, just not where the compiler looked.
+
+Still open, and filed: the VM has no block scoping at all, so a comprehension
+or `for` variable leaks and can clobber an outer name of the same name under
+`--fast`. And `clarity cc` still refuses `SliceExpression` (`xs[1..3]`).
+
 ### Mid-run garbage collection kills a program on darwin-arm64
 `CLARITY_GC=1` turns on mid-run collection in a compiled binary. On
 darwin-arm64 a program that holds **two** live allocations across a collection

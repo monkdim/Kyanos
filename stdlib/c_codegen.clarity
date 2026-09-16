@@ -721,6 +721,27 @@ static Value cl_iter(Value v){
   return cl_list_new();
 }
 
+/* One target of a multi-variable map comprehension -- k: v for a, b in xs --
+   binds a from element 0 and b from element 1 of a list item, null past its
+   end. An item that is not a list gives the whole item to the first target,
+   which is what Interpreter.eval_MapComprehensionExpression does. */
+static Value cl_comp_elem(Value item, long i){
+  if(item.t==T_LIST){ List* l=(List*)item.o; if(i<l->len) return l->items[i]; return cl_null(); }
+  if(i==0) return item;
+  return cl_null();
+}
+/* The same, for a target the body actually reads. A non-list item leaves
+   every target after the first unbound, and reading an unbound name is a
+   NameError under `clarity run` -- so raise the one it would raise, rather
+   than quietly handing the body a null it never wrote. */
+static Value cl_comp_elem_req(Value item, long i, const char* name, long line){
+  if(item.t==T_LIST){ List* l=(List*)item.o; if(i<l->len) return l->items[i]; return cl_null(); }
+  char buf[192];
+  snprintf(buf, sizeof buf, "NameError: '%s' is not defined (line %ld)", name, line);
+  cl_throw(cl_str(cl_strdup(buf)));
+  return cl_null();
+}
+
 /* ── builtins reachable from native code ── */
 static Value cl_range2(Value a, Value b){ Value out=cl_list_new(); for(long j=a.i;j<b.i;j++) cl_list_add(out, cl_int(j)); return out; }
 /* An object's field map, or the value unchanged for anything else.
@@ -1984,6 +2005,16 @@ fn _pure_expr(e) {
     return false
 }
 
+-- `names` with `extra` appended. local_names is a list, not a set, and a
+-- comprehension has to add its loop variable for the body and take it away
+-- again — the variable is scoped to the comprehension, not to the function.
+fn _names_with(names, extra) {
+    mut out = []
+    for n in names { push(out, n) }
+    for n in extra { push(out, n) }
+    return out
+}
+
 -- Does the order these operands are evaluated in matter? One of them has to
 -- be able to change something the others can see.
 fn _order_matters(nodes) {
@@ -2264,6 +2295,32 @@ class CCodegen {
             return
         }
         if nt == "SpreadExpression" { this._free_expr(node.value, bound, acc); return }
+        -- `a?.b`, `await x` and `yield x` all read a subexpression, so a name
+        -- under one of them is as free as a name anywhere else. Leaving them
+        -- out meant a closure over `o?.a` never captured `o` and the emitted
+        -- C named a v_o nothing declared.
+        if nt == "OptionalMemberExpression" { this._free_expr(node.object, bound, acc); return }
+        if nt == "AwaitExpression" { this._free_expr(node.value, bound, acc); return }
+        if nt == "YieldExpression" { if node.value != null { this._free_expr(node.value, bound, acc) } return }
+        -- A comprehension binds its variable for the body only: the iterable
+        -- is evaluated in the enclosing scope, the expression and the
+        -- condition with the loop variable in hand.
+        if nt == "ComprehensionExpression" {
+            this._free_expr(node.iterable, bound, acc)
+            let inner = this._set_add(bound, node.variable)
+            this._free_expr(node.expr, inner, acc)
+            if node.condition != null { this._free_expr(node.condition, inner, acc) }
+            return
+        }
+        if nt == "MapComprehensionExpression" {
+            this._free_expr(node.iterable, bound, acc)
+            mut inner = bound
+            for cv in node.variables { inner = this._set_add(inner, cv) }
+            this._free_expr(node.key_expr, inner, acc)
+            this._free_expr(node.value_expr, inner, acc)
+            if node.condition != null { this._free_expr(node.condition, inner, acc) }
+            return
+        }
         if nt == "FnExpression" {
             mut inner = bound
             for p in node.params {
@@ -2286,6 +2343,14 @@ class CCodegen {
                 this._free_expr(node.target, bound, acc)
             }
             this._free_expr(node.value, bound, acc)
+            return
+        }
+        if nt == "FnStatement" {
+            -- Its body's free variables are the enclosing scope's too: a
+            -- closure around it has to capture what the nested one will.
+            mut inner = this._set_add(bound, node.name)
+            for p in node.params { inner = this._set_add(inner, _param_name(p)) }
+            this._free_stmts(_block_stmts(node.body), inner, acc)
             return
         }
         if nt == "DestructureLetStatement" { this._free_expr(node.value, bound, acc); return }
@@ -2353,6 +2418,7 @@ class CCodegen {
         for s in stmts {
             this._free_stmt(s, b, acc)
             if s.node_type == "LetStatement" { b = this._set_add(b, s.name) }
+            if s.node_type == "FnStatement" { b = this._set_add(b, s.name) }
             -- A pattern binds every name in it, so what follows must not
             -- capture them: without this a closure containing `let [a, b] = xs`
             -- took a and b from its capture array *and* declared them, which
@@ -2364,6 +2430,18 @@ class CCodegen {
                 }
             }
         }
+    }
+
+    -- Does a nested function call itself? Its body's free variables are what
+    -- a closure would capture, and its own name among them means recursion —
+    -- which by-value capture cannot express, because the capture is taken
+    -- before there is anything to capture.
+    fn _fn_refers_to_itself(node) {
+        mut bound = {}
+        for p in node.params { bound = this._set_add(bound, _param_name(p)) }
+        mut acc = {}
+        this._free_stmts(_block_stmts(node.body), bound, acc)
+        return has(acc, node.name)
     }
 
     -- Compile a `fn(...) {...}` expression: hoist it to a top-level C function
@@ -3197,6 +3275,86 @@ class CCodegen {
             return "(cl_truthy(" + this.expr(node.condition) + ") ? " +
                 this.expr(node.true_expr) + " : " + this.expr(node.false_expr) + ")"
         }
+        if nt == "ComprehensionExpression" {
+            -- `[e for v in xs if c]` is a loop that builds a list, written as
+            -- a statement expression so it can stand where a value is wanted.
+            -- (A GCC/Clang extension; this backend already requires cc, gcc
+            -- or clang.) The interpreter walks the same normalised sequence a
+            -- for-loop walks — a map by its keys, a string by its characters
+            -- — so this goes through cl_iter for exactly that.
+            --
+            -- The loop variable is declared inside the braces, so it is scoped
+            -- to the comprehension and an outer name it shadows survives, as
+            -- under `clarity run`.
+            let cid = this.next_loop()
+            let acc = "__cp" + str(cid)
+            let it = "__ci" + str(cid)
+            let ix = "__cx" + str(cid)
+            let src = this.expr(node.iterable)
+            let outer_locals = this.local_names
+            this.local_names = _names_with(outer_locals, [node.variable])
+            let item_expr = this.expr(node.expr)
+            let cond = if node.condition == null { "" } else { this.expr(node.condition) }
+            this.local_names = outer_locals
+            mut body = "cl_list_add(" + acc + ", " + item_expr + ");"
+            if node.condition != null { body = "if(cl_truthy(" + cond + ")) { " + body + " }" }
+            return "({ volatile Value " + acc + " = cl_list_new(); volatile Value " + it +
+                " = cl_iter(" + src + "); for(long " + ix + " = 0; " + ix + " < cl_length(" +
+                it + "); " + ix + "++) { Value v_" + node.variable + " = cl_index(" + it +
+                ", cl_int(" + ix + ")); " + body + " } " + acc + "; })"
+        }
+        if nt == "MapComprehensionExpression" {
+            -- `{k: v for a, b in xs}`. One variable takes each item whole;
+            -- several destructure a list item element-wise, with null past its
+            -- end, which is what Interpreter.eval_MapComprehensionExpression
+            -- does. cl_comp_elem carries that rule so the two agree on the
+            -- ragged cases.
+            let cid = this.next_loop()
+            let acc = "__mp" + str(cid)
+            let it = "__mi" + str(cid)
+            let ix = "__mx" + str(cid)
+            let cur = "__mv" + str(cid)
+            let src = this.expr(node.iterable)
+            let outer_locals = this.local_names
+            this.local_names = _names_with(outer_locals, node.variables)
+            let key_expr = this.expr(node.key_expr)
+            let val_expr = this.expr(node.value_expr)
+            let cond = if node.condition == null { "" } else { this.expr(node.condition) }
+            this.local_names = outer_locals
+            -- Which targets the body reads. An unread one needs no binding at
+            -- all, and -- more to the point -- must not raise the NameError
+            -- that reading an unbound target does.
+            mut refs = {}
+            this.local_names = _names_with(outer_locals, node.variables)
+            this._free_expr(node.key_expr, {}, refs)
+            this._free_expr(node.value_expr, {}, refs)
+            if node.condition != null { this._free_expr(node.condition, {}, refs) }
+            this.local_names = outer_locals
+            mut binds = ""
+            mut vi = 0
+            while vi < len(node.variables) {
+                let vn = node.variables[vi]
+                if has(refs, vn) {
+                    if len(node.variables) == 1 {
+                        binds = binds + "Value v_" + vn + " = " + cur + "; "
+                    } else {
+                        if vi == 0 {
+                            binds = binds + "Value v_" + vn + " = cl_comp_elem(" + cur + ", 0); "
+                        } else {
+                            binds = binds + "Value v_" + vn + " = cl_comp_elem_req(" + cur + ", " +
+                                str(vi) + ", " + "\"" + _c_escape(vn) + "\", " + str(node.line ?? 0) + "); "
+                        }
+                    }
+                }
+                vi += 1
+            }
+            mut body = "cl_index_set(" + acc + ", " + key_expr + ", " + val_expr + ");"
+            if node.condition != null { body = "if(cl_truthy(" + cond + ")) { " + body + " }" }
+            return "({ volatile Value " + acc + " = cl_map_new(); volatile Value " + it +
+                " = cl_iter(" + src + "); for(long " + ix + " = 0; " + ix + " < cl_length(" +
+                it + "); " + ix + "++) { Value " + cur + " = cl_index(" + it + ", cl_int(" +
+                ix + ")); (void)" + cur + "; " + binds + " " + body + " } " + acc + "; })"
+        }
         if nt == "RangeExpression" {
             -- `a..b` is exactly range(a, b); an open-ended range is only legal
             -- in a slice, which the interpreter also rejects here.
@@ -3302,6 +3460,20 @@ class CCodegen {
         if nt == "LetStatement" {
             let qual = if this.volatile_locals { "volatile Value v_" } else { "Value v_" }
             return [pad + qual + node.name + " = " + this.expr(node.value) + ";"]
+        }
+        if nt == "FnStatement" {
+            -- A `fn` written inside another function binds a function value
+            -- in that scope, which is what a closure is here. Nothing emitted
+            -- it at all before, so the call below it named a C variable that
+            -- did not exist and the failure landed in the C compiler.
+            if this._fn_refers_to_itself(node) {
+                this.reject("a nested function that calls itself needs by-reference capture, " +
+                    "which native builds do not have yet; move '" + node.name + "' to the top level",
+                    node.line)
+                return []
+            }
+            let qual = if this.volatile_locals { "volatile Value v_" } else { "Value v_" }
+            return [pad + qual + node.name + " = " + this._closure(node) + ";"]
         }
         if nt == "DestructureLetStatement" {
             return this._destructure(node, pad, true)
@@ -3603,6 +3775,7 @@ class CCodegen {
         for s in stmts {
             let nt = s.node_type
             if nt == "LetStatement" { push(acc, s.name) }
+            elif nt == "FnStatement" { push(acc, s.name) }
             elif nt == "DestructureLetStatement" {
                 for target in s.targets {
                     if starts(target, "...") { push(acc, substring(target, 3, len(target))) }

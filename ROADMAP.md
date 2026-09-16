@@ -247,6 +247,28 @@ lands with codegen tests that diff native output against the interpreter.
   were unreachable in it too: the branch tested for a type named `number`, and `type(5)` is
   `int`. What still differs is only the *name* each engine prints for a function value, which is
   recorded in GAPS.md.
+- **A local that shadows a global (done).** Every branch of the C backend that resolved a
+  *called* name looked at the module's functions, classes and builtins and never at what was in
+  scope, so `fn outer(helper) { return helper(7) }` called the top-level `helper` — and
+  `fn(len) { return len(5) }` called the builtin. The same for a `let`, a loop variable, a catch
+  binding and a destructured name. A name in scope is what a call means now, and calling
+  something that is not a function raises the interpreter's error instead of answering null.
+- **Comprehensions and nested functions (done).** `[y * 2 for y in xs]` did not compile at all
+  (`unsupported expression ComprehensionExpression`) and a nested `fn` was compiled as a
+  top-level function, so it could not see the enclosing scope. A comprehension is now a loop
+  inside a statement expression over the sequence a `for` walks, with its loop variable scoped to
+  the comprehension so an outer name it shadows survives; a nested `fn` is a local closure. One
+  case is refused by name rather than miscompiled: a nested `fn` that calls itself needs
+  by-reference capture, the same v2.0 item as by-reference scalar capture. The work also found
+  `{k: v for k, v in entries(m)}` refused outright by the bytecode VM, the VM wording an
+  undefined name differently from the interpreter and without a line, and `o?.a` / `await` /
+  `yield` missing from the C backend's free-variable walk so a closure over one produced a C
+  compiler error. All fixed; 298 codegen cases and 162 parity cases.
+- **Slices and VM block scoping (next on the trunk).** `clarity cc` still refuses
+  `SliceExpression` (`xs[1..3]`), which is basic enough to keep ordinary programs from compiling.
+  And the VM keeps every binding in one flat per-frame map, so blocks do not scope: a `for` or
+  comprehension variable leaks past its loop, and a loop over a name that already exists silently
+  overwrites it under `--fast` and not under `clarity run`.
 - **Networking.** TLS, then keep-alive and chunked encoding, so the HTTP
   client can talk to real services rather than only to plaintext ones.
 - **Stage 12+ — services stdlib.** Real crypto (not the toy cipher), a real embedded key/value or
