@@ -53,13 +53,35 @@ fn interp_run(src) {
 }
 
 -- Compile `src` to a native binary and return its stdout (trimmed).
-fn native_run(src, tag) {
+--
+-- A compile that fails used to leave no binary and therefore empty output,
+-- which reads as "the program printed nothing" — a wrong answer rather than
+-- a broken build, and on a platform you cannot reach there is nothing to go
+-- on. The compiler's own words come back instead, and a binary that dies
+-- without printing says so with its exit status, so a failure names itself.
+fn _compile_native(src, tag) {
     let c = compile_to_c(parse(tokenize(src, "<t>"), src))
     let cfile = "/tmp/_clc_" + tag + ".c"
     let bin = "/tmp/_clc_" + tag
+    if exists(bin) { exec_full("rm -f " + bin) }
     write(cfile, c)
-    exec_full(CC + " -O2 -w " + cfile + " -o " + bin + " -lm" + LDL)
-    return trim(exec_full(bin).stdout)
+    let comp = exec_full(CC + " -O2 -w " + cfile + " -o " + bin + " -lm" + LDL)
+    if comp.exit_code != 0 { return "C COMPILE FAILED: " + trim(comp.stderr) }
+    if not exists(bin) { return "C COMPILE PRODUCED NO BINARY: " + trim(comp.stderr) }
+    return null
+}
+
+fn _ran(r) {
+    if r.exit_code != 0 and trim(r.stdout) == "" {
+        return "NATIVE RUN FAILED (exit " + str(r.exit_code) + "): " + trim(r.stderr)
+    }
+    return trim(r.stdout)
+}
+
+fn native_run(src, tag) {
+    let failed = _compile_native(src, tag)
+    if failed != null { return failed }
+    return _ran(exec_full("/tmp/_clc_" + tag))
 }
 
 fn same(tag, src) {
@@ -69,12 +91,9 @@ fn same(tag, src) {
 -- Compile and run with CLARITY_GC=1 so mid-run collection actually happens.
 -- The default arena never frees, so a rooting bug is invisible without this.
 fn native_run_gc(src, tag) {
-    let c = compile_to_c(parse(tokenize(src, "<t>"), src))
-    let cfile = "/tmp/_clc_" + tag + ".c"
-    let bin = "/tmp/_clc_" + tag
-    write(cfile, c)
-    exec_full(CC + " -O2 -w " + cfile + " -o " + bin + " -lm" + LDL)
-    return trim(exec_full("CLARITY_GC=1 " + bin).stdout)
+    let failed = _compile_native(src, tag)
+    if failed != null { return failed }
+    return _ran(exec_full("CLARITY_GC=1 /tmp/_clc_" + tag))
 }
 
 fn same_gc(tag, src) {
