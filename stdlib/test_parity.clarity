@@ -320,6 +320,28 @@ same("map comprehension over ragged rows", "show {p: q for p, q in [[1], [2, 3]]
 same("map comprehension whose items are not lists", "show {p: p for p, q in [1, 2]}")
 same("a comprehension reads the enclosing scope", "let scale = 10\nfn f() { return [n * scale for n in [1, 2]] }\nshow f()")
 
+show "-- Parity: block scoping --"
+-- Every one of these answered a value under --fast where `clarity run`
+-- raises a NameError, because the VM kept a frame's whole contents in one
+-- flat map and blocks did not scope at all.
+same("a for variable does not outlive its loop", "fn f() {\n    for z in [1, 2, 3] { }\n    return z\n}\ntry { show f() } catch e { show str(e) }")
+same("a loop does not clobber an outer name", "fn f() {\n    let y = 99\n    for y in [1, 2] { }\n    return y\n}\nshow f()")
+same("a let in an if body is the block's own", "fn f() {\n    if true { let q = 5 }\n    return q\n}\ntry { show f() } catch e { show str(e) }")
+same("a let in a while body is the block's own", "fn f() {\n    mut i = 0\n    while i < 1 {\n        let w = 7\n        i += 1\n    }\n    return w\n}\ntry { show f() } catch e { show str(e) }")
+same("a catch variable is the catch block's own", "fn f() {\n    try { throw \"x\" } catch ce { }\n    return ce\n}\ntry { show f() } catch e { show str(e) }")
+same("a let in a try body is the block's own", "fn f() {\n    try { let a = 1 } catch e { }\n    return a\n}\ntry { show f() } catch e { show str(e) }")
+same("a let in a finally body is the block's own", "fn f() {\n    try { } catch e { } finally { let c = 3 }\n    return c\n}\ntry { show f() } catch e { show str(e) }")
+same("a let in a match arm is the arm's own", "fn f() {\n    match 1 { when 1 { let d = 4 } }\n    return d\n}\ntry { show f() } catch e { show str(e) }")
+same("a comprehension variable is the comprehension's own", "fn f() {\n    let r = [v * 2 for v in [1, 2]]\n    return v\n}\ntry { show f() } catch e { show str(e) }")
+same("a block shadows without overwriting", "let p = 1\nif true {\n    let p = 2\n    show p\n}\nshow p")
+same("a closure made in a loop captures that round", "mut fs = []\nfor k in [1, 2, 3] { push(fs, fn() { return k }) }\nmut out = []\nfor g in fs { push(out, g()) }\nshow out")
+same("nested loops may share a variable name", "mut out = []\nfor k in [1, 2] {\n    for k in [10, 20] { push(out, k) }\n    push(out, k)\n}\nshow out")
+-- A block still reads and writes what encloses it.
+same("a block reads and writes the scope around it", "fn f() {\n    let o = 5\n    mut acc = 0\n    for k in [1, 2] { acc += o }\n    return acc\n}\nshow f()")
+same("break and continue leave their blocks cleanly", "mut out = []\nfor k in [1, 2, 3, 4] {\n    let d = k * 10\n    if k == 2 { continue }\n    if k == 4 { break }\n    push(out, d)\n}\nshow out")
+same("a finally runs when a break leaves its block", "for k in [1, 2] {\n    try {\n        let z = k\n        break\n    } catch e { } finally { show \"fin\" }\n}\nshow \"after\"")
+same("an error thrown inside a block lands in the catch", "fn f() {\n    mut seen = \"no\"\n    try {\n        if true {\n            let inner = 1\n            throw \"boom\"\n        }\n    } catch e { seen = str(e) }\n    return seen\n}\nshow f()")
+
 show "-- Parity: slices --"
 same("list slice", "let xs = [10, 20, 30, 40]\nshow xs[1..3]\nshow xs[..2]\nshow xs[0..4]")
 same("a slice past the end", "let xs = [10, 20, 30, 40]\nshow xs[2..99]\nshow xs[9..12]\nshow xs[3..1]")
