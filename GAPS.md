@@ -106,6 +106,17 @@ the message were there all along and just had to be asked for; a Clarity map
 that happens to carry a `message` key is told apart by having that key among
 its own.
 
+### `...` did not spread in the bytecode VM
+Fixed. `...xs` compiled to the value alone, so whatever was assembling the
+values around it took the list whole rather than opening it out:
+`[1, ...[2, 3], 4]` was `[1, [2, 3], 4]` under `--fast`, and
+`f(...[1, 2, 3])` passed one list and two nulls. A spread in a *map* was
+worse — `{...m, "b": 2}` crashed the VM's compiler with a host TypeError
+about `node.node_type`, because the pair has no key node to compile — so a
+program using it did not run at all. `...` marks its value now and the list,
+map and call assemblers open the mark out, on the interpreter's rules
+including its leniency about `f(...5)` and its refusal of `[1, ...5]`.
+
 ### Mid-run garbage collection kills a program on darwin-arm64
 `CLARITY_GC=1` turns on mid-run collection in a compiled binary. On
 darwin-arm64 a program that holds **two** live allocations across a collection
