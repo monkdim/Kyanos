@@ -587,6 +587,27 @@ static Value cl_iter(Value v){
   return cl_list_new();
 }
 
+/* One target of a multi-variable map comprehension -- k: v for a, b in xs --
+   binds a from element 0 and b from element 1 of a list item, null past its
+   end. An item that is not a list gives the whole item to the first target,
+   which is what Interpreter.eval_MapComprehensionExpression does. */
+static Value cl_comp_elem(Value item, long i){
+  if(item.t==T_LIST){ List* l=(List*)item.o; if(i<l->len) return l->items[i]; return cl_null(); }
+  if(i==0) return item;
+  return cl_null();
+}
+/* The same, for a target the body actually reads. A non-list item leaves
+   every target after the first unbound, and reading an unbound name is a
+   NameError under `clarity run` -- so raise the one it would raise, rather
+   than quietly handing the body a null it never wrote. */
+static Value cl_comp_elem_req(Value item, long i, const char* name, long line){
+  if(item.t==T_LIST){ List* l=(List*)item.o; if(i<l->len) return l->items[i]; return cl_null(); }
+  char buf[192];
+  snprintf(buf, sizeof buf, "NameError: '%s' is not defined (line %ld)", name, line);
+  cl_throw(cl_str(cl_strdup(buf)));
+  return cl_null();
+}
+
 /* ── builtins reachable from native code ── */
 static Value cl_range2(Value a, Value b){ Value out=cl_list_new(); for(long j=a.i;j<b.i;j++) cl_list_add(out, cl_int(j)); return out; }
 /* An object's field map, or the value unchanged for anything else.

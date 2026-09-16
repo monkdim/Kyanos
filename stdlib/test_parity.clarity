@@ -305,12 +305,38 @@ same("continue out of a try runs its finally", "for i in range(2) {\n    try { c
 same("a try left by break stops catching", "for i in range(1) {\n    try { break } catch e { show \"WRONG\" }\n}\ntry { throw \"boom\" } catch e { show \"right \" + str(e) }")
 same("a try left by return stops catching", "fn f() {\n    try { return 1 } catch e { show \"WRONG\" }\n}\nshow f()\ntry { throw \"boom\" } catch e { show \"right \" + str(e) }")
 
+show "-- Parity: comprehensions --"
+same("list comprehension", "let xs = [1, 2, 3, 4]\nshow [y * 2 for y in xs]")
+same("list comprehension with a condition", "let xs = [1, 2, 3, 4]\nshow [y for y in xs if y % 2 == 0]")
+same("list comprehension over a map", "let m = {\"a\": 1, \"b\": 2}\nshow [k for k in m]")
+same("list comprehension over a string", "show [c for c in \"ab\"]")
+same("list comprehension over a range", "show [i * i for i in range(4)]")
+same("nested list comprehensions", "show [[a * b for b in [1, 2]] for a in [10, 20]]")
+same("a comprehension over a comprehension", "show [q + 1 for q in [z * 2 for z in [1, 2, 3]] if q > 2]")
+same("map comprehension, one target", "let m = {\"a\": 1, \"b\": 2}\nshow {k: k for k in m}")
+same("map comprehension over entries", "let m = {\"a\": 1, \"b\": 2}\nshow {k: v for k, v in entries(m)}")
+same("map comprehension with a condition", "let m = {\"a\": 1, \"b\": 2}\nshow {k: v for k, v in entries(m) if v > 1}")
+same("map comprehension over ragged rows", "show {p: q for p, q in [[1], [2, 3]]}")
+same("map comprehension whose items are not lists", "show {p: p for p, q in [1, 2]}")
+same("a comprehension reads the enclosing scope", "let scale = 10\nfn f() { return [n * scale for n in [1, 2]] }\nshow f()")
+
+show "-- Parity: nested functions --"
+same("a nested fn", "fn outer(n) {\n    fn inner(x) { return x + 1 }\n    return inner(n)\n}\nshow outer(1)")
+same("a nested fn closes over a local", "fn f(n) {\n    let bump = 10\n    fn add(x) { return x + bump }\n    return add(n)\n}\nshow f(1)")
+same("a nested fn shadows a top-level one", "fn helper(x) { return x * 100 }\nfn f(n) {\n    fn helper(x) { return x + 1 }\n    return helper(n)\n}\nshow f(1)\nshow helper(1)")
+same("a nested fn is a value", "fn f() {\n    fn g(x) { return x * 3 }\n    return map([1, 2], g)\n}\nshow f()")
+
 -- Both engines must refuse the same broken programs. The wording is not
 -- required to match (the interpreter names the property, the VM says the
 -- value is not callable), but both must fail, and both must name the thing
 -- the program got wrong.
 show "-- Parity: both engines refuse the same programs --"
 both_fail_naming("undefined variable", "show nope", "nope")
+-- and for this one the wording *is* required to match: the VM used to say
+-- "RuntimeError: Undefined variable: nope" with no line, so a program that
+-- caught the error and showed it read differently under --fast.
+same("the wording of an undefined-name error", "try { show nope } catch e { show str(e) }")
+same("an unbound map-comprehension target names itself", "try { show {p: q for p, q in [1, 2]} } catch e { show str(e) }")
 both_fail_naming("calling a missing method", "class C {\n    fn init() { this.x = 1 }\n}\nC().nope()", "nope")
 both_fail_naming("reading a property that does not exist", "class C {\n    fn init() { this.x = 1 }\n}\nshow C().missing", "missing")
 both_fail_naming("calling a non-function", "let x = 5\nx()", "callable")

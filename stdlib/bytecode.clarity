@@ -77,6 +77,7 @@ let OP_IMPORT = 56      -- Import a module (operand = const index of {path, name
 let OP_YIELD = 57       -- Collect the top of the stack into this frame's yields
 let OP_GET_PROP_OPT = 58 -- `a?.b`: the property, or null if reading it fails
 let OP_SPREAD = 59      -- Mark the top of the stack as spread into what follows
+let OP_COMP_BIND = 60   -- Bind one target of a multi-variable map comprehension
 let OP_HALT = 255
 
 -- Opcode names for disassembly
@@ -93,7 +94,7 @@ let OP_NAMES = {
     47: "PIPE", 48: "THROW", 49: "MAKE_CLASS", 50: "SLICE",
     51: "SETUP_TRY", 52: "POP_TRY", 53: "SWAP", 54: "ROT3",
     55: "JUMP_TRUE", 56: "IMPORT", 57: "YIELD", 58: "GET_PROP_OPT",
-    59: "SPREAD", 255: "HALT"
+    59: "SPREAD", 60: "COMP_BIND", 255: "HALT"
 }
 
 -- ── Bytecode container ──────────────────────────────────
@@ -1166,14 +1167,26 @@ class Compiler {
         -- No DUP: ITER_NEXT peeks the iterator (see the list comprehension).
         this.code.emit(OP_ITER_NEXT)
         let jump_end = this.code.emit(OP_JUMP_FALSE, 0)
-        -- The AST stores loop targets as `variables` (a list). STORE_NEW binds
-        -- one name; two-target destructuring ({k: v for k, v in pairs}) isn't
-        -- compiled here yet, so reject it loudly rather than mis-binding.
-        if len(node.variables) != 1 {
-            throw "CompileError: multi-variable map comprehensions are not supported in --fast mode (line {line})"
+        -- The AST stores loop targets as `variables` (a list). One target takes
+        -- the item whole; several destructure a list item element-wise, which
+        -- is what the interpreter does, so COMP_BIND carries that rule --
+        -- including leaving a target after the first unbound when the item is
+        -- not a list, so reading it raises the NameError `clarity run` raises.
+        if len(node.variables) == 1 {
+            let var_idx = this.code.add_const(node.variables[0])
+            this.code.emit(OP_STORE_NEW, var_idx)
+        } else {
+            mut vi = 0
+            while vi < len(node.variables) {
+                this.code.emit(OP_DUP, 0, line)
+                let bind_idx = this.code.add_const({
+                    "index": vi, "name": node.variables[vi]
+                })
+                this.code.emit(OP_COMP_BIND, bind_idx, line)
+                vi += 1
+            }
+            this.code.emit(OP_POP, 0, line)
         }
-        let var_idx = this.code.add_const(node.variables[0])
-        this.code.emit(OP_STORE_NEW, var_idx)
         mut jump_skip = -1
         if node.condition != null {
             this.compile_node(node.condition)
@@ -1986,7 +1999,11 @@ class VM {
                         fi -= 1
                     }
                     if not found {
-                        throw "RuntimeError: Undefined variable: {name}"
+                        -- The same words and the same line `clarity run`
+                        -- gives, so a program that catches this and shows it
+                        -- reads the same under either engine.
+                        let nline = if frame.ip - 1 < len(code.lines) { code.lines[frame.ip - 1] } else { 0 }
+                        throw "NameError: '{name}' is not defined (line {nline})"
                     }
                 }
             }
@@ -2134,6 +2151,29 @@ class VM {
             }
             elif op == OP_SPREAD {
                 push(this.stack, VMSpread(pop(this.stack)))
+            }
+            elif op == OP_COMP_BIND {
+                -- One target of `{k: v for a, b in xs}`. A list item is taken
+                -- apart element by element, with null past its end; anything
+                -- else goes whole to the first target and leaves the rest
+                -- unbound, exactly as eval_MapComprehensionExpression does.
+                -- Unbound means *removed*: a target left over from an earlier
+                -- item must not stand in for one this item does not have.
+                let spec = code.constants[operand]
+                let item = pop(this.stack)
+                let bi = spec["index"]
+                let bname = spec["name"]
+                if type(item) == "list" {
+                    frame.locals[bname] = if bi < len(item) { item[bi] } else { null }
+                } elif bi == 0 {
+                    frame.locals[bname] = item
+                } else {
+                    mut kept = {}
+                    for lk in keys(frame.locals) {
+                        if lk != bname { kept[lk] = frame.locals[lk] }
+                    }
+                    frame.locals = kept
+                }
             }
             elif op == OP_CALL {
                 let nargs = operand

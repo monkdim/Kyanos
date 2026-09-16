@@ -958,6 +958,114 @@ if CC == null {
         "show [[\"nested\"]]\n" +
         "show join([\"a\", \"b\"], \"-\")")
 
+    -- ── comprehensions and nested functions ───────────────
+    -- Both were refused outright: a comprehension came back "unsupported
+    -- expression ComprehensionExpression", and a nested fn was compiled as
+    -- though the name were a top-level function.
+
+    same("list_comprehension",
+        "let xs = [1, 2, 3, 4]\n" +
+        "show [y * 2 for y in xs]\n" +
+        "show [y for y in xs if y % 2 == 0]\n" +
+        "show [i * i for i in range(4)]")
+    same("comprehension_over_map_and_string",
+        "let m = {\"a\": 1, \"b\": 2}\n" +
+        "show [k for k in m]\n" +
+        "show [c for c in \"ab\"]")
+    same("nested_comprehensions",
+        "show [[a * b for b in [1, 2]] for a in [10, 20]]\n" +
+        "show [q + 1 for q in [z * 2 for z in [1, 2, 3]] if q > 2]")
+    same("comprehension_scoping",
+        "fn f() {\n" +
+        "    let y = 99\n" +
+        "    let r = [y * 2 for y in [1, 2]]\n" +
+        "    return [r, y]\n" +
+        "}\n" +
+        "show f()")
+    same("comprehension_captures_and_is_captured",
+        "let scale = 10\n" +
+        "fn f() {\n" +
+        "    let base = [1, 2, 3]\n" +
+        "    let g = fn() { return [n * scale for n in base] }\n" +
+        "    return g()\n" +
+        "}\n" +
+        "show f()\n" +
+        "let fs = [fn() { return n * 2 } for n in [1, 2, 3]]\n" +
+        "mut out = []\n" +
+        "for h in fs { push(out, h()) }\n" +
+        "show out")
+    same("map_comprehension",
+        "let m = {\"a\": 1, \"b\": 2}\n" +
+        "show {k: k for k in m}\n" +
+        "show {k: v for k, v in entries(m)}\n" +
+        "show {k: v for k, v in entries(m) if v > 1}")
+    same("map_comprehension_ragged",
+        "show {p: q for p, q in [[1], [2, 3]]}\n" +
+        "show {p: p for p, q in [1, 2]}\n" +
+        "try { show {p: q for p, q in [1, 2]} } catch e { show str(e) }")
+    -- A comprehension builds a list an allocation at a time while the loop
+    -- keeps allocating: the accumulator has to stay rooted across every one
+    -- of those collections.
+    same_gc("comprehension_gc",
+        "let big = [x * 2 for x in range(200)]\n" +
+        "show len(big)\n" +
+        "show big[199]\n" +
+        "let pairs = {str(x): [x, x * 2] for x in range(100)}\n" +
+        "show len(keys(pairs))\n" +
+        "show pairs[\"99\"]")
+
+    same("nested_fn",
+        "fn outer(n) {\n" +
+        "    fn inner(x) { return x + 1 }\n" +
+        "    return inner(n)\n" +
+        "}\n" +
+        "fn closes_over(n) {\n" +
+        "    let bump = 10\n" +
+        "    fn add(x) { return x + bump }\n" +
+        "    return add(n)\n" +
+        "}\n" +
+        "show outer(1)\n" +
+        "show closes_over(1)")
+    same("nested_fn_shadows_a_top_level_one",
+        "fn helper(x) { return x * 100 }\n" +
+        "fn f(n) {\n" +
+        "    fn helper(x) { return x + 1 }\n" +
+        "    return helper(n)\n" +
+        "}\n" +
+        "show f(1)\n" +
+        "show helper(1)")
+    same("nested_fn_as_a_value",
+        "fn f() {\n" +
+        "    fn g(x) { return x * 3 }\n" +
+        "    return map([1, 2], g)\n" +
+        "}\n" +
+        "show f()")
+
+    -- A nested fn that calls itself needs by-reference capture: the closure
+    -- is built from the values in scope, and its own name is not one of them
+    -- yet. Refusing it by name beats emitting a call to a variable the
+    -- closure never captured, which is what a C compiler would report.
+    let SELF_REC = "fn f(n) {\n" +
+        "    fn fact(k) { if k <= 1 { return 1 }\n return k * fact(k - 1) }\n" +
+        "    return fact(n)\n" +
+        "}\n" +
+        "show f(5)"
+    mut rec_msg = ""
+    try { compile_to_c(parse(tokenize(SELF_REC, "<t>"), SELF_REC)) } catch e { rec_msg = str(e) }
+    assert_eq(contains(rec_msg, "calls itself"), true, "self_recursive_nested_fn_refused")
+    assert_eq(contains(rec_msg, "fact"), true, "self_recursive_nested_fn_named")
+
+    -- `o?.a`, `await x` and `yield x` were missing from the closure's
+    -- free-variable walk, so a closure over one of them named a C variable
+    -- nothing declared and the build died inside the C compiler.
+    same("closure_over_optional_member",
+        "fn f() {\n" +
+        "    let o = {\"a\": 5}\n" +
+        "    let g = fn() { return o?.a }\n" +
+        "    return g()\n" +
+        "}\n" +
+        "show f()")
+
     -- ── the freestanding profile ──────────────────────────
     -- `clarity cc --freestanding` is for a target with no operating system
     -- underneath. What it has to guarantee is narrow and checkable: the
