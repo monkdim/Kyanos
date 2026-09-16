@@ -403,12 +403,40 @@ static int cl_truthy(Value v){
 }
 static Value cl_not(Value a){ return cl_bool(!cl_truthy(a)); }
 
+/* Lists and maps compare by contents, as both other engines do: a list
+   element-wise and in order, a map by key regardless of insertion order. An
+   instance compares by identity — C(1) == C(1) is false everywhere — and so
+   does a closure, which is why neither falls through to the `i` comparison
+   below: `i` is 0 in every pointer-backed Value, so that fallthrough made
+   any two closures equal. */
 static int cl_equal(Value a, Value b){
   if(a.t==T_STR && b.t==T_STR) return strcmp(a.s, b.s)==0;
   if(cl_is_num(a) && cl_is_num(b)) return cl_num(a)==cl_num(b);
   if(a.t != b.t) return 0;
-  /* pointer-backed values compare by identity (deep-equality is deferred) */
-  if(a.t==T_OBJECT || a.t==T_LIST || a.t==T_MAP) return a.o==b.o;
+  if(a.t==T_LIST){
+    List* x=(List*)a.o; List* y=(List*)b.o;
+    if(x==y) return 1;
+    if(x->len != y->len) return 0;
+    for(long i=0;i<x->len;i++) if(!cl_equal(x->items[i], y->items[i])) return 0;
+    return 1;
+  }
+  if(a.t==T_MAP){
+    Map* x=(Map*)a.o; Map* y=(Map*)b.o;
+    if(x==y) return 1;
+    if(x->len != y->len) return 0;
+    for(long i=0;i<x->len;i++){
+      int found=0;
+      for(long j=0;j<y->len;j++){
+        if(strcmp(x->keys[i], y->keys[j])==0){
+          if(!cl_equal(x->vals[i], y->vals[j])) return 0;
+          found=1; break;
+        }
+      }
+      if(!found) return 0;
+    }
+    return 1;
+  }
+  if(a.t==T_OBJECT || a.t==T_CLOSURE) return a.o==b.o;
   return a.i==b.i;
 }
 static Value cl_eq(Value a, Value b){ return cl_bool(cl_equal(a,b)); }

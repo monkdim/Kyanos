@@ -537,12 +537,40 @@ static int cl_truthy(Value v){
 }
 static Value cl_not(Value a){ return cl_bool(!cl_truthy(a)); }
 
+/* Lists and maps compare by contents, as both other engines do: a list
+   element-wise and in order, a map by key regardless of insertion order. An
+   instance compares by identity — C(1) == C(1) is false everywhere — and so
+   does a closure, which is why neither falls through to the `i` comparison
+   below: `i` is 0 in every pointer-backed Value, so that fallthrough made
+   any two closures equal. */
 static int cl_equal(Value a, Value b){
   if(a.t==T_STR && b.t==T_STR) return strcmp(a.s, b.s)==0;
   if(cl_is_num(a) && cl_is_num(b)) return cl_num(a)==cl_num(b);
   if(a.t != b.t) return 0;
-  /* pointer-backed values compare by identity (deep-equality is deferred) */
-  if(a.t==T_OBJECT || a.t==T_LIST || a.t==T_MAP) return a.o==b.o;
+  if(a.t==T_LIST){
+    List* x=(List*)a.o; List* y=(List*)b.o;
+    if(x==y) return 1;
+    if(x->len != y->len) return 0;
+    for(long i=0;i<x->len;i++) if(!cl_equal(x->items[i], y->items[i])) return 0;
+    return 1;
+  }
+  if(a.t==T_MAP){
+    Map* x=(Map*)a.o; Map* y=(Map*)b.o;
+    if(x==y) return 1;
+    if(x->len != y->len) return 0;
+    for(long i=0;i<x->len;i++){
+      int found=0;
+      for(long j=0;j<y->len;j++){
+        if(strcmp(x->keys[i], y->keys[j])==0){
+          if(!cl_equal(x->vals[i], y->vals[j])) return 0;
+          found=1; break;
+        }
+      }
+      if(!found) return 0;
+    }
+    return 1;
+  }
+  if(a.t==T_OBJECT || a.t==T_CLOSURE) return a.o==b.o;
   return a.i==b.i;
 }
 static Value cl_eq(Value a, Value b){ return cl_bool(cl_equal(a,b)); }
@@ -2587,7 +2615,10 @@ class CCodegen {
             -- because then the local is what the program meant.
             if has(this.fn_arity, node.name) and not contains(this.local_names, node.name) {
                 this.fn_values[node.name] = true
-                return "cl_closure_new(&__fnval_" + node.name + ", 0, 0)"
+                -- One closure per function, built once in main, rather than a
+                -- fresh one at every mention: `f == f` has to be true, and a
+                -- closure compares by identity.
+                return "__fnv_" + node.name
             }
             return "v_" + node.name
         }
@@ -3257,7 +3288,12 @@ class CCodegen {
         if this.freestanding { push(out, "#define CLARITY_FREESTANDING 1") }
         push(out, C_PRELUDE)
         push(out, "")
-        if len(globals) > 0 or len(enum_globals) > 0 {
+        -- A top-level function named as a value gets one closure, held in a
+        -- global and built once, so `f == f` is true — a closure compares by
+        -- identity, and a fresh closure per mention would compare unequal to
+        -- itself.
+        let fn_value_names = keys(this.fn_values)
+        if len(globals) > 0 or len(enum_globals) > 0 or len(fn_value_names) > 0 {
             push(out, "/* module-level bindings */")
             mut roots = []
             for g in globals {
@@ -3269,6 +3305,10 @@ class CCodegen {
             for g in enum_globals {
                 push(out, "Value " + g + ";")
                 push(roots, "&" + g)
+            }
+            for fname in fn_value_names {
+                push(out, "Value __fnv_" + fname + ";")
+                push(roots, "&__fnv_" + fname)
             }
             push(out, "static Value* cl_global_roots[] = {" + join(roots, ", ") + "};")
             push(out, "")
@@ -3318,8 +3358,14 @@ class CCodegen {
         push(out, "  cl_argc = argc; cl_argv = argv;")
         push(out, "  GC_CAPTURE_STACK_BASE();")
         push(out, "  if(getenv(\"CLARITY_GC\")) gc_enabled = 1;")
-        if len(globals) > 0 or len(enum_globals) > 0 {
-            push(out, "  cl_globals = cl_global_roots; cl_globals_n = " + str(len(globals) + len(enum_globals)) + ";")
+        if len(globals) > 0 or len(enum_globals) > 0 or len(fn_value_names) > 0 {
+            push(out, "  cl_globals = cl_global_roots; cl_globals_n = " +
+                str(len(globals) + len(enum_globals) + len(fn_value_names)) + ";")
+        }
+        -- Before anything else in main: a module-level `let` may name a
+        -- function as a value, and so may a function it calls.
+        for fname in fn_value_names {
+            push(out, "  __fnv_" + fname + " = cl_closure_new(&__fnval_" + fname + ", 0, 0);")
         }
         for l in main_body { push(out, l) }
         push(out, "  cl_arena_free();")

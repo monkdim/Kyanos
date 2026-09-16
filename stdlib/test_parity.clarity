@@ -91,6 +91,12 @@ same("integer division and modulo", "show 7 / 2\nshow 7 % 2\nshow -7 % 2")
 same("exponent", "show 2 ** 10\nshow 2 ** 0.5")
 same("comparison", "show 1 < 2\nshow 2 <= 2\nshow 3 > 4\nshow \"a\" < \"b\"")
 same("equality across types", "show 1 == 1.0\nshow \"1\" == 1\nshow null == null\nshow [1] == [1]")
+-- Collections compare by contents and instances by identity, in every
+-- engine. The native compiler compared both by pointer, so these are here to
+-- keep the two interpreters pinned to the answers it was made to match.
+same("lists compare by contents", "show [1, 2] == [1, 2]\nshow [1, 2] == [2, 1]\nshow [1, [2, [3]]] == [1, [2, [3]]]\nshow [] == []\nshow [1, 2] != [2, 1]")
+same("maps compare by contents, not insertion order", "show {\"a\": 1, \"b\": 2} == {\"b\": 2, \"a\": 1}\nshow {\"a\": 1} == {\"a\": 2}\nshow {\"a\": 1} == {\"a\": 1, \"b\": 2}\nshow {} == {}")
+same("instances and closures compare by identity", "class C {\n    fn init(v) { this.v = v }\n}\nlet c = C(1)\nshow C(1) == C(1)\nshow c == c\nlet f = fn(x) { return x }\nlet g = fn(x) { return x }\nshow f == g\nshow f == f\nfn h() { return 1 }\nshow h == h")
 same("boolean operators", "show true and false\nshow true or false\nshow not true")
 same("truthiness", "show 0 or \"fallback\"\nshow \"\" or \"fallback\"\nshow [] or \"fallback\"")
 same("null coalescing", "let a = null\nshow a ?? 5\nshow 0 ?? 5")

@@ -65,6 +65,18 @@ stack and produced an empty error body under `--fast`. And `clarity cc` had no
 compiler error about an undeclared `v_display`. They go through each engine's
 own display now, and are diffed across all three.
 
+### `==` in native builds compared collections by pointer
+Fixed. `cl_eq` compared a list or a map by its address, so `[1, 2] == [1, 2]`
+was `false` in a `clarity cc` binary and `true` in both other engines — every
+native program that compared collections was silently wrong, including every
+`match` arm whose pattern is a list. And every pointer-backed value fell
+through to a comparison of the Value's integer field, which is `0` in all of
+them, so *any two closures were equal*. Lists and maps compare by contents
+now (element-wise in order; by key regardless of insertion order), instances
+and closures by identity, as everywhere else. A top-level function named as a
+value gets one closure built once, so `f == f` is true rather than comparing
+two freshly made ones.
+
 ### Mid-run garbage collection kills a program on darwin-arm64
 `CLARITY_GC=1` turns on mid-run collection in a compiled binary. On
 darwin-arm64 a program that holds **two** live allocations across a collection
