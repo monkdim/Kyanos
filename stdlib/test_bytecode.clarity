@@ -184,7 +184,15 @@ assert_single("null coalesce value", "let x = 3 ?? 5\nshow x", "3")
 show "Section 12: Slicing"
 
 assert_single("list slice", "let lst = [1, 2, 3, 4, 5]\nshow lst[1..3]", "[2, 3]")
-assert_single("string slice", "show \"hello\"[1..4]", "ell")
+-- A string slice is a list of its characters, not a substring: the
+-- interpreter walks the value with the language's own indexing, and this
+-- engine used to answer "ell" where `clarity run` answered
+-- ["e", "l", "l"]. Whether the subscript *should* mean the substring its
+-- own .slice() method means is an open language question (GAPS.md); the
+-- engines agreeing is not, and this asserts the agreement.
+assert_single("string slice", "show \"hello\"[1..4]", "[\"e\", \"l\", \"l\"]")
+assert_single("string slice as a method", "show \"hello\".slice(1, 4)", "ell")
+assert_single("map slice", "let m = {\"a\": 1, \"b\": 2}\nshow m[0..1]", "[null]")
 
 -- ── Section 13: Destructuring ────────────────────────────
 
