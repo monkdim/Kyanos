@@ -1431,7 +1431,7 @@ Value __closure_1(Value* __a, Value* __cap, long __n) {
 
 Value f_risky(Value v_x) {
   if(cl_truthy(cl_lt(v_x, cl_int(0)))) {
-    cl_throw(cl_add(cl_str("negative: "), cl_str(cl_to_cstr(v_x))));
+    cl_throw(({ volatile Value __o0 = (cl_str("negative: ")); volatile Value __o1 = (cl_str(cl_to_cstr(v_x))); cl_add(__o0, __o1); }));
   }
   return cl_mul(v_x, cl_int(3));
   return cl_null();
@@ -1469,23 +1469,23 @@ int main(int argc, char** argv) {
     Value v_i = cl_index(__it1, cl_int(__i1));
     (void)(cl_dispatch(v_t, "add", (Value[]){v_i}, 1));
   }
-  cl_show(cl_add(cl_str("tally "), cl_str(cl_to_cstr(cl_get_field(v_t, "n")))));
-  { ClHandler __h0; __h0.prev = cl_handlers; cl_handlers = &__h0;
-    if(setjmp(__h0.buf) == 0) {
+  cl_show(({ volatile Value __o2 = (cl_str("tally ")); volatile Value __o3 = (cl_str(cl_to_cstr(cl_get_field(v_t, "n")))); cl_add(__o2, __o3); }));
+  { ClHandler __h4; __h4.prev = cl_handlers; cl_handlers = &__h4;
+    if(setjmp(__h4.buf) == 0) {
       cl_show(cl_str(cl_to_cstr(f_risky(cl_neg(cl_int(4))))));
-      cl_handlers = __h0.prev;
+      cl_handlers = __h4.prev;
     } else {
-      cl_handlers = __h0.prev;
+      cl_handlers = __h4.prev;
       Value v_e = cl_thrown;
-      ClHandler __hc0; __hc0.prev = cl_handlers; cl_handlers = &__hc0;
-      if(setjmp(__hc0.buf) == 0) {
-        cl_show(cl_add(cl_str("caught "), cl_str(cl_to_cstr(v_e))));
-        cl_handlers = __hc0.prev;
+      ClHandler __hc4; __hc4.prev = cl_handlers; cl_handlers = &__hc4;
+      if(setjmp(__hc4.buf) == 0) {
+        cl_show(({ volatile Value __o5 = (cl_str("caught ")); volatile Value __o6 = (cl_str(cl_to_cstr(v_e))); cl_add(__o5, __o6); }));
+        cl_handlers = __hc4.prev;
       } else {
-        cl_handlers = __hc0.prev;
-        Value __hc0_v = cl_thrown;
+        cl_handlers = __hc4.prev;
+        Value __hc4_v = cl_thrown;
         cl_show(cl_str("finally ran"));
-        cl_throw(__hc0_v);
+        cl_throw(__hc4_v);
       }
     }
     cl_show(cl_str("finally ran"));
@@ -1495,20 +1495,20 @@ int main(int argc, char** argv) {
   Value __it2 = cl_iter(cl_sort(cl_keys(v_m)));
   for(long __i2=0; __i2 < cl_length(__it2); __i2++) {
     Value v_k = cl_index(__it2, cl_int(__i2));
-    (void)(cl_list_add(v_parts, cl_add(cl_add(cl_upper(v_k), cl_str("=")), cl_str(cl_to_cstr(cl_index(v_m, v_k))))));
+    (void)(({ volatile Value __o7 = (v_parts); volatile Value __o8 = (({ volatile Value __o9 = (({ volatile Value __o10 = (cl_upper(v_k)); volatile Value __o11 = (cl_str("=")); cl_add(__o10, __o11); })); volatile Value __o12 = (cl_str(cl_to_cstr(cl_index(v_m, v_k)))); cl_add(__o9, __o12); })); cl_list_add(__o7, __o8); }));
   }
   cl_show(cl_str_join(v_parts, cl_str(" ")));
-  v_squares = cl_hof_map(cl_hof_filter(cl_list_add(cl_list_add(cl_list_add(cl_list_add(cl_list_add(cl_list_add(cl_list_add(cl_list_add(cl_list_new(), cl_int(1)), cl_int(2)), cl_int(3)), cl_int(4)), cl_int(5)), cl_int(6)), cl_int(7)), cl_int(8)), cl_closure_new(&__closure_0, 0, 0)), cl_closure_new(&__closure_1, 0, 0));
-  cl_show(cl_add(cl_str("evens squared "), cl_str_join(v_squares, cl_str(","))));
-  cl_show(cl_add(cl_add(cl_add(cl_add(cl_add(cl_str("float "), cl_str(cl_to_cstr(cl_div(cl_int(355), cl_int(113))))), cl_str(" ")), cl_str(cl_to_cstr(cl_sqrt(cl_int(2))))), cl_str(" ")), cl_str(cl_to_cstr(cl_pow(cl_float(2.5), cl_int(2))))));
-  cl_show(cl_add(cl_add(cl_add(cl_add(cl_add(cl_str("text "), cl_trim(cl_str("  spaced  "))), cl_str("|")), cl_replace(cl_str("a-b-c"), cl_str("-"), cl_str("+"))), cl_str("|")), cl_str(cl_to_cstr(cl_index_of(cl_str("clarity"), cl_str("rit"))))));
+  v_squares = ({ volatile Value __o13 = (cl_hof_filter(cl_list_add(cl_list_add(cl_list_add(cl_list_add(cl_list_add(cl_list_add(cl_list_add(cl_list_add(cl_list_new(), cl_int(1)), cl_int(2)), cl_int(3)), cl_int(4)), cl_int(5)), cl_int(6)), cl_int(7)), cl_int(8)), cl_closure_new(&__closure_0, 0, 0))); volatile Value __o14 = (cl_closure_new(&__closure_1, 0, 0)); cl_hof_map(__o13, __o14); });
+  cl_show(({ volatile Value __o15 = (cl_str("evens squared ")); volatile Value __o16 = (cl_str_join(v_squares, cl_str(","))); cl_add(__o15, __o16); }));
+  cl_show(({ volatile Value __o17 = (({ volatile Value __o18 = (({ volatile Value __o19 = (({ volatile Value __o20 = (({ volatile Value __o21 = (cl_str("float ")); volatile Value __o22 = (cl_str(cl_to_cstr(cl_div(cl_int(355), cl_int(113))))); cl_add(__o21, __o22); })); volatile Value __o23 = (cl_str(" ")); cl_add(__o20, __o23); })); volatile Value __o24 = (cl_str(cl_to_cstr(cl_sqrt(cl_int(2))))); cl_add(__o19, __o24); })); volatile Value __o25 = (cl_str(" ")); cl_add(__o18, __o25); })); volatile Value __o26 = (cl_str(cl_to_cstr(cl_pow(cl_float(2.5), cl_int(2))))); cl_add(__o17, __o26); }));
+  cl_show(({ volatile Value __o27 = (({ volatile Value __o28 = (({ volatile Value __o29 = (({ volatile Value __o30 = (({ volatile Value __o31 = (cl_str("text ")); volatile Value __o32 = (cl_trim(cl_str("  spaced  "))); cl_add(__o31, __o32); })); volatile Value __o33 = (cl_str("|")); cl_add(__o30, __o33); })); volatile Value __o34 = (cl_replace(cl_str("a-b-c"), cl_str("-"), cl_str("+"))); cl_add(__o29, __o34); })); volatile Value __o35 = (cl_str("|")); cl_add(__o28, __o35); })); volatile Value __o36 = (cl_str(cl_to_cstr(cl_index_of(cl_str("clarity"), cl_str("rit"))))); cl_add(__o27, __o36); }));
   v_big = cl_list_new();
   Value __it3 = cl_iter(cl_range2(cl_int(1), cl_int(401)));
   for(long __i3=0; __i3 < cl_length(__it3); __i3++) {
     Value v_i = cl_index(__it3, cl_int(__i3));
-    (void)(cl_list_add(v_big, cl_str(cl_to_cstr(cl_mul(v_i, v_i)))));
+    (void)(({ volatile Value __o37 = (v_big); volatile Value __o38 = (cl_str(cl_to_cstr(cl_mul(v_i, v_i)))); cl_list_add(__o37, __o38); }));
   }
-  cl_show(cl_add(cl_add(cl_add(cl_str("list "), cl_str(cl_to_cstr(cl_int(cl_length(v_big))))), cl_str(" last ")), cl_index(v_big, cl_int(399))));
+  cl_show(({ volatile Value __o39 = (({ volatile Value __o40 = (({ volatile Value __o41 = (cl_str("list ")); volatile Value __o42 = (cl_str(cl_to_cstr(cl_int(cl_length(v_big))))); cl_add(__o41, __o42); })); volatile Value __o43 = (cl_str(" last ")); cl_add(__o40, __o43); })); volatile Value __o44 = (cl_index(v_big, cl_int(399))); cl_add(__o39, __o44); }));
   cl_show(cl_str("clarity-demo: all checks passed"));
   cl_arena_free();
   return 0;

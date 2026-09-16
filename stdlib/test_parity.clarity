@@ -174,6 +174,16 @@ same("function as a value", "fn f() { return 1 }\nlet g = f\nshow g()\nshow f")
 same("higher order", "fn apply(f, v) { return f(v) }\nshow apply(x => x + 1, 10)")
 same("pipe operator", "fn double(x) { return x * 2 }\nshow 5 |> double")
 
+show "-- Parity: evaluation order --"
+-- Operands run left to right, and a short-circuit operator evaluates its
+-- left side once. Both engines agree; the native compiler did not, which is
+-- what these were written for.
+same("operands run left to right", "mut log = []\nfn t(name, v) { push(log, name); return v }\nshow [t(\"a\", 1), t(\"b\", 2)]\nshow { \"x\": t(\"c\", 3), \"y\": t(\"d\", 4) }\nshow str(t(\"l\", 5)) + str(t(\"r\", 6))\nshow log")
+same("a method receiver runs before the arguments", "mut log = []\nfn t(name, v) { push(log, name); return v }\nclass Box {\n    fn init(n) { this.n = n }\n    fn add(a) { return this.n + a }\n}\nshow t(\"recv\", Box(1)).add(t(\"arg\", 2))\nshow log")
+same("an operand that throws stops the ones after it", "mut log = []\nfn t(name, v) { push(log, name); return v }\nfn boom() { throw \"x\" }\ntry { show [t(\"first\", 1), boom(), t(\"never\", 2)] } catch e { show \"caught\" }\nshow log")
+same("or evaluates its left side once", "mut c = 0\nfn bump() { c += 1; return c }\nshow bump() or false\nshow c")
+same("and evaluates its left side once", "mut c = 0\nfn zero() { c += 1; return 0 }\nshow zero() and true\nshow c")
+
 show "-- Parity: generators --"
 -- Clarity's generators are eager: a body that yields runs to the end and
 -- the call returns the list of what it yielded. The VM compiled `yield` to
