@@ -57,11 +57,27 @@ jobs:
           cd native/dist
           bun build --compile clarity-entry.js --outfile clarity
 
+      # The binary above was bundled by the *previous release's* transpiler,
+      # whose runtime import header is that release's and cannot name
+      # anything added since. A builtin added in this PR is therefore an
+      # undefined variable in it, so testing that binary tests the release's
+      # compiler against this checkout's standard library — and fails for a
+      # reason no reviewer of the diff can see.
+      #
+      # So it is used for one thing only, which is the thing worth proving:
+      # that the released compiler can still build this source tree. What
+      # gets tested is what it builds.
+      - name: Rebuild with the compiler in this checkout
+        run: |
+          ./native/dist/clarity transpile --bundle -o stage2
+          (cd stage2 && bun build --compile clarity-entry.js --outfile clarity)
+          ./stage2/clarity --version
+
       - name: Run self-hosted tests
-        run: ./native/dist/clarity test stdlib/
+        run: ./stage2/clarity test stdlib/
 
       - name: Run smoke tests
-        run: ./native/dist/clarity smoke ./native/dist/clarity
+        run: ./stage2/clarity smoke ./stage2/clarity
 
   selfhost:
     runs-on: ubuntu-latest

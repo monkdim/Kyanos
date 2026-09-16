@@ -105,6 +105,21 @@ same("interpolation of an instance", "class C {\n    fn init() { this.v = 1 }\n}
 same("braces that are not interpolation", "show \"if x { 1 } else { 2 }\"\nshow \"{1}\"\nshow \"{ n }\"")
 same("an unclosed brace stays literal", "let n = 1\nshow \"open {n and {n}\"")
 
+show "-- Parity: builtins both engines must have --"
+-- Presence is checked statically by test_runtime_surface; this is the
+-- behaviour. The two engines kept separate builtin tables, and the
+-- difference was 22 public names wide: `hash`, `pad_left`, `encode64` and
+-- the byte readers were builtins under `clarity run` and undefined
+-- variables under `run --fast`.
+same("hashing and base64", "show hash(\"abc\")\nshow encode64(\"hi\")\nshow decode64(encode64(\"hi\"))")
+same("padding", "show pad_left(\"7\", 3, \"0\")\nshow pad_right(\"7\", 3, \".\")")
+same("display and repr", "show display({\"a\": 1})\nshow repr(\"x\")\nshow repr(1.5)")
+same("set drops duplicates", "show set([3, 1, 3, 2])")
+same("compose and tap", "let f = compose(fn(x) { return x + 1 }, fn(x) { return x * 2 })\nshow f(5)\nshow tap(7, fn(v) { show \"tapped \" + str(v) })")
+same("regular expressions", "show regex_match(\"[0-9]\", \"a1\")\nshow regex_find(\"[0-9]\", \"a1b2\")\nshow regex_replace(\"[0-9]\", \"a1b2\", \"#\")\nshow regex_split(\",\", \"a,b,c\")\nshow regex_search(\"z\", \"abc\")")
+same("a regex match with groups", "show exec_full_regex(\"([0-9]+)-([0-9]+)\", \"range 10-20\")")
+same("print is show", "print(\"printed\")\nshow \"shown\"")
+
 show "-- Parity: collections --"
 same("list literal and index", "let xs = [1, 2, 3]\nshow xs\nshow xs[0]\nshow xs[-1]")
 same("list slicing", "let xs = [1, 2, 3, 4, 5]\nshow xs[1..3]\nshow xs[..2]\nshow xs[2..]")

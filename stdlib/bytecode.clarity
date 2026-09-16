@@ -1530,10 +1530,118 @@ class VM {
         this.globals["append"] = fn(p, c) { return append(p, c) }
         this.globals["exists"] = fn(p) { return exists(p) }
         this.globals["lines"] = fn(p) { return lines(p) }
+        this.globals["read_bytes"] = fn(p) { return read_bytes(p) }
+        this.globals["write_bytes"] = fn(p, b) { return write_bytes(p, b) }
+        this.globals["read_mem"] = fn(pid, addr, ln) { return read_mem(pid, addr, ln) }
+        this.globals["write_mem"] = fn(pid, addr, b) { return write_mem(pid, addr, b) }
 
         -- JSON
         this.globals["json_parse"] = fn(t) { return json_parse(t) }
         this.globals["json_string"] = fn(v) { return json_string(v) }
+
+        -- The rest of what the interpreter offers. This table had 82 names
+        -- against the interpreter's 158, and the difference was not a
+        -- decision: `hash`, `pad_left`, `encode64` and the byte and memory
+        -- readers had been builtins on one engine and undefined variables
+        -- on the other since this VM was written, so a program using one
+        -- ran under `clarity run` and died under `clarity run --fast`.
+        this.globals["pad_left"] = fn(s, n, c) { return pad_left(s, n, c ?? " ") }
+        this.globals["pad_right"] = fn(s, n, c) { return pad_right(s, n, c ?? " ") }
+        this.globals["hash"] = fn(text, algo) { return hash(text, algo ?? "sha256") }
+        this.globals["encode64"] = fn(t) { return encode64(t) }
+        this.globals["decode64"] = fn(t) { return decode64(t) }
+        this.globals["display"] = fn(v) { return display(v) }
+        this.globals["repr"] = fn(v) { return repr(v) }
+        this.globals["set"] = fn(lst) { return set(lst) }
+        this.globals["fetch"] = fn(url) { return fetch(url) }
+        this.globals["serve"] = fn(port, handler) {
+            return serve(port, fn(...call_args) { return vm._call_fn(handler, call_args) })
+        }
+        this.globals["compose"] = fn(...fns) {
+            return fn(...call_args) {
+                mut value = if len(call_args) > 0 { call_args[0] } else { null }
+                mut i = len(fns) - 1
+                while i >= 0 {
+                    value = vm._call_fn(fns[i], [value])
+                    i -= 1
+                }
+                return value
+            }
+        }
+        this.globals["tap"] = fn(v, f) { vm._call_fn(f, [v]); return v }
+
+        -- Regular expressions
+        this.globals["regex_match"] = fn(pat, text) { return regex_match(pat, text) }
+        this.globals["regex_search"] = fn(pat, text) { return regex_search(pat, text) }
+        this.globals["regex_find"] = fn(pat, text) { return regex_find(pat, text) }
+        this.globals["regex_replace"] = fn(pat, text, repl) { return regex_replace(pat, text, repl) }
+        this.globals["regex_split"] = fn(pat, text) { return regex_split(pat, text) }
+        this.globals["exec_full_regex"] = fn(pat, text) { return exec_full_regex(pat, text) }
+
+        -- The low-level bridges: FFI, the pseudo-terminal, the host window
+        -- and the embedded stdlib. Internal by their underscore, but the
+        -- standard library's own FFI, hooking and graphics modules call
+        -- them, so a program that imports one ran under `clarity run` and
+        -- died under `clarity run --fast` on an undefined variable.
+        this.globals["_embedded_source"] = fn(name) { return _embedded_source(name) }
+        this.globals["_host_exe"] = fn() { return _host_exe() }
+        this.globals["_ffi_open"] = fn(lib, spec) { return _ffi_open(lib, spec) }
+        this.globals["_ffi_bind"] = fn(lib, sym, args, ret) { return _ffi_bind(lib, sym, args, ret) }
+        this.globals["_ffi_close"] = fn(h) { return _ffi_close(h) }
+        this.globals["_ffi_alloc"] = fn(n) { return _ffi_alloc(n) }
+        this.globals["_ffi_alloc_cstring"] = fn(s) { return _ffi_alloc_cstring(s) }
+        this.globals["_ffi_read_cstring"] = fn(p) { return _ffi_read_cstring(p) }
+        this.globals["_ffi_ptr_addr"] = fn(p) { return _ffi_ptr_addr(p) }
+        this.globals["_ffi_pointer_release"] = fn(p) { return _ffi_pointer_release(p) }
+        this.globals["_ffi_read_u8"] = fn(p, o) { return _ffi_read_u8(p, o ?? 0) }
+        this.globals["_ffi_read_i8"] = fn(p, o) { return _ffi_read_i8(p, o ?? 0) }
+        this.globals["_ffi_read_u16"] = fn(p, o) { return _ffi_read_u16(p, o ?? 0) }
+        this.globals["_ffi_read_i16"] = fn(p, o) { return _ffi_read_i16(p, o ?? 0) }
+        this.globals["_ffi_read_u32"] = fn(p, o) { return _ffi_read_u32(p, o ?? 0) }
+        this.globals["_ffi_read_i32"] = fn(p, o) { return _ffi_read_i32(p, o ?? 0) }
+        this.globals["_ffi_read_u64"] = fn(p, o) { return _ffi_read_u64(p, o ?? 0) }
+        this.globals["_ffi_read_i64"] = fn(p, o) { return _ffi_read_i64(p, o ?? 0) }
+        this.globals["_ffi_read_f32"] = fn(p, o) { return _ffi_read_f32(p, o ?? 0) }
+        this.globals["_ffi_read_f64"] = fn(p, o) { return _ffi_read_f64(p, o ?? 0) }
+        this.globals["_ffi_read_ptr"] = fn(p, o) { return _ffi_read_ptr(p, o ?? 0) }
+        this.globals["_ffi_write_u8"] = fn(p, o, v) { _ffi_write_u8(p, o, v) }
+        this.globals["_ffi_write_i8"] = fn(p, o, v) { _ffi_write_i8(p, o, v) }
+        this.globals["_ffi_write_u16"] = fn(p, o, v) { _ffi_write_u16(p, o, v) }
+        this.globals["_ffi_write_i16"] = fn(p, o, v) { _ffi_write_i16(p, o, v) }
+        this.globals["_ffi_write_u32"] = fn(p, o, v) { _ffi_write_u32(p, o, v) }
+        this.globals["_ffi_write_i32"] = fn(p, o, v) { _ffi_write_i32(p, o, v) }
+        this.globals["_ffi_write_u64"] = fn(p, o, v) { _ffi_write_u64(p, o, v) }
+        this.globals["_ffi_write_i64"] = fn(p, o, v) { _ffi_write_i64(p, o, v) }
+        this.globals["_ffi_write_f32"] = fn(p, o, v) { _ffi_write_f32(p, o, v) }
+        this.globals["_ffi_write_f64"] = fn(p, o, v) { _ffi_write_f64(p, o, v) }
+        this.globals["_ffi_callback_close"] = fn(h) { return _ffi_callback_close(h) }
+        this.globals["_ffi_fill_u32"] = fn(p, o, c, v) { _ffi_fill_u32(p, o, c, v) }
+        this.globals["_ffi_blend_u32"] = fn(p, o, c, col) { _ffi_blend_u32(p, o, c, col) }
+        this.globals["_ffi_box_blur"] = fn(p, w, h, r, ps) { _ffi_box_blur(p, w, h, r, ps) }
+        this.globals["_ffi_blit_scaled_alpha"] = fn(dp, dw, dh, sp, sw, sh, dx, dy, dw2, dh2, a) { _ffi_blit_scaled_alpha(dp, dw, dh, sp, sw, sh, dx, dy, dw2, dh2, a) }
+        this.globals["_pty_supported"] = fn() { return _pty_supported() }
+        this.globals["_pty_spawn"] = fn(path, argv, cols, rows) { return _pty_spawn(path, argv, cols, rows) }
+        this.globals["_pty_read"] = fn(m, n) { return _pty_read(m, n) }
+        this.globals["_pty_write"] = fn(m, t) { return _pty_write(m, t) }
+        this.globals["_pty_resize"] = fn(m, c, r) { return _pty_resize(m, c, r) }
+        this.globals["_pty_poll"] = fn(m) { return _pty_poll(m) }
+        this.globals["_pty_close"] = fn(m) { return _pty_close(m) }
+        this.globals["_host_supported"] = fn() { return _host_supported() }
+        this.globals["_host_open"] = fn(t, w, h) { return _host_open(t, w, h) }
+        this.globals["_host_present"] = fn(p, w, h) { return _host_present(p, w, h) }
+        this.globals["_host_poll"] = fn() { return _host_poll() }
+        this.globals["_host_ticks"] = fn() { return _host_ticks() }
+        this.globals["_host_delay"] = fn(ms) { _host_delay(ms) }
+        this.globals["_host_close"] = fn() { return _host_close() }
+        this.globals["_ffi_copy"] = fn(dst, do_, src, so, n) { _ffi_copy(dst, do_, src, so, n) }
+        this.globals["_ffi_write_buffer"] = fn(p, path) { _ffi_write_buffer(p, path) }
+        this.globals["_ffi_read_buffer"] = fn(path) { return _ffi_read_buffer(path) }
+        -- Same reason the interpreter wraps it: Bun's JSCallback needs a
+        -- real JS callable, and what a program passes here is a VM
+        -- function object.
+        this.globals["_ffi_callback"] = fn(f, a, r) {
+            return _ffi_callback(fn(...cb_args) { return vm._call_fn(f, cb_args) }, a, r)
+        }
 
         -- Errors
         this.globals["error"] = fn(msg) { return str(msg) }

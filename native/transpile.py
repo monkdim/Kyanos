@@ -781,6 +781,8 @@ def transpile_with_runtime(path):
         '  exec, exec_full, exec_tty, exit, sleep, time, env, args, cwd,\n'
         '  json_parse, json_string, hash, encode64, decode64,\n'
         '  fetch, serve, compose, tap, $set, error as $error,\n'
+        '  regex_match, regex_search, regex_find, regex_replace, regex_split, exec_full_regex,\n'
+        '  print,\n'
         '  display, repr, truthy as $truthy, ClarityEnum as $ClarityEnum,\n'
         '  ClarityInstance as $ClarityInstance,\n'
         '  _ffi_open, _ffi_bind, _ffi_close,\n'
