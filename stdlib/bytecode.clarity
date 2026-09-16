@@ -1563,8 +1563,11 @@ class VM {
         this.globals["hash"] = fn(text, algo) { return hash(text, algo ?? "sha256") }
         this.globals["encode64"] = fn(t) { return encode64(t) }
         this.globals["decode64"] = fn(t) { return decode64(t) }
-        this.globals["display"] = fn(v) { return display(v) }
-        this.globals["repr"] = fn(v) { return repr(v) }
+        -- Through the VM's own display, for the reason the interpreter's
+        -- registration gives: the runtime's display does not know what a
+        -- VMInstance is and walks it until the stack runs out.
+        this.globals["display"] = fn(v) { return vm._display(v) }
+        this.globals["repr"] = fn(v) { return vm._repr(v) }
         this.globals["set"] = fn(lst) { return set(lst) }
         this.globals["fetch"] = fn(url) { return fetch(url) }
         this.globals["serve"] = fn(port, handler) {

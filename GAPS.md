@@ -62,6 +62,18 @@ interpolation, index expressions. It is its own change with its own blast
 radius, so the two generator cases that would have tripped it use a single
 `yield` and this note carries the defect.
 
+### `display()` and `repr()` were reachable before they worked
+Fixed. Both were runtime exports no program could call until the builtin
+tables were reconciled (PR #149); registering them turned out to have exposed
+three defects at once. Each engine registered *the runtime's* `display`, which
+does not know what that engine's instance objects are: it fell into its
+generic-object branch and walked instance → class → method closures →
+environment → instance, so `display(Q())` for any class blew the interpreter's
+stack and produced an empty error body under `--fast`. And `clarity cc` had no
+`display`/`repr` builtin at all, so a program calling one failed with a C
+compiler error about an undeclared `v_display`. They go through each engine's
+own display now, and are diffed across all three.
+
 ### Brand-domain / naming
 `stdlib/branding.clarity` carries the brand name and domain in one place and the site is generated from it, so the KyanOS rename moved the whole set at once. The domain is the GitHub Pages URL REBRAND.md names as the interim (`monkdim.github.io/Kyanos`); a real domain is a purchase, not a code change, and `BRAND_DOMAIN` is the single line it lands on.
 
