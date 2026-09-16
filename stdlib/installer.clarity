@@ -1,4 +1,4 @@
--- ClarityOS Installer (Phase 67 task 3).
+-- KyanOS Installer (Phase 67 task 3).
 --
 -- Wizard-style installer that walks a user from "boot live ISO" to
 -- "first reboot into installed system". Built with the Phase 60 UI
@@ -48,7 +48,7 @@ class Installer {
         this.swap_gb = 4
         this.username = null
         this.password = null
-        this.hostname = "claritos"
+        this.hostname = "kyanos"
         this.timezone = "UTC"
         this.errors = []
         this.progress = 0                -- 0..100 during STEP_INSTALL

@@ -1,6 +1,6 @@
 //! Multiboot2 header + boot info parser.
 //!
-//! ClarityOS is multiboot2-compliant so it can boot under GRUB and
+//! KyanOS is multiboot2-compliant so it can boot under GRUB and
 //! QEMU's `-kernel` option directly during development. The UEFI
 //! path uses uefi.zig instead (different entry contract entirely).
 

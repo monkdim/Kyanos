@@ -182,7 +182,7 @@ fn render(name: []const u8) ![]const u8 {
 
 fn render_cpuinfo(gpa: std.mem.Allocator) ![]const u8 {
     return try std.fmt.allocPrint(gpa,
-        "processor    : 0\nvendor_id    : ClarityOS\nmodel name   : ClarityOS Virtual CPU\ncpu MHz      : 2400.000\n", .{});
+        "processor    : 0\nvendor_id    : KyanOS\nmodel name   : KyanOS Virtual CPU\ncpu MHz      : 2400.000\n", .{});
 }
 
 fn render_meminfo(gpa: std.mem.Allocator) ![]const u8 {
@@ -205,5 +205,5 @@ fn render_loadavg(gpa: std.mem.Allocator) ![]const u8 {
 }
 
 fn render_version(gpa: std.mem.Allocator) ![]const u8 {
-    return try std.fmt.allocPrint(gpa, "ClarityOS 0.1 #1 SMP\n", .{});
+    return try std.fmt.allocPrint(gpa, "KyanOS 0.1 #1 SMP\n", .{});
 }

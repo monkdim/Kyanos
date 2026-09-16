@@ -8,7 +8,7 @@ floating point runs with nothing underneath it but three kernel calls.
 
 Those three are all of it — `write`, `brk`, `exit`. Their numbers live in
 `src/sys.h` and nowhere else, which is what lets the same library be built for
-ClarityOS or for a Linux host. The Linux build is not a mock-up for testing:
+KyanOS or for a Linux host. The Linux build is not a mock-up for testing:
 it is the same source, the same objects, running under a different set of
 syscall numbers, so what the tests exercise is what ships.
 
@@ -110,7 +110,7 @@ kernel/user/libc/link.sh program.c program         # links it
 ```
 
 Add `-DCLARITY_LIBC_LINUX` to run the result on a Linux host; without it the
-syscall numbers are ClarityOS's, from `kernel/syscall/dispatch.zig`.
+syscall numbers are KyanOS's, from `kernel/syscall/dispatch.zig`.
 
 ## Running the tests
 

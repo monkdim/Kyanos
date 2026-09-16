@@ -4,7 +4,7 @@
 -- and are pinned to FIPS 180-4 / RFC 4231 vectors. That matters because a
 -- shell-out to `sha256sum`/openssl is unavailable exactly where hashing is
 -- most needed: inside a `clarity cc` native binary on a machine without
--- those tools, and inside ClarityOS itself (no coreutils, no openssl).
+-- those tools, and inside KyanOS itself (no coreutils, no openssl).
 --
 -- The remaining digests (sha512/sha1/md5) still delegate to system tools
 -- and therefore keep that dependency; porting them is tracked in ROADMAP.md

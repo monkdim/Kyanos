@@ -2,7 +2,7 @@
  *
  * The kernel enters here with the stack laid out the way a Unix loader lays
  * it out — argc at the top, then argv[0..argc-1], then a NULL — because that
- * is what ClarityOS's ELF loader builds and what a Linux kernel builds, and
+ * is what KyanOS's ELF loader builds and what a Linux kernel builds, and
  * matching it means the same object runs under both. That equivalence is what
  * lets this library be tested on a Linux host rather than only in a VM.
  *

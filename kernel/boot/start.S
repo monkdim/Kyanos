@@ -1,4 +1,4 @@
-// ClarityOS boot stub — multiboot2 entry, switch to long mode, jump to
+// KyanOS boot stub — multiboot2 entry, switch to long mode, jump to
 // the higher-half kernel_main(boot_info).
 //
 // multiboot2 hands us control in 32-bit protected mode with the kernel

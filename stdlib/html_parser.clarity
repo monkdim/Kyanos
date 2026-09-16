@@ -1,7 +1,7 @@
 -- Tiny HTML parser (Phase 68 task 1).
 --
 -- Hand-rolled, single-pass tokenizer + DOM builder for the
--- ClarityOS browser. Targets a strict subset:
+-- KyanOS browser. Targets a strict subset:
 --
 --   text                    plain text nodes
 --   <p>, <h1>..<h6>          block elements

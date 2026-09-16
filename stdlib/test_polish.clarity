@@ -224,9 +224,9 @@ assert_eq(dlg4.report_bug(), null, "report_bug w/o reporter returns null")
 
 show "-- Phase 75: branding --"
 
-assert_eq(BRAND_NAME, "ClarityOS", "brand name")
+assert_eq(BRAND_NAME, "KyanOS", "brand name")
 assert(contains(BRAND_TAGLINE, "Simple"), "tagline includes 'Simple'")
-assert_eq(BRAND_DOMAIN, "clarityos.dev", "domain")
+assert_eq(BRAND_DOMAIN, "monkdim.github.io/Kyanos", "domain")
 
 -- Typography + spacing + radius scales
 assert_eq(typography("display"), 48, "display = 48")
@@ -328,8 +328,8 @@ class FakeBuilder {
         return {
             "ok": true,
             "artefacts": [
-                {"name": "claritos-1.0.0.iso", "path": "/tmp/claritos.iso", "size": 240000000, "size_mb": 240, "url": "https://example/iso"},
-                {"name": "claritos-1.0.0.tar.gz", "path": "/tmp/claritos.tgz", "size": 30000000, "size_mb": 30, "url": "https://example/tgz"}
+                {"name": "kyanos-1.0.0.iso", "path": "/tmp/kyanos.iso", "size": 240000000, "size_mb": 240, "url": "https://example/iso"},
+                {"name": "kyanos-1.0.0.tar.gz", "path": "/tmp/kyanos.tgz", "size": 30000000, "size_mb": 30, "url": "https://example/tgz"}
             ]
         }
     }
@@ -364,7 +364,7 @@ assert(contains(fake_git.pushed_tags, "v1.0.0"), "tag pushed")
 assert_eq(fake_builder.calls, 1, "builder invoked once")
 assert_eq(len(fake_publisher.published), 1, "publisher invoked once")
 assert(contains(rel.changelog, "Phase 75"), "changelog includes Phase 75")
-assert(contains(rel.release_notes, "claritos-1.0.0.iso"), "notes include ISO")
+assert(contains(rel.release_notes, "kyanos-1.0.0.iso"), "notes include ISO")
 assert(contains(rel.release_notes, "abc123def456"), "notes include SHA256")
 let summary = rel.summary()
 assert(summary["ok"], "summary ok")

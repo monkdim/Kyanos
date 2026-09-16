@@ -6,7 +6,7 @@
 -- virtio-keyboard / virtio-tablet for input, serial over stdio for
 -- the kernel boot log.
 --
---     let r = qemu_macos({"iso": "claritos.iso", "ram_mb": 1024})
+--     let r = qemu_macos({"iso": "kyanos.iso", "ram_mb": 1024})
 --     r.run()                       -- launches QEMU; serial → terminal
 --     r.shell_command()             -- inspect the argv before running
 
@@ -63,7 +63,7 @@ class QemuMacosLauncher {
             push(extra, "-accel"); push(extra, "hvf")
         }
         -- virtio devices for fb + input. virtio-gpu paints the
-        -- ClarityOS compositor; virtio-tablet gives an absolute-
+        -- KyanOS compositor; virtio-tablet gives an absolute-
         -- positioned cursor that doesn't capture.
         push(extra, "-device"); push(extra, "virtio-gpu-pci")
         push(extra, "-device"); push(extra, "virtio-keyboard-pci")

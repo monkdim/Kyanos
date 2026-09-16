@@ -1,4 +1,4 @@
-/* ClarityOS kernel link script.
+/* KyanOS kernel link script.
  *
  * The kernel proper is linked at the higher half (KERNEL_VMA =
  * 0xFFFF_FFFF_8000_0000) but physically loaded low (LMA = 1 MiB). A

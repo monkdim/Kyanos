@@ -40,7 +40,7 @@ GLYPH_W, GLYPH_H = 8, 8
 CELL_W, CELL_H = GLYPH_W * SCALE, GLYPH_H * SCALE
 COLS, ROWS = WIDTH // CELL_W, HEIGHT // CELL_H
 
-BOOT_MARKER = b"ClarityOS aarch64: EL1 boot ok"
+BOOT_MARKER = b"KyanOS aarch64: EL1 boot ok"
 
 # The first thing printed after the console starts mirroring to the screen.
 # Everything from here on is on the display as well as the serial line, so it

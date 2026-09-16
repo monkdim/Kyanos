@@ -1,6 +1,6 @@
 # Vendored third-party sources
 
-The freestanding ClarityOS runtime needs a JavaScript engine that
+The freestanding KyanOS runtime needs a JavaScript engine that
 runs without a host libc. We vendor [QuickJS-NG][1] for that role.
 
 ## Fetching

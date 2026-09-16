@@ -5,7 +5,7 @@ This is the practical reference: how to install, write your first program, learn
 ## Table of Contents
 
 - [Install Clarity](#install-clarity)
-- [Boot KyanOS](#boot-clarityos)
+- [Boot KyanOS](#boot-kyanos)
 - [Your first Clarity program](#your-first-clarity-program)
 - [The CLI](#the-cli)
 - [Language tour](#language-tour)

@@ -1,6 +1,6 @@
 -- App scaffolder — `clarity app new` (Phase 64 task 4).
 --
--- Generates a minimal ClarityOS app project on disk:
+-- Generates a minimal KyanOS app project on disk:
 --
 --     clarity-app.toml     manifest with sensible defaults
 --     main.clarity         entry point matching template

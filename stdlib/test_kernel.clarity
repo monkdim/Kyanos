@@ -225,7 +225,8 @@ show "-- Kernel: tmpfs directories --"
 v.mkdir("/etc", 0x1ED)
 v.mkdir("/tmp", 0x1FF)
 let fd_in_etc = v.open("/etc/hostname", O_CREAT | O_WRONLY, 0x1A4)
-v.write(fd_in_etc, "claritos")
+let HOSTNAME = "kyanos"
+v.write(fd_in_etc, HOSTNAME)
 v.close(fd_in_etc)
 
 let st_etc = v.stat("/etc")
@@ -246,7 +247,9 @@ assert_eq(etc_listing[0]["name"], "hostname", "/etc/hostname")
 v.chdir("/etc")
 assert_eq(v.getcwd(), "/etc", "cwd updated")
 let st_rel = v.stat("hostname")
-assert_eq(st_rel["size"], 8, "relative stat resolved against cwd")
+-- The length comes from the string that was written, not a number typed
+-- next to it: the two drifted apart the moment the hostname changed.
+assert_eq(st_rel["size"], len(HOSTNAME), "relative stat resolved against cwd")
 v.chdir("/")
 
 -- ── VFS: error paths ────────────────────────────────
@@ -373,13 +376,13 @@ clear_mocks()
 
 -- Bare-metal backend reports ENOSYS for now
 _reset_host_state()
-set_backend("claritos")
+set_backend("kyanos")
 mut not_wired = false
 try { sys_getpid() } catch e {
     not_wired = true
-    assert(contains(str(e), "not yet wired"), "claritos backend yet to wire")
+    assert(contains(str(e), "not yet wired"), "kyanos backend yet to wire")
 }
-assert(not_wired, "claritos backend throws")
+assert(not_wired, "kyanos backend throws")
 set_backend("host")
 _reset_host_state()
 

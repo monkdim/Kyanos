@@ -1,4 +1,4 @@
-# Running ClarityOS
+# Running KyanOS
 
 Two architectures, two machines. Both boot under QEMU; neither has run on
 real hardware yet.
@@ -199,7 +199,7 @@ clarity-sh: unknown command: frobnicate
 $ exit 3
 clarity-sh: exit
   [ok] shell: ran at EL0, read its own input, wrote 596 bytes and exited 3
-ClarityOS aarch64: EL1 boot ok
+KyanOS aarch64: EL1 boot ok
 ```
 
 Two things in there are worth pointing at. `[ok] user read: a bad buffer was
@@ -467,7 +467,7 @@ cp zig-out/bin/clarity-kernel isodir/boot/clarity-kernel
 cat > isodir/boot/grub/grub.cfg <<'CFG'
 set timeout=0
 set default=0
-menuentry "ClarityOS" {
+menuentry "KyanOS" {
     multiboot2 /boot/clarity-kernel
     boot
 }

@@ -42,7 +42,7 @@ static size_t align_up(size_t n) { return (n + (ALIGN - 1)) & ~(ALIGN - 1); }
  * syscall, and one per small allocation would dominate the cost of allocating
  * at all. 64 KiB is large enough that a program doing thousands of small
  * allocations makes a handful of calls, and small enough not to look like a
- * leak to a kernel that maps every page eagerly — which ClarityOS's brk does.
+ * leak to a kernel that maps every page eagerly — which KyanOS's brk does.
  */
 #define CHUNK (64UL * 1024UL)
 

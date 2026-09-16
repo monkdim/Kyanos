@@ -1,7 +1,7 @@
 name: OS boot smoke test
 
-# Builds the ClarityOS kernel and boots it headlessly under QEMU, asserting
-# the kernel reaches its "ClarityOS ready." serial marker.
+# Builds the KyanOS kernel and boots it headlessly under QEMU, asserting
+# the kernel reaches its "KyanOS ready." serial marker.
 #
 # The image is the kernel alone: both kernels carry their userspace (a Zig
 # init and a compiled Clarity program) inside the image, so a GRUB rescue
@@ -65,7 +65,7 @@ jobs:
           cat > isodir/boot/grub/grub.cfg <<'CFG'
           set timeout=0
           set default=0
-          menuentry "ClarityOS" {
+          menuentry "KyanOS" {
               multiboot2 /boot/clarity-kernel
               boot
           }
@@ -80,7 +80,7 @@ jobs:
           # attempt to succeed rather than just one.
           #
           # Three markers, each proving a further step:
-          #   "ClarityOS ready."         -- the kernel finished initialising
+          #   "KyanOS ready."         -- the kernel finished initialising
           #   "[ok] context switch"      -- two kernel threads ran, and
           #   "[A] round 1"                 thread A resumed *inside* the
           #                                 yield it called rather than at its
@@ -160,7 +160,7 @@ jobs:
           #   "float 3.14159292..."      -- printf %g and strtod agreeing in
           #                                 ring 3, on SSE the kernel had to
           #                                 enable, over a heap brk had to grow
-          #   "ClarityOS: userspace ..."  -- and the kernel outlived both
+          #   "KyanOS: userspace ..."  -- and the kernel outlived both
           # -no-reboot: halt instead of looping if the kernel faults.
           fails=0
           for attempt in 1 2 3; do
@@ -175,7 +175,7 @@ jobs:
               > "serial-$attempt.log" 2>&1 || true
             cat "serial-$attempt.log"
             missing=""
-            grep -q "ClarityOS ready." "serial-$attempt.log" || missing="$missing ready"
+            grep -q "KyanOS ready." "serial-$attempt.log" || missing="$missing ready"
             grep -q "\[ok\] context switch" "serial-$attempt.log" || missing="$missing ctxswitch"
             grep -q "\[A\] round 1" "serial-$attempt.log" || missing="$missing thread-resumed"
             # Both letters, because both threads are the same function told
@@ -197,7 +197,7 @@ jobs:
             grep -q "demo: wrote" "serial-$attempt.log" || missing="$missing second-process"
             grep -q "clarity-demo: all checks passed" "serial-$attempt.log" || missing="$missing clarity-program"
             grep -q "float 3.1415929203539825 1.4142135623730951 6.25" "serial-$attempt.log" || missing="$missing clarity-floats"
-            grep -q "ClarityOS: userspace complete." "serial-$attempt.log" || missing="$missing kernel-outlived"
+            grep -q "KyanOS: userspace complete." "serial-$attempt.log" || missing="$missing kernel-outlived"
             if [ -z "$missing" ]; then
               echo "--> attempt $attempt: PASS"
             else
@@ -236,7 +236,7 @@ jobs:
           grep -q "\[ok\] smep+smap" serial-smap.log || missing="$missing smep-smap-enabled"
           grep -q "\[ok\] user pointers" serial-smap.log || missing="$missing user-pointers"
           grep -q "clarity-demo: all checks passed" serial-smap.log || missing="$missing clarity-program"
-          grep -q "ClarityOS: userspace complete." serial-smap.log || missing="$missing kernel-outlived"
+          grep -q "KyanOS: userspace complete." serial-smap.log || missing="$missing kernel-outlived"
           if [ -n "$missing" ]; then
             echo "FAIL: with SMEP and SMAP enforced, missing:$missing"
             exit 1
@@ -311,7 +311,7 @@ jobs:
 
       - name: Boot the aarch64 kernel under QEMU and assert the marker
         run: |
-          echo "Booting ClarityOS aarch64 (QEMU virt, TCG)..."
+          echo "Booting KyanOS aarch64 (QEMU virt, TCG)..."
           timeout 120 qemu-system-aarch64 \
             -M virt \
             -cpu cortex-a72 \
@@ -451,7 +451,7 @@ jobs:
              && grep -q "\[--\] shell: no keyboard\|\[ok\] shell: ran at EL0" serial-arm.log \
              && grep -q "\[ok\] pmm:" serial-arm.log \
              && grep -q "\[ok\] framebuffer:" serial-arm.log \
-             && grep -q "ClarityOS aarch64: EL1 boot ok" serial-arm.log \
+             && grep -q "KyanOS aarch64: EL1 boot ok" serial-arm.log \
              && grep -q "\[ok\] aarch64 timer: interrupts delivered" serial-arm.log; then
             echo "PASS: aarch64 reached EL1 in the high half, read its device tree, allocated a page, and drew a screen"
           else
@@ -502,7 +502,7 @@ jobs:
              && grep -q "\[ok\] EL0: a program wrote" serial-arm-pan.log \
              && grep -q "\[ok\] preemption: B ran" serial-arm-pan.log \
              && grep -q "\[ok\] init: a compiled, linked ELF ran at EL0 twice" serial-arm-pan.log \
-             && grep -q "ClarityOS aarch64: EL1 boot ok" serial-arm-pan.log \
+             && grep -q "KyanOS aarch64: EL1 boot ok" serial-arm-pan.log \
              && ! grep -q "AARCH64 EXCEPTION" serial-arm-pan.log; then
             echo "PASS: the kernel never touched a user address directly"
           else
@@ -551,7 +551,7 @@ jobs:
              && grep -q "\[ok\] EL0: a program wrote" serial-arm-4g.log \
              && grep -q "\[ok\] preemption: B ran" serial-arm-4g.log \
              && grep -q "\[ok\] init: a compiled, linked ELF ran at EL0 twice" serial-arm-4g.log \
-             && grep -q "ClarityOS aarch64: EL1 boot ok" serial-arm-4g.log; then
+             && grep -q "KyanOS aarch64: EL1 boot ok" serial-arm-4g.log; then
             echo "PASS: the direct map was extended over all 4 GiB and the allocator manages it"
           else
             echo "FAIL: the kernel did not map all of a 4 GiB machine"

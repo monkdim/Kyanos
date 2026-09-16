@@ -12,17 +12,17 @@ every pull request; anything not gated is called out as unverified.
 
 - **The x86_64 kernel boots, verified on every PR.** GRUB loads the
   multiboot2 kernel, the boot stub switches to long mode, and the kernel runs
-  its full init sequence to the `ClarityOS ready.` marker on serial:
+  its full init sequence to the `KyanOS ready.` marker on serial:
 
   ```
-  ClarityOS micro-kernel starting...
+  KyanOS micro-kernel starting...
     [ok] GDT + IDT
     [ok] memory: pmm + vmm + heap
     [ok] scheduler
     [ok] syscalls
     [ok] vfs + rootfs
     [ok] drivers
-  ClarityOS ready.
+  KyanOS ready.
   ```
 
   The `OS boot (linux-x64, TCG)` job builds the kernel, wraps it in a GRUB
@@ -105,7 +105,7 @@ every pull request; anything not gated is called out as unverified.
 
 ## Userspace runtime — no longer the blocker
 
-A Clarity program compiled by the Clarity compiler now runs on ClarityOS in
+A Clarity program compiled by the Clarity compiler now runs on KyanOS in
 ring 3, and the boot gate requires it. What follows is how that was reached
 and what it rests on, kept because the reasoning is what makes the next
 decision easier — not because it is still outstanding.
@@ -159,7 +159,7 @@ to sit on: the kernel grows a process heap through `brk`.
 assembly — is that library, and a compiled Clarity program using classes,
 closures, exceptions, maps, sorting, strings and floating point links against
 it and runs with nothing underneath it but `write`, `brk` and `exit`. The
-syscall numbers are in one header, so the same objects build for ClarityOS or
+syscall numbers are in one header, so the same objects build for KyanOS or
 for a Linux host, and `stdlib/test_libc.clarity` builds each of its test
 programs twice — once against the host's C library, once against this one —
 and requires the outputs to match.
@@ -324,7 +324,7 @@ Both OS gates are live in `.github/workflows/os-boot.yml`:
 
 - **`OS boot (linux-x64, TCG)`** — `zig build` the kernel, `grub-mkrescue` a
   kernel-only rescue ISO, boot it under `qemu-system-x86_64` three times,
-  require `ClarityOS ready.` on all three.
+  require `KyanOS ready.` on all three.
 - **`OS boot (aarch64, TCG)`** — `zig build aarch64`, then boot under
   `qemu-system-aarch64 -M virt` **three times**: 512 MiB, 4 GiB, and on a
   PAN-capable `-cpu max`. The first requires all 28 markers; the other two
@@ -404,7 +404,7 @@ The toolkit ships the widgets needed to build the eleven default apps. Filling o
   via `openpty` + `posix_spawn` through FFI (`posix_spawn` rather than
   `forkpty` so the Bun runtime is never left forked), and the Terminal app
   runs a live shell on it where `pty_supported()` is true. What remains is a
-  PTY inside *ClarityOS*, which is gated on the freestanding runtime existing
+  PTY inside *KyanOS*, which is gated on the freestanding runtime existing
   at all. Hosts without a PTY fall back to the built-in echo shell.
 - **Hot reload.** The app framework supports module reload at the protocol
   level; the runtime hook that actually swaps modules in a live process is the
@@ -426,7 +426,7 @@ The toolkit ships the widgets needed to build the eleven default apps. Filling o
 - **Installer.** A Clarity-driven installer that writes the ISO to a USB stick with progress, partitioning, and an EFI fallback. The CLI surface (`clarity os install`) is reserved; the implementation isn't.
 - **Update channel.** Signed deltas via the package registry transport. No design yet.
 - **Crash report upload.** The crash dialog collects journal + watchdog state into a bug report; nothing receives it. A minimal sink is part of the same work as the registry's HTTP surface in [GAPS.md](GAPS.md).
-- **Branding hygiene.** `stdlib/test_polish.clarity` still asserts the literal `"clarityos.dev"`; the website generator (`stdlib/website_gen.clarity`) bakes that domain into `iso_url`, `og:image`, and `og:url`. Nothing breaks at runtime — the site isn't deployed — but a future domain swap touches all three files in lockstep.
+- **A real domain.** The brand name and domain live in `stdlib/branding.clarity`, and the website generator derives `iso_url`, `og:image` and `og:url` from them, so the name is one line and the domain is another. The domain is currently the GitHub Pages URL REBRAND.md names as the interim; buying the real one is the remaining step, and `BRAND_DOMAIN` is where it lands.
 
 ---
 

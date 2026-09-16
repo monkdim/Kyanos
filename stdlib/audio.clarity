@@ -2,7 +2,7 @@
 --
 -- Real ALSA / PulseAudio / PipeWire FFI bindings are their own
 -- project (a PCM stream API with mixer, capture, and per-app volume
--- is a non-trivial amount of code). For ClarityOS's first cut we
+-- is a non-trivial amount of code). For KyanOS's first cut we
 -- shell out to the system's stock player so apps can at least make
 -- a notification chime or play a UI sound.
 --

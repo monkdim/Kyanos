@@ -1,6 +1,6 @@
 -- Performance profiler — Phase 75 task 1.
 --
--- Measures the things ClarityOS 1.0 promises:
+-- Measures the things KyanOS 1.0 promises:
 --
 --   Boot time          target < 5 s     (kernel handoff → desktop ready)
 --   App launch         target < 250 ms  (click → first paint)

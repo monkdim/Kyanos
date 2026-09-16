@@ -62,7 +62,7 @@ class SmtpClient {
     fn init(transport, opts) {
         let o = opts ?? {}
         this.transport = transport
-        this.helo_domain = if has(o, "helo") { o["helo"] } else { "claritos.local" }
+        this.helo_domain = if has(o, "helo") { o["helo"] } else { "kyanos.local" }
         this.username = if has(o, "username") { o["username"] } else { null }
         this.password = if has(o, "password") { o["password"] } else { null }
         this.use_starttls = if has(o, "starttls") { o["starttls"] } else { true }

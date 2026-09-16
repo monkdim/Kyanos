@@ -7,7 +7,7 @@
 //! it decides how many segments there are, what permissions each gets, and
 //! how much of the last page is file-backed rather than zero-filled.
 //!
-//! Freestanding, with no libc, because ClarityOS has none yet. The syscalls
+//! Freestanding, with no libc, because KyanOS has none yet. The syscalls
 //! are written out directly, which doubles as the smallest possible statement
 //! of the ABI a libc will eventually sit on.
 

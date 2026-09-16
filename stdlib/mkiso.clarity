@@ -1,4 +1,4 @@
--- mkiso — assemble a bootable ClarityOS ISO image (Phase 67 task 1).
+-- mkiso — assemble a bootable KyanOS ISO image (Phase 67 task 1).
 --
 -- Builds an ISO tree under a staging directory, generates BIOS +
 -- UEFI bootloader configurations, and (if the host has xorriso /
@@ -26,14 +26,14 @@
 -- toolchain can still be used to inspect what would have been
 -- written, which is what the test suite does.
 --
---     let iso = IsoBuilder({"output": "claritos-1.0.iso", "label": "ClarityOS"})
+--     let iso = IsoBuilder({"output": "claritos-1.0.iso", "label": "KyanOS"})
 --     iso.add_kernel("/path/to/clarity-kernel")
 --     iso.add_runtime("/path/to/clarity-init")
 --     iso.add_app("calc", "/path/to/calc/")
 --     let plan = iso.plan()             -- pure-state: list of file ops
 --     iso.build()                       -- side-effecting: actually packs
 
-let DEFAULT_LABEL = "ClarityOS"
+let DEFAULT_LABEL = "KyanOS"
 let DEFAULT_OUTPUT = "claritos.iso"
 let GRUB_DEFAULT_TIMEOUT = 5
 
@@ -113,21 +113,21 @@ class IsoBuilder {
 
     fn _grub_cfg(mode) {
         mut lines = []
-        push(lines, "# ClarityOS GRUB config (" + mode + ")")
+        push(lines, "# KyanOS GRUB config (" + mode + ")")
         push(lines, "set timeout=" + str(this.timeout))
         push(lines, "set default=0")
         push(lines, "")
-        push(lines, "menuentry 'ClarityOS' {")
+        push(lines, "menuentry 'KyanOS' {")
         push(lines, "    multiboot2 /boot/clarity-kernel" + (if len(this.cmdline) > 0 { " " + this.cmdline } else { "" }))
         push(lines, "    boot")
         push(lines, "}")
         push(lines, "")
-        push(lines, "menuentry 'ClarityOS (rescue shell)' {")
+        push(lines, "menuentry 'KyanOS (rescue shell)' {")
         push(lines, "    multiboot2 /boot/clarity-kernel rescue")
         push(lines, "    boot")
         push(lines, "}")
         push(lines, "")
-        push(lines, "menuentry 'ClarityOS installer' {")
+        push(lines, "menuentry 'KyanOS installer' {")
         push(lines, "    multiboot2 /boot/clarity-kernel boot=installer")
         push(lines, "    boot")
         push(lines, "}")

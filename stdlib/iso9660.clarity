@@ -60,9 +60,9 @@ fn iso_root() { return IsoEntry("", null, true) }
 class Iso9660Builder {
     fn init(opts) {
         let o = opts ?? {}
-        this.volume_id = if has(o, "volume_id") { o["volume_id"] } else { "CLARITYOS" }
-        this.system_id = if has(o, "system_id") { o["system_id"] } else { "CLARITYOS" }
-        this.app_id    = if has(o, "app_id")    { o["app_id"]    } else { "CLARITYOS-INSTALLER" }
+        this.volume_id = if has(o, "volume_id") { o["volume_id"] } else { "KYANOS" }
+        this.system_id = if has(o, "system_id") { o["system_id"] } else { "KYANOS" }
+        this.app_id    = if has(o, "app_id")    { o["app_id"]    } else { "KYANOS-INSTALLER" }
         this.publisher = if has(o, "publisher") { o["publisher"] } else { "CLARITY-LANG.ORG" }
         this.boot_image = null               -- bytes for the BIOS boot stub
         this.root = iso_root()

@@ -1,4 +1,4 @@
-# ClarityOS console font — 8x8, ASCII 32..126.
+# KyanOS console font — 8x8, ASCII 32..126.
 #
 # Authored here rather than converted from an existing font, so the kernel
 # carries no third-party font licence. Each glyph is eight rows of eight

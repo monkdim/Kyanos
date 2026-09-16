@@ -16,7 +16,7 @@ const main = @import("../main.zig");
 
 pub fn efi_main(handle: uefi.Handle, system_table: *uefi.tables.SystemTable) uefi.Status {
     const con_out = system_table.con_out.?;
-    _ = con_out.outputString(toUcs2("ClarityOS UEFI loader\r\n"));
+    _ = con_out.outputString(toUcs2("KyanOS UEFI loader\r\n"));
 
     const bs = system_table.boot_services.?;
 

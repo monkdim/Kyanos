@@ -2,7 +2,7 @@
 --
 -- First thing the user sees after the kernel hands off to
 -- userspace's clarity-init. Paints a dark canvas + a centred
--- ClarityOS wordmark + an animated progress arc that ticks from
+-- KyanOS wordmark + an animated progress arc that ticks from
 -- 0% to 100% as init's mount + service-spawn phases land.
 --
 -- No noisy boot log on screen; the kernel's serial output gives
@@ -21,7 +21,7 @@ from "wallpapers.clarity" import paint_aurora_night
 from "theme_aurora.clarity" import AURORA_INK, AURORA_TEAL, AURORA_VIOLET, AURORA_MAGENTA, aurora_gradient
 from "animations.clarity" import animation, EASE_OUT_CUBIC, EASE_IN_OUT_CUBIC, EASE_IN_QUAD
 
-let LOGO_TEXT = "ClarityOS"
+let LOGO_TEXT = "KyanOS"
 let TAGLINE = "Simple code. Real power."
 
 class BootSplash {

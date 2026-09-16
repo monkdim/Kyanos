@@ -1,4 +1,4 @@
-// ClarityOS aarch64 boot stub — QEMU 'virt' / Apple-Silicon-class AArch64.
+// KyanOS aarch64 boot stub — QEMU 'virt' / Apple-Silicon-class AArch64.
 //
 // The kernel is linked for high virtual addresses (0xFFFF_FF80_0000_0000 +
 // physical) and entered at physical ones, so this stub runs in the gap

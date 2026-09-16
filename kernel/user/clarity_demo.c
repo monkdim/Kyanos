@@ -3,7 +3,7 @@
 #define _GNU_SOURCE 1
 #endif
 /* CLARITY_FREESTANDING is defined by `clarity cc --freestanding`, for targets
-   with no operating system underneath — ClarityOS itself, to begin with. It
+   with no operating system underneath — KyanOS itself, to begin with. It
    drops the parts of this runtime that are POSIX rather than C: files,
    /proc-backed memory access, process control, dynamic loading and sockets.
    What is left needs a C library of about fifteen functions, which is a

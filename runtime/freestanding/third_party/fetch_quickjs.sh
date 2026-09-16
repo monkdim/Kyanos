@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Fetch QuickJS sources for the freestanding ClarityOS runtime.
+# Fetch QuickJS sources for the freestanding KyanOS runtime.
 #
 # We pin to the upstream Bellard QuickJS-NG fork because it ships a
 # clean separation between the JS engine + libc shims, which makes

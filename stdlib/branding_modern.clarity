@@ -15,9 +15,9 @@ from "theme_meadow.clarity" import brand_gradient, _lerp_color
 
 -- ── Brand identity ─────────────────────────────
 
-let BRAND_NAME = "ClarityOS"
+let BRAND_NAME = "KyanOS"
 let BRAND_TAGLINE = "Simple code. Real power."
-let BRAND_DOMAIN = "clarityos.dev"
+let BRAND_DOMAIN = "monkdim.github.io/Kyanos"
 
 -- ── Drop + Leaf logo (modern, flat, no skeuo) ───
 

@@ -1,10 +1,10 @@
--- run_vm — QEMU launcher for the ClarityOS ISO (Phase 67 task 4).
+-- run_vm — QEMU launcher for the KyanOS ISO (Phase 67 task 4).
 --
 -- Builds a QEMU command line from a small set of options and either
 -- prints it (so callers can review/script it) or actually launches
 -- it. The CI integration lives upstream of this — pipelines call
 -- run_vm.clarity with --headless --serial-stdio --boot-test, capture
--- the serial output, grep for the "ClarityOS ready." line.
+-- the serial output, grep for the "KyanOS ready." line.
 --
 --     let vm = qemu_runner({
 --         "iso": "claritos.iso",
@@ -164,7 +164,7 @@ class QemuRunner {
     fn _boot_test(cmdline) {
         -- Run with a timeout, capture stdout, return whether the
         -- marker line ever appeared. Used by CI for "did the kernel
-        -- print 'ClarityOS ready.'" style smoke tests.
+        -- print 'KyanOS ready.'" style smoke tests.
         let timed = "timeout " + str(this.timeout_seconds) + "s " + cmdline
         let r = exec_full(timed + " 2>&1")
         let saw_marker = contains(r.stdout, this.boot_test_marker)

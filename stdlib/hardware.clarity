@@ -1,6 +1,6 @@
 -- Hardware compatibility database (Phase 67 task 5).
 --
--- Static catalogue of hardware ClarityOS knows how to drive, plus
+-- Static catalogue of hardware KyanOS knows how to drive, plus
 -- a lookup helper that takes a {vendor, device, class} PCI tuple
 -- and returns the driver record (or null).
 --
@@ -145,7 +145,7 @@ class HardwareDb {
 
     fn report() {
         mut lines = []
-        push(lines, "# ClarityOS hardware compatibility")
+        push(lines, "# KyanOS hardware compatibility")
         push(lines, "")
         let kinds = ["cpu", "storage", "network", "display", "input", "audio"]
         for kind in kinds {

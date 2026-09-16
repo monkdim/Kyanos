@@ -1,6 +1,6 @@
 -- Browser app — Phase 68 task 1.
 --
--- A purpose-built ClarityOS browser. Fetches HTTP/HTTPS via the
+-- A purpose-built KyanOS browser. Fetches HTTP/HTTPS via the
 -- existing net.clarity client, parses HTML with html_parser.clarity,
 -- lays out with css_layout.clarity, and tracks the things every
 -- browser needs: tabs, history (per-tab, with back/forward), and
@@ -20,7 +20,7 @@ from "html_parser.clarity" import parse_html
 from "css_layout.clarity" import layout_document
 
 let DEFAULT_HOMEPAGE = "about:blank"
-let DEFAULT_USER_AGENT = "Clarity/1.0 (ClarityOS)"
+let DEFAULT_USER_AGENT = "Clarity/1.0 (KyanOS)"
 let DEFAULT_SEARCH_PATTERN = "https://duckduckgo.com/?q={q}"
 
 class Tab {

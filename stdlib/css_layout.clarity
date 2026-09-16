@@ -1,4 +1,4 @@
--- CSS layout subset for the ClarityOS browser (Phase 68 task 1).
+-- CSS layout subset for the KyanOS browser (Phase 68 task 1).
 --
 -- Block-and-inline flow model: every node gets a Box with a
 -- (x, y, width, height) rect. Block boxes stack vertically and fill

@@ -1,6 +1,6 @@
 -- Website generator — Phase 75 task 4.
 --
--- Static site for clarityos.dev. Single Clarity module that emits
+-- Static site for monkdim.github.io/Kyanos. Single Clarity module that emits
 -- HTML + CSS into a target directory; no template engine, no node
 -- toolchain, just Clarity strings with a tiny layout helper.
 --
@@ -24,7 +24,7 @@ class Website {
         let o = opts ?? {}
         this.output_dir = if has(o, "output") { o["output"] } else { DEFAULT_OUTPUT_DIR }
         this.version = if has(o, "version") { o["version"] } else { "1.0.0" }
-        this.iso_url = if has(o, "iso_url") { o["iso_url"] } else { "https://" + BRAND_DOMAIN + "/download/claritos-1.0.0.iso" }
+        this.iso_url = if has(o, "iso_url") { o["iso_url"] } else { "https://" + BRAND_DOMAIN + "/download/kyanos-1.0.0.iso" }
         this.iso_sha256 = if has(o, "iso_sha256") { o["iso_sha256"] } else { "0000000000000000000000000000000000000000000000000000000000000000" }
         this.iso_size_mb = if has(o, "iso_size_mb") { o["iso_size_mb"] } else { 240 }
         this.github_url = if has(o, "github_url") { o["github_url"] } else { "https://github.com/monkdim/Clarity" }
@@ -74,20 +74,20 @@ class Website {
     fn render_download() {
         let body = _h(this, "Download",
             "<section class='hero'>" +
-            "<h1>Get ClarityOS " + this.version + "</h1>" +
+            "<h1>Get KyanOS " + this.version + "</h1>" +
             "<p class='tagline'>Boot it in QEMU on your Mac. Or write it to a USB stick and dual-boot.</p>" +
             "</section>" +
             "<section class='download-card'>" +
-            "<h2>ClarityOS " + this.version + "</h2>" +
+            "<h2>KyanOS " + this.version + "</h2>" +
             "<p>" + str(this.iso_size_mb) + " MB ISO image · x86_64 · BIOS + UEFI</p>" +
             "<a class='button' href='" + this.iso_url + "'>Download ISO</a>" +
             "<details><summary>SHA256 + signature</summary><code>" + this.iso_sha256 + "</code></details>" +
             "</section>" +
             "<section class='install-steps'>" +
             "<h2>Try it under QEMU</h2>" +
-            "<pre><code>brew install qemu\nqemu-system-x86_64 -m 1024 -cdrom claritos-" + this.version + ".iso</code></pre>" +
+            "<pre><code>brew install qemu\nqemu-system-x86_64 -m 1024 -cdrom kyanos-" + this.version + ".iso</code></pre>" +
             "<h2>Write to a USB stick (macOS)</h2>" +
-            "<pre><code>diskutil unmountDisk /dev/diskN\nsudo dd if=claritos-" + this.version + ".iso of=/dev/rdiskN bs=4m</code></pre>" +
+            "<pre><code>diskutil unmountDisk /dev/diskN\nsudo dd if=kyanos-" + this.version + ".iso of=/dev/rdiskN bs=4m</code></pre>" +
             "</section>")
         return body
     }
@@ -95,7 +95,7 @@ class Website {
     fn render_docs_index() {
         let body = _h(this, "Documentation",
             "<section class='docs'>" +
-            "<h1>Clarity + ClarityOS docs</h1>" +
+            "<h1>Clarity + KyanOS docs</h1>" +
             "<ul class='doc-grid'>" +
             "<li><a href='/docs/install.html'>Install</a></li>" +
             "<li><a href='/docs/cli.html'>CLI reference</a></li>" +

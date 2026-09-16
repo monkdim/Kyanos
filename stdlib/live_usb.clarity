@@ -17,8 +17,8 @@
 -- squashfs and (optionally) overlay the persistence directory.
 --
 --     let live = LiveUsbBuilder({
---         "output": "claritos-live.iso",
---         "label":  "ClarityOS Live",
+--         "output": "kyanos-live.iso",
+--         "label":  "KyanOS Live",
 --         "persistence": true,
 --         "persistence_size_mb": 512
 --     })
@@ -53,7 +53,7 @@ class LiveUsbBuilder {
 
     fn manifest() {
         mut m = {
-            "name": "ClarityOS Live",
+            "name": "KyanOS Live",
             "version": "0.1.0",
             "kind": "live",
             "persistence": this.persistence,
@@ -136,7 +136,7 @@ class LiveUsbBuilder {
 }
 
 fn _persistence_readme(size_mb) {
-    return "ClarityOS Live persistence overlay\n\n" +
+    return "KyanOS Live persistence overlay\n\n" +
            "This directory is reserved for an overlayfs on top of the\n" +
            "read-only squashfs root. The init script will mount a writable\n" +
            "image of " + str(size_mb) + " MiB here on boot.\n\n" +

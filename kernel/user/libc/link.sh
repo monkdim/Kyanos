@@ -16,7 +16,7 @@
 #   -I<resource>/include   stddef.h and stdarg.h, which belong to the compiler
 #
 # CLARITY_LIBC_LINUX picks Linux's syscall numbers so the result runs on a
-# Linux host. Without it the numbers are ClarityOS's — see src/sys.h.
+# Linux host. Without it the numbers are KyanOS's — see src/sys.h.
 set -e
 
 if [ $# -lt 2 ]; then
