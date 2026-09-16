@@ -148,6 +148,24 @@ value. `show f` for a lambda is `<fn <anonymous>>` interpreted and
 `<fn anonymous>` in the VM and `<closure>` natively. Behaviour agrees; the
 name each engine prints does not.
 
+### A local that shadowed a global was ignored in native builds
+Fixed. Every branch that resolved a *called* name in the C backend looked at
+the module's functions, classes and builtins, and never at what was in scope:
+
+```clarity
+fn helper(x) { return x * 2 }
+fn outer(helper) { return helper(7) }
+show outer(fn(v) { return v + 300 })   -- interpreter 307, clarity cc 14
+```
+
+The same for a `let`, a loop variable, a catch binding and a destructured
+name, and for builtins too — `fn(len) { return len(5) }` called the builtin.
+And `local_names` was only ever populated for a plain function, so even the
+branches that did consult it were wrong inside a class method or a closure.
+A name in scope is what a call means now, whatever else the name refers to at
+module level. Calling something that is not a function also raises the
+interpreter's error rather than answering null.
+
 ### Mid-run garbage collection kills a program on darwin-arm64
 `CLARITY_GC=1` turns on mid-run collection in a compiled binary. On
 darwin-arm64 a program that holds **two** live allocations across a collection

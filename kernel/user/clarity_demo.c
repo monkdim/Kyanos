@@ -704,6 +704,13 @@ static Value cl_closure_new(ClFn fn, Value* cap, int ncap){
 }
 static Value cl_call(Value f, Value* args, long n){
   if(f.t==T_CLOSURE){ Closure* c=(Closure*)f.o; return c->fn(args, c->cap, n); }
+  /* Calling something that is not a function is an error, as in both other
+     engines; it answered null here, so the mistake travelled. */
+  {
+    char buf[160];
+    snprintf(buf, sizeof buf, "TypeError: '%s' is not callable", cl_type_of(f).s);
+    cl_throw(cl_str(cl_strdup(buf)));
+  }
   return cl_null();
 }
 

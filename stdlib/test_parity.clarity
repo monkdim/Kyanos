@@ -251,6 +251,10 @@ same("spread into a map", "fn t(label, f) { try { show label + \": \" + str(f())
 same("destructuring a list", "let [a, b] = [1, 2]\nshow a\nshow b\nlet [f, ...r] = [1, 2, 3, 4]\nshow f\nshow r")
 same("assigning two names at once", "mut x = 1\nmut y = 2\nx, y = y, x\nshow x\nshow y")
 
+-- A name in scope is what a call means, whatever else the name refers to at
+-- module level. Both engines agree; the native compiler did not.
+same("a local shadows a global", "fn t(label, f) { try { show label + \": \" + str(f()) } catch e { show label + \": THROWS\" } }\nfn helper(x) { return x * 2 }\nclass K {\n    fn init() {}\n    fn use(helper) { return helper(3) }\n}\nt(\"function parameter\", fn() {\n    let g = fn(helper) { return helper(7) }\n    return g(fn(v) { return v + 300 })\n})\nt(\"method parameter\", fn() { return K().use(fn(v) { return v + 100 }) })\nt(\"builtin\", fn() {\n    let g = fn(len) { return len(5) }\n    return g(fn(v) { return v + 1 })\n})\nt(\"a let\", fn() {\n    let helper = fn(v) { return v + 50 }\n    return helper(1)\n})\nt(\"a loop variable\", fn() {\n    mut out = []\n    for helper in [fn(v) { return v + 9 }] { push(out, helper(1)) }\n    return out\n})\nt(\"a catch binding\", fn() {\n    mut r = 0\n    try { throw fn(v) { return v + 7 } } catch helper { r = helper(1) }\n    return r\n})\nt(\"a destructured name\", fn() {\n    let [helper] = [fn(v) { return v + 11 }]\n    return helper(1)\n})\nt(\"a class name\", fn() {\n    let K = fn(v) { return v + 13 }\n    return K(1)\n})\nt(\"not callable\", fn() {\n    let helper = 5\n    return helper(1)\n})\nt(\"the global still works\", fn() { return helper(4) })")
+
 show "-- Parity: builtin methods --"
 -- A list, a string and a number have methods, and the VM had five of the
 -- thirty as plain *properties* and threw for the rest: `xs.sort()`,

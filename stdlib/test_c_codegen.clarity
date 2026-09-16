@@ -481,6 +481,16 @@ if CC == null {
         assert_eq(len(_ex_refused), 0, "every example compiles: " + join(_ex_refused, "; "))
     }
 
+    -- ── a local shadows a global ──
+    -- Every branch that resolves a called name looked at the module's
+    -- functions, classes and builtins and never at what was in scope, so a
+    -- parameter, a `let`, a loop variable, a catch binding or a destructured
+    -- name that shadowed one was ignored and the global thing was called:
+    -- `fn outer(helper) { return helper(7) }` called the top-level helper.
+    -- And local_names was only ever set for a plain function, so even the
+    -- branches that did consult it were wrong inside a method or a closure.
+    same("shadowing", "fn t(label, f) { try { show label + \": \" + str(f()) } catch e { show label + \": THROWS\" } }\nfn helper(x) { return x * 2 }\nclass K {\n    fn init() {}\n    fn use(helper) { return helper(3) }\n}\nt(\"function parameter\", fn() {\n    let g = fn(helper) { return helper(7) }\n    return g(fn(v) { return v + 300 })\n})\nt(\"method parameter\", fn() { return K().use(fn(v) { return v + 100 }) })\nt(\"builtin\", fn() {\n    let g = fn(len) { return len(5) }\n    return g(fn(v) { return v + 1 })\n})\nt(\"a let\", fn() {\n    let helper = fn(v) { return v + 50 }\n    return helper(1)\n})\nt(\"a loop variable\", fn() {\n    mut out = []\n    for helper in [fn(v) { return v + 9 }] { push(out, helper(1)) }\n    return out\n})\nt(\"a catch binding\", fn() {\n    mut r = 0\n    try { throw fn(v) { return v + 7 } } catch helper { r = helper(1) }\n    return r\n})\nt(\"a destructured name\", fn() {\n    let [helper] = [fn(v) { return v + 11 }]\n    return helper(1)\n})\nt(\"a class name\", fn() {\n    let K = fn(v) { return v + 13 }\n    return K(1)\n})\nt(\"not callable\", fn() {\n    let helper = 5\n    return helper(1)\n})\nt(\"the global still works\", fn() { return helper(4) })")
+
     -- ── builtin methods ──
     -- Every one of these answered null in a compiled binary: cl_dispatch
     -- looked only for a user class's method and found none, so
