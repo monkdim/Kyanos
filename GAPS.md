@@ -37,6 +37,31 @@ Cleared during the mid-2026 hardening pass — recorded so the tiers below read 
 ### `clarity gen-runtime` drift
 `native/runtime.js` is documented as auto-generated from `stdlib/runtime_spec.clarity`, but regenerating produces a large diff against the committed file — and (per AUDIT.md) blindly regenerating would revert behavioral fixes that live only in `runtime.js` (the `_clarityType` branch of `type()`, FFI string/BigInt marshalling, the `_ffi_read_view` GC workaround). Until spec ↔ runtime are reconciled, builtin edits must touch both by hand. Fragile; needs a careful, test-guarded reconciliation, not a blind regen. What *is* checked now is the surface rather than the bodies: `stdlib/test_runtime_surface.clarity` requires every runtime export to be reachable from a Clarity program and the interpreter, the bytecode VM and both transpiler headers to agree on the same 158 builtins, so a builtin added to one place and forgotten in another fails the suite.
 
+### `clarity cc` evaluates arguments in the opposite order to the interpreter
+Found while adding generator codegen tests. The emitter builds a multi-operand
+construct as one C expression — `cl_call(f, (Value[]){a, b}, 2)`, a list
+literal, a map literal, a range — and C does not define the order in which a
+function call's arguments are evaluated. GCC picks right-to-left, so every
+argument with a side effect runs backwards relative to `clarity run`:
+
+```clarity
+mut n = 0
+fn bump() { n += 1; return n }
+show [bump(), bump()]        -- interpreter: [1, 2]   native: [2, 1]
+show { "x": bump(), "y": bump() }
+show str(bump()) + str(bump())
+```
+
+Three engines, one semantics is the rule, and this breaks it for any
+expression that calls something twice — not just generators, which is merely
+where it showed up (`{ "a": yield n, "b": yield n + 1 }` collects `[6, 5]`).
+The fix is to sequence multi-operand emissions through temporaries in a
+statement-expression, at every site that emits more than one sub-expression:
+calls, list and map literals, ranges, binary operators, string
+interpolation, index expressions. It is its own change with its own blast
+radius, so the two generator cases that would have tripped it use a single
+`yield` and this note carries the defect.
+
 ### Brand-domain / naming
 `stdlib/branding.clarity` carries the brand name and domain in one place and the site is generated from it, so the KyanOS rename moved the whole set at once. The domain is the GitHub Pages URL REBRAND.md names as the interim (`monkdim.github.io/Kyanos`); a real domain is a purchase, not a code change, and `BRAND_DOMAIN` is the single line it lands on.
 

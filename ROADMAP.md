@@ -153,8 +153,26 @@ lands with codegen tests that diff native output against the interpreter.
   rather than compiled into something that only looks like one. Eleven cases in the codegen suite
   diff the native output against the interpreter, including one under `CLARITY_GC=1`, because a
   member holding a string is heap-allocated and the collector has to see the global holding it.
-- **Generators.** `YieldExpression` is the one construct in `examples/` still unsupported. It
-  needs real coroutines in C and is its own piece of work.
+- **Generators (done).** They needed no coroutines, because Clarity's generators are not lazy:
+  a body that yields runs to the end and the call returns the list of what it yielded, which is
+  what `for x in gen()` iterates. So `yield v` compiles to an expression worth v that also appends
+  v to one list local per call — a local rather than anything global, so a recursive or nested
+  generator keeps its own, which is what the interpreter's save-and-restore buys it. Every return
+  in such a function hands back the collection when it is not empty, evaluating the returned
+  expression first because the interpreter does. A closure or method written inside a generator is
+  its own call with its own collection, and is scanned separately. Found on the way in: the
+  *bytecode VM* did not implement generators at all — `yield` compiled to the value and collected
+  nothing, so `counter(3)` was null under `run --fast` and a loop over it ran zero times — and the
+  interpreter gave a generator *method* null while the same body worked as a free function. All
+  three engines agree now, pinned by fourteen parity cases and fourteen codegen cases. Also found
+  on the way in, and *not* fixed here: `clarity cc` evaluates a construct's operands in the order C
+  chooses, which is the reverse of the interpreter's whenever two of them have side effects
+  (`[bump(), bump()]` is `[1, 2]` interpreted and `[2, 1]` native). It is a defect in every
+  multi-operand emission, not in generators, so it is written up in GAPS.md as its own change.
+- **Destructuring and spread in native builds.** With generators done, what stops the last two
+  files in `examples/` compiling is `DestructureLetStatement`, `MultiAssignStatement` (`let [a, b]
+  = pair`, `a, b = b, a`) and `SpreadExpression` in a call or a list. Fifteen of the seventeen
+  examples compile today.
 - **Networking.** TLS, then keep-alive and chunked encoding, so the HTTP
   client can talk to real services rather than only to plaintext ones.
 - **Stage 12+ — services stdlib.** Real crypto (not the toy cipher), a real embedded key/value or

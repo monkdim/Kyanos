@@ -239,6 +239,33 @@ if CC == null {
     -- mid-run collection starts.
     same_gc("enum_string_members_gc", "enum Level { Low = \"low\", High = \"high\" }\nmut junk = []\nmut i = 0\nwhile i < 20000 {\n    junk = [str(i), str(i + 1)]\n    i += 1\n}\nshow Level.Low\nshow Level.names()\nshow Level.values()")
 
+    -- ── generators ──
+    -- Eager, as in the interpreter: a body that yields collects into a list
+    -- and the call returns it. In C that is one list local per call, so a
+    -- recursive or nested generator keeps its own without any of the
+    -- coroutine machinery a lazy generator would need.
+    same("gen_basic", "fn counter(n) {\n    mut i = 0\n    while i < n {\n        yield i * 10\n        i += 1\n    }\n}\nshow counter(3)")
+    same("gen_for_loop", "fn counter(n) {\n    mut i = 0\n    while i < n {\n        yield i\n        i += 1\n    }\n}\nfor v in counter(4) { show v }")
+    same("gen_conditional", "fn evens(n) {\n    mut i = 0\n    while i < n {\n        if i % 2 == 0 { yield i }\n        i += 1\n    }\n}\nshow evens(7)")
+    same("gen_nested", "fn evens(n) {\n    mut i = 0\n    while i < n {\n        if i % 2 == 0 { yield i }\n        i += 1\n    }\n}\nfn scaled(n) {\n    for v in evens(n) { yield v * 100 }\n}\nshow scaled(7)")
+    same("gen_return_wins", "fn early(n) {\n    yield 1\n    if n > 0 { return \"ignored\" }\n    yield 2\n}\nshow early(1)\nshow early(0)")
+    same("gen_recursive", "fn down(n) {\n    if n <= 0 { return null }\n    yield n\n    for v in down(n - 1) { yield v }\n}\nshow down(3)")
+    same("gen_method", "class Box {\n    fn init(items) { this.items = items }\n    fn doubled() {\n        for it in this.items { yield it * 2 }\n    }\n}\nshow Box([1, 2, 3]).doubled()")
+    same("gen_closure_inside", "fn outer(n) {\n    let triple = fn(x) { return x * 3 }\n    mut i = 0\n    while i < n {\n        yield triple(i)\n        i += 1\n    }\n}\nshow outer(4)")
+    same("gen_yield_is_expression", "fn g() {\n    let a = yield 7\n    show \"yielded \" + str(a)\n}\nshow g()")
+    same("gen_with_try", "fn risky(n) {\n    try {\n        yield 1\n        if n > 0 { throw \"boom\" }\n        yield 2\n    } catch e {\n        yield 99\n    }\n}\nshow risky(1)\nshow risky(0)")
+    same("gen_map_over", "fn evens(n) {\n    mut i = 0\n    while i < n {\n        if i % 2 == 0 { yield i }\n        i += 1\n    }\n}\nshow map(evens(6), fn(x) { return x * 2 })")
+    -- The scan that decides whether a function is a generator has to walk
+    -- every place an expression can appear, or a yield in one of them
+    -- compiles as "yield outside a function". One yield per expression
+    -- here on purpose: two would also be testing the order C evaluates
+    -- arguments in, which is a separate defect (see GAPS.md).
+    same("gen_in_map_literal", "fn g(n) {\n    let d = { \"a\": yield n, \"b\": 1 }\n    show d\n}\nshow g(5)")
+    same("gen_in_range", "fn r(n) {\n    for v in (yield n)..3 { show v }\n}\nshow r(1)")
+    -- The collection is a local holding heap values, so mid-run collection
+    -- has to see it through the C stack.
+    same_gc("gen_gc", "fn words(n) {\n    mut i = 0\n    while i < n {\n        yield \"item-\" + str(i)\n        i += 1\n    }\n}\nmut junk = []\nmut k = 0\nwhile k < 20000 {\n    junk = [str(k)]\n    k += 1\n}\nshow words(4)")
+
     -- ── stage 4: closures ──
     same("closure_map", "show map([1, 2, 3], fn(x) { return x * 2 })")
     same("closure_capture", "let factor = 10\nshow map([1, 2, 3], fn(x) { return x * factor })")
