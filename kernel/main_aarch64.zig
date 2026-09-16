@@ -1,4 +1,4 @@
-//! ClarityOS aarch64 kernel entry.
+//! KyanOS aarch64 kernel entry.
 //!
 //! First milestone of the Apple-Silicon-class AArch64 port: come up at
 //! EL1 on QEMU's `virt` machine, bring the PL011 console online, and
@@ -43,7 +43,7 @@ const text = @import("graphics/console.zig");
 /// pointer QEMU leaves in x0; recorded now, consumed by the memory phase.
 export fn kernel_main_aarch64(dtb_phys: u64) callconv(.C) noreturn {
     console.init();
-    console.println("ClarityOS aarch64 micro-kernel starting...");
+    console.println("KyanOS aarch64 micro-kernel starting...");
     console.println("  [ok] EL1 + PL011 UART");
 
     install_vectors();
@@ -151,7 +151,7 @@ export fn kernel_main_aarch64(dtb_phys: u64) callconv(.C) noreturn {
     // the case this is here for.
     keyboard_report();
 
-    console.println("ClarityOS aarch64: EL1 boot ok");
+    console.println("KyanOS aarch64: EL1 boot ok");
 
     hang();
 }

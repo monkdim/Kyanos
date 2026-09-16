@@ -37,7 +37,7 @@ cp "$KERNEL" "$ISO_DIR/iso/boot/clarity-kernel"
 cat > "$ISO_DIR/iso/boot/grub/grub.cfg" <<'CFG'
 set timeout=0
 set default=0
-menuentry "ClarityOS" {
+menuentry "KyanOS" {
     multiboot2 /boot/clarity-kernel
     boot
 }

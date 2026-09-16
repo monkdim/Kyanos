@@ -1,4 +1,4 @@
-//! ClarityOS micro-kernel — main entry point.
+//! KyanOS micro-kernel — main entry point.
 //!
 //! The bootloader hands control here once paging is set up and the
 //! machine is in long mode. From here we initialise memory, set up
@@ -48,7 +48,7 @@ pub const BootInfo = struct {
 /// first C argument register.
 pub export fn kernel_main(mb_info_phys: u64) callconv(.C) noreturn {
     console.init();
-    console.println("ClarityOS micro-kernel starting...");
+    console.println("KyanOS micro-kernel starting...");
 
     // 1. CPU structures
     gdt.init();
@@ -159,7 +159,7 @@ pub export fn kernel_main(mb_info_phys: u64) callconv(.C) noreturn {
     };
     console.println("  [ok] drivers");
 
-    console.println("ClarityOS ready.");
+    console.println("KyanOS ready.");
 
     // 7. Kernel threads. The context switch had never executed — the call
     //    that would have used it was commented out — so this runs before
@@ -223,7 +223,7 @@ pub export fn kernel_main(mb_info_phys: u64) callconv(.C) noreturn {
         hang();
     };
 
-    console.println("ClarityOS: userspace complete.");
+    console.println("KyanOS: userspace complete.");
     hang();
 }
 

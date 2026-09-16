@@ -3,11 +3,11 @@
 -- Exposes the kernel ABI as Clarity functions. The same call surface
 -- lives in two worlds:
 --
---   On bare-metal ClarityOS, every wrapper marshals its arguments
+--   On bare-metal KyanOS, every wrapper marshals its arguments
 --   into the ABI's calling convention and issues `syscall` (or
 --   `int 0x80`) — the kernel's syscall/dispatch.zig handles the
 --   request. This path lives behind a stub today; the runtime FFI
---   slot is filled when ClarityOS actually self-hosts.
+--   slot is filled when KyanOS actually self-hosts.
 --
 --   On Linux/macOS (the "Clarity-on-Bun" runtime), the wrapper
 --   delegates to the equivalent libc / Bun / Clarity-stdlib helper
@@ -36,7 +36,7 @@ from "kernel_abi.clarity" import EBADF, ENOENT, EACCES, EINVAL, EIO, ENOSYS, err
 -- ── Backend selection ───────────────────────────────
 
 -- The runtime sets this to "linux" when running under Bun on Linux,
--- "darwin" under macOS, "claritos" when running natively, or "test"
+-- "darwin" under macOS, "kyanos" when running natively, or "test"
 -- when running under the Clarity test harness with mocked syscalls.
 mut _BACKEND = "host"
 mut _MOCKS = null     -- {syscall_nr -> fn(args) -> result | throw}
@@ -76,7 +76,7 @@ fn _invoke(nr, args) {
         return result
     }
 
-    -- ClarityOS bare-metal: this is where the runtime FFI hook fires
+    -- KyanOS bare-metal: this is where the runtime FFI hook fires
     -- once we have one. Until then, declare ENOSYS so callers know
     -- which path is unimplemented.
     _record_trace(nr, args, null)

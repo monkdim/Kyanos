@@ -199,12 +199,12 @@ let pf = procfs(table_snap, {
     "uptime_seconds": 42,
     "loadavg_1": 0.5, "loadavg_5": 0.25, "loadavg_15": 0.10,
     "mem_total_kb": 524288, "mem_free_kb": 262144,
-    "kernel_version": "ClarityOS 0.1 (test)"
+    "kernel_version": "KyanOS 0.1 (test)"
 })
 
 let info = pf.cpuinfo()
 assert(contains(info, "processor"), "cpuinfo has 'processor'")
-assert(contains(info, "ClarityOS Virtual CPU"), "cpuinfo has model name")
+assert(contains(info, "KyanOS Virtual CPU"), "cpuinfo has model name")
 
 let mem = pf.meminfo()
 assert(contains(mem, "MemTotal:    524288 kB"), "meminfo total")

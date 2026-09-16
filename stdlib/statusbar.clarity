@@ -22,7 +22,7 @@ class StatusBar < Widget {
         this._setup_widget()
         this.role = "statusbar"
         this.height_px = 24
-        this.app_name = "ClarityOS"
+        this.app_name = "KyanOS"
         this.notification_count = 0
         this._wired_to_bus = false
     }

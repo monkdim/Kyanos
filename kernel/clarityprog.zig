@@ -1,4 +1,4 @@
-//! /bin/clarity-demo — a Clarity program, compiled and run by ClarityOS.
+//! /bin/clarity-demo — a Clarity program, compiled and run by KyanOS.
 //!
 //! Everything before this point in the boot ran code written for the kernel:
 //! Zig for the kernel itself, and one small Zig user program written by hand

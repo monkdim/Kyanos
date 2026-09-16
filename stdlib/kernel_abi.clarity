@@ -6,7 +6,7 @@
 -- and kernel/fs/vfs.zig must match the values defined here. The
 -- Clarity-side syscall wrapper (syscall.clarity) consumes these
 -- constants directly, so userspace code never has to know whether
--- it's running on the bare-metal ClarityOS kernel or under Linux.
+-- it's running on the bare-metal KyanOS kernel or under Linux.
 
 -- ── Syscall numbers ──────────────────────────────────
 

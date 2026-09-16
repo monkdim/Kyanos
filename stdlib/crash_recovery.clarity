@@ -1,6 +1,6 @@
 -- Crash recovery — Phase 75 task 2.
 --
--- When a service or app crashes, ClarityOS should (a) keep the
+-- When a service or app crashes, KyanOS should (a) keep the
 -- session alive, (b) tell the user something useful, (c) restart
 -- automatically when safe, (d) write a useful diagnostic to the
 -- journal so the user can report the bug.

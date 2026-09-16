@@ -20,7 +20,7 @@
 --             the interpreter prints.
 --
 -- Skipped anywhere the library does not apply: it is x86-64 assembly and
--- Linux/ClarityOS syscall numbers, and it needs clang for the resource
+-- Linux/KyanOS syscall numbers, and it needs clang for the resource
 -- directory that supplies stddef.h and stdarg.h.
 
 from "lexer.clarity" import tokenize
@@ -77,7 +77,7 @@ fn first_diff(a, b) {
 }
 
 if contains(exec("uname"), "Linux") == false {
-    skip("not Linux (this library uses Linux/ClarityOS syscall numbers)")
+    skip("not Linux (this library uses Linux/KyanOS syscall numbers)")
 } elif contains(exec("uname -m"), "x86_64") == false {
     skip("not x86-64 (setjmp and the entry stub are x86-64 assembly)")
 } elif not have_clang() {
@@ -178,15 +178,15 @@ if contains(exec("uname"), "Linux") == false {
     let syms = exec("nm -u " + bin + " 2>/dev/null")
     ok(len(trim(syms)) == 0, "the linked program still has undefined symbols:\n" + syms)
 
-    -- The default build targets ClarityOS, whose syscall numbers differ from
+    -- The default build targets KyanOS, whose syscall numbers differ from
     -- Linux's. It cannot be run here, but it can be linked — which is what
     -- catches a number changing in kernel/syscall/dispatch.zig without
     -- src/sys.h following, since that is a compile-time constant on both
     -- sides and the only thing that keeps them in step is this check plus the
     -- comment naming the file.
-    let osbin = DIR + "/prog_clarityos"
+    let osbin = DIR + "/prog_kyanos"
     let os_link = exec_full(LIBC + "/link.sh " + cfile + " " + osbin)
-    ok(exists(osbin), "the ClarityOS-numbered build linked:\n" + os_link.stderr)
+    ok(exists(osbin), "the KyanOS-numbered build linked:\n" + os_link.stderr)
 
     -- ── the checked-in C for /bin/clarity-demo ────────────
     -- kernel/user/clarity_demo.c is generated from clarity_demo.clarity and

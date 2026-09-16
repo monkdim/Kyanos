@@ -1,6 +1,6 @@
 -- Release tooling — Phase 75 task 5.
 --
--- The "press the big button" pipeline for shipping ClarityOS 1.0:
+-- The "press the big button" pipeline for shipping KyanOS 1.0:
 --
 --   1. Validate the working tree (clean, on main, tags don't
 --      conflict).
@@ -119,7 +119,7 @@ class Release {
     -- ── 5. Release notes ─────────────────
 
     fn compose_notes() {
-        let header = "# ClarityOS " + this.version + "\n\n" +
+        let header = "# KyanOS " + this.version + "\n\n" +
                      (if this.pre_release { "_Pre-release. Expect rough edges._\n\n" } else { "" })
         mut downloads = "## Downloads\n\n"
         for a in this.artefacts {
@@ -150,7 +150,7 @@ class Release {
         }
         let result = this.publisher.publish({
             "tag": tag,
-            "title": "ClarityOS " + this.version,
+            "title": "KyanOS " + this.version,
             "body": this.release_notes,
             "artefacts": this.artefacts,
             "pre_release": this.pre_release

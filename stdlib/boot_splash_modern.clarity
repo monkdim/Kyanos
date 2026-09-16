@@ -77,7 +77,7 @@ class ModernBootSplash {
         -- 3. Wordmark below the logo
         let wm_x = int(this.fb.width * 0.18) - 36
         let wm_y = logo_y + 90
-        paint_wordmark(this.fb, wm_x, wm_y, "ClarityOS", this.theme, null)
+        paint_wordmark(this.fb, wm_x, wm_y, "KyanOS", this.theme, null)
         this._record("wordmark", {"x": wm_x, "y": wm_y})
 
         -- 4. Tagline — muted, smaller, just below the wordmark

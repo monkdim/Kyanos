@@ -34,7 +34,7 @@ DONE_MARKER = b"[ok] console input:"
 INIT_PROMPT = b"init: type a line: "
 SHELL_BANNER = b"clarity-sh: type help"
 SHELL_PROMPT = b"$ "
-BOOT_MARKER = b"ClarityOS aarch64: EL1 boot ok"
+BOOT_MARKER = b"KyanOS aarch64: EL1 boot ok"
 
 # Typed at the kernel's own prompt. The second line is wrong and then fixed:
 # the kernel must end up holding the correction rather than the keystrokes,

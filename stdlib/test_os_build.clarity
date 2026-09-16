@@ -167,7 +167,7 @@ assert(pack_last, "the last step packs the staging directory into the output")
 let pack_op = plan[len(plan) - 1]
 let pack_cmd = b.pack_command(pack_op)
 assert(starts(pack_cmd, "grub-mkrescue -o "), "pack runs grub-mkrescue")
-assert(contains(pack_cmd, " -V 'CLARITYOS' "), "the volume id goes to xorriso as -V")
+assert(contains(pack_cmd, " -V 'KYANOS' "), "the volume id goes to xorriso as -V")
 assert(not contains(pack_cmd, "--volid"), "no --volid, which xorriso rejects")
 assert(ends(pack_cmd, "'" + stage + "/iso'"), "the staging directory is the source")
 

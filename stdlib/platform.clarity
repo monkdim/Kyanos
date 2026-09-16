@@ -5,7 +5,7 @@
 -- branch through this module rather than calling exec_full /
 -- env / time directly. That makes the same source compile cleanly
 -- against the host runtime (Bun on Linux/macOS) AND against the
--- ClarityOS bare-metal runtime, where the syscall surface is
+-- KyanOS bare-metal runtime, where the syscall surface is
 -- different.
 --
 --     if platform.is_bare_metal() {
@@ -22,7 +22,7 @@
 --     platform.write_file(path, body) -- returns true
 --     platform.list_dir(path)         -- returns list of names
 --     platform.now_seconds()          -- monotonic seconds (float)
---     platform.os_name()              -- "linux" | "darwin" | "claritos"
+--     platform.os_name()              -- "linux" | "darwin" | "kyanos"
 --     platform.arch_name()            -- "x86_64" | "arm64" | "wasm32"
 --     platform.endianness()           -- "little" | "big"
 --     platform.line_separator()       -- "\n" | "\r\n"
@@ -32,7 +32,7 @@ let HOST_NODE = "node"
 let HOST_LINUX = "linux"
 let HOST_DARWIN = "darwin"
 let HOST_WINDOWS = "windows"
-let HOST_CLARITOS = "claritos"
+let HOST_KYANOS = "kyanos"
 
 mut _OVERRIDE = null     -- {host, os, arch, endian, line_sep}
 
@@ -63,12 +63,12 @@ fn _arch_canon(raw) {
 fn _info() {
     if _OVERRIDE != null { return _OVERRIDE }
     -- Bare-metal marker: the bare-metal runtime sets the env var
-    -- CLARITY_HOST=claritos before evaluating user code.
+    -- CLARITY_HOST=kyanos before evaluating user code.
     let host_env = env("CLARITY_HOST", "")
-    if host_env == "claritos" {
+    if host_env == "kyanos" {
         return {
-            "host": HOST_CLARITOS,
-            "os": "claritos",
+            "host": HOST_KYANOS,
+            "os": "kyanos",
             "arch": "x86_64",
             "endian": "little",
             "line_sep": "\n"
@@ -100,7 +100,7 @@ fn arch_name() { return _info()["arch"] }
 fn endianness() { return _info()["endian"] }
 fn line_separator() { return _info()["line_sep"] }
 
-fn is_bare_metal() { return host_name() == HOST_CLARITOS }
+fn is_bare_metal() { return host_name() == HOST_KYANOS }
 fn is_host() { return not is_bare_metal() }
 fn is_linux() { return os_name() == HOST_LINUX }
 fn is_darwin() { return os_name() == HOST_DARWIN }
@@ -208,7 +208,7 @@ let BARE_METAL_SAFE = [
 let HOST_ONLY = [
     -- These reach for /proc, shell tooling, or real network sockets
     -- and will need bare-metal ports (a follow-up phase) before they
-    -- can run on ClarityOS.
+    -- can run on KyanOS.
     "shell", "process",
     "net", "db", "crypto",
     "registry", "package",

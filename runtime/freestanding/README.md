@@ -1,6 +1,6 @@
 # Clarity freestanding runtime
 
-The Clarity runtime that ships in `/bin/clarity-init` on ClarityOS.
+The Clarity runtime that ships in `/bin/clarity-init` on KyanOS.
 One build path: embed QuickJS and run the same JS bundle the dev runtime
 executes, with only the I/O surface different. It links against
 `host_shim.zig`, the kernel-syscall bridge.
@@ -15,7 +15,7 @@ ROADMAP_OS.md).
 ```
 runtime/
 ├── freestanding/
-│   ├── host.js               # Bun/Node ↔ ClarityOS adapter
+│   ├── host.js               # Bun/Node ↔ KyanOS adapter
 │   ├── runtime_freestanding.js  # runtime.js without Node imports
 │   ├── host_shim.zig         # SYSCALL bridge
 │   ├── quickjs_main.c        # QuickJS-backed entry point

@@ -1,7 +1,7 @@
 //! virtio-net driver — paravirtualised NIC for QEMU/KVM/Xen.
 //!
 //! virtio is the simplest way to get networking inside a VM, which
-//! is where ClarityOS development happens. Real Intel NICs (e1000,
+//! is where KyanOS development happens. Real Intel NICs (e1000,
 //! igc, AX2xx) live in their own drivers and ship in a later phase.
 
 const std = @import("std");

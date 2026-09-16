@@ -1,6 +1,6 @@
-# The ClarityOS kernel
+# The KyanOS kernel
 
-The only part of ClarityOS that is not written in Clarity. About 9 000
+The only part of KyanOS that is not written in Clarity. About 9 000
 lines of Zig across two architectures, plus 2 000 lines of C that are not
 kernel at all — a freestanding libc, so that a program compiled by
 `clarity cc` has something to link against. That library now builds for
@@ -318,7 +318,7 @@ errno values, file mode bits, mmap flags, and signals; the Zig enums in
 
 `stdlib/syscall.clarity` is the userspace wrapper. On Linux and macOS it
 delegates to the host runtime; the same signatures issue real syscall
-instructions when running on ClarityOS.
+instructions when running on KyanOS.
 
 `stdlib/scheduler.clarity` and `stdlib/vfs.clarity` are pure-state mirrors
 of the kernel's scheduler and VFS, so the design contracts (priority

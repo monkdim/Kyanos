@@ -6,7 +6,7 @@
 --   /proc/meminfo        physical + virtual memory stats
 --   /proc/uptime         uptime_seconds + idle_seconds
 --   /proc/loadavg        1/5/15 min load + running/total + last_pid
---   /proc/version        clarityos kernel banner
+--   /proc/version        kyanos kernel banner
 --   /proc/<pid>/status   per-process: name, state, pid, ppid, vmrss
 --   /proc/<pid>/cmdline  per-process command line
 --   /proc/<pid>/comm     per-process short name
@@ -26,10 +26,10 @@ class Procfs {
         this.loadavg_5 = if has(o, "loadavg_5") { o["loadavg_5"] } else { 0.0 }
         this.loadavg_15 = if has(o, "loadavg_15") { o["loadavg_15"] } else { 0.0 }
         this.cpu_count = if has(o, "cpu_count") { o["cpu_count"] } else { 1 }
-        this.cpu_model = if has(o, "cpu_model") { o["cpu_model"] } else { "ClarityOS Virtual CPU" }
+        this.cpu_model = if has(o, "cpu_model") { o["cpu_model"] } else { "KyanOS Virtual CPU" }
         this.mem_total_kb = if has(o, "mem_total_kb") { o["mem_total_kb"] } else { 262144 }
         this.mem_free_kb = if has(o, "mem_free_kb") { o["mem_free_kb"] } else { 200000 }
-        this.kernel_version = if has(o, "kernel_version") { o["kernel_version"] } else { "ClarityOS 0.1 #1 SMP" }
+        this.kernel_version = if has(o, "kernel_version") { o["kernel_version"] } else { "KyanOS 0.1 #1 SMP" }
     }
 
     -- ── Top-level ──────────────────────────
@@ -39,7 +39,7 @@ class Procfs {
         mut i = 0
         while i < this.cpu_count {
             push(lines, "processor    : " + str(i))
-            push(lines, "vendor_id    : ClarityOS")
+            push(lines, "vendor_id    : KyanOS")
             push(lines, "model name   : " + this.cpu_model)
             push(lines, "cpu MHz      : 2400.000")
             push(lines, "")

@@ -1,4 +1,4 @@
-//! ClarityOS kernel build script (Zig 0.13+).
+//! KyanOS kernel build script (Zig 0.13+).
 //!
 //! Produces a freestanding x86_64 ELF kernel that the bootloader can
 //! load. Uses our custom linker script (boot/linker.ld) and the

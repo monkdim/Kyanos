@@ -27,7 +27,7 @@ typedef struct {
 
 /* Write all of it, however many calls that takes.
  *
- * write(2) may accept less than it is offered and say so, and ClarityOS's
+ * write(2) may accept less than it is offered and say so, and KyanOS's
  * does: a single call is capped at 256 bytes. This buffer is also 256 bytes,
  * so today the cap is never reached — which means the loop below has never
  * gone round twice, and also that this code was correct only because two

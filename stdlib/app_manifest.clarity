@@ -1,7 +1,7 @@
 -- App manifest — `clarity-app.toml` parser, generator, validator
 -- (Phase 64 task 1).
 --
--- Every ClarityOS app ships a manifest at the root of its source
+-- Every KyanOS app ships a manifest at the root of its source
 -- tree. It plays the same role as macOS's Info.plist or XDG's
 -- .desktop file: identity, window defaults, requested permissions.
 --

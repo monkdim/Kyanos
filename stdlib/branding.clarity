@@ -1,6 +1,6 @@
 -- Branding kit — Phase 75 task 3.
 --
--- Centralises everything that makes ClarityOS look like ClarityOS:
+-- Centralises everything that makes KyanOS look like KyanOS:
 -- logo (procedurally drawn from primitives so it's resolution-
 -- independent + ships zero binary assets), wordmark with the
 -- Aurora gradient applied to each glyph, design tokens (typography
@@ -18,9 +18,9 @@ from "theme_aurora.clarity" import aurora_gradient, AURORA_TEAL, AURORA_VIOLET, 
 
 -- ── Brand identity ────────────────────────────
 
-let BRAND_NAME = "ClarityOS"
+let BRAND_NAME = "KyanOS"
 let BRAND_TAGLINE = "Simple code. Real power."
-let BRAND_DOMAIN = "clarityos.dev"
+let BRAND_DOMAIN = "monkdim.github.io/Clarity"
 
 -- ── Design tokens ─────────────────────────
 
@@ -68,7 +68,7 @@ fn radius(token) {
 
 -- ── Logo ─────────────────────────────────
 
--- The ClarityOS mark: a downward-pointing arrow nested inside an
+-- The KyanOS mark: a downward-pointing arrow nested inside an
 -- open ring, suggesting "clarity = signal cutting through noise."
 -- Pure-procedural draw so it scales to any size.
 fn paint_logo(fb, cx, cy, size, opts) {

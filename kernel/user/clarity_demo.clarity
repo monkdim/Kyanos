@@ -1,4 +1,4 @@
--- /bin/clarity-demo — a Clarity program, compiled and run by ClarityOS.
+-- /bin/clarity-demo — a Clarity program, compiled and run by KyanOS.
 --
 -- Everything here is chosen because it fails loudly if some particular part
 -- of the stack is wrong, rather than because it makes a nice demo:

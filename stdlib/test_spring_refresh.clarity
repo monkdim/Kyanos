@@ -199,7 +199,7 @@ assert(has(snap, "options"), "snapshot has options")
 
 show "-- Phase 76: modern branding tokens --"
 
-assert_eq(BRAND_NAME, "ClarityOS", "brand name")
+assert_eq(BRAND_NAME, "KyanOS", "brand name")
 assert(contains(BRAND_TAGLINE, "Simple"), "tagline includes 'Simple'")
 assert_eq(typography("display"), 48, "display size")
 assert_eq(typography("body"), 14, "body size")

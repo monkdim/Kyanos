@@ -74,7 +74,7 @@ Status: `entry point`, `reached from the CLI` (in the shipped binary's import cl
 | compositor.clarity | 240 | Compositor - manages a stack of Windows and composites them onto a | yes | reached from the CLI | display_server.clarity, kyan_desktop.clarity, window_manager.clarity, workspace. | 1 |
 | crash_recovery.clarity | 279 | Crash recovery - Phase 75 task 2. | yes | only tests import it | - | 1 |
 | crypto.clarity | 168 | Clarity Crypto - hashing, HMAC, random bytes, and UUID generation. | yes | nothing imports it | - | 0 |
-| css_layout.clarity | 294 | CSS layout subset for the ClarityOS browser (Phase 68 task 1). | yes | library | browser.clarity | 1 |
+| css_layout.clarity | 294 | CSS layout subset for the KyanOS browser (Phase 68 task 1). | yes | library | browser.clarity | 1 |
 | datetime.clarity | 194 | Clarity Date/Time - date, time, and duration handling. | yes | library | lockscreen.clarity, statusbar.clarity | 0 |
 | db.clarity | 452 | Clarity Database - key-value store, query builder, and migrations. | yes | nothing imports it | - | 0 |
 | debugger.clarity | 568 | Clarity debugger - interactive step-through debugging. | yes | reached from the CLI | cli.clarity | 1 |
@@ -103,11 +103,11 @@ Status: `entry point`, `reached from the CLI` (in the shipped binary's import cl
 | image.clarity | 208 | Image - load and manipulate raster images. | yes | library | app_viewer.clarity | 3 |
 | imap.clarity | 245 | IMAP4rev1 client (Phase 68 task 2). | yes | library | mail.clarity | 1 |
 | init.clarity | 206 | Init - service-management daemon (Phase 61 task 1). | yes | only tests import it | - | 1 |
-| init_app.clarity | 286 | /bin/clarity-init - userspace bootstrap for ClarityOS | yes | only tests import it | - | 1 |
+| init_app.clarity | 286 | /bin/clarity-init - userspace bootstrap for KyanOS | yes | only tests import it | - | 1 |
 | input.clarity | 157 | Input - keyboard, mouse, touch event reading (Linux evdev). | yes | reached from the CLI | keymap.clarity | 3 |
 | input_pipeline.clarity | 107 | Input pipeline - kernel scancodes → keymap → InputBus events | yes | only tests import it | - | 1 |
 | install.clarity | 83 | Clarity Installer - installs the native binary from a GitHub release. | yes | reached from the CLI | cli.clarity | 0 |
-| installer.clarity | 258 | ClarityOS Installer (Phase 67 task 3). | yes | only tests import it | - | 1 |
+| installer.clarity | 258 | KyanOS Installer (Phase 67 task 3). | yes | only tests import it | - | 1 |
 | interpreter.clarity | 1803 | Clarity Interpreter - self-hosting implementation | yes | reached from the CLI | benchmark.clarity, cli.clarity, debugger.clarity, profiler.clarity, repl.clarity | 5 |
 | ipc.clarity | 111 | IPC - in-process message bus (Phase 61 task 2). | yes | library | audio.clarity, network.clarity, notify.clarity, statusbar.clarity, storage.clari | 2 |
 | iso9660.clarity | 489 | ISO9660 + El Torito packer - Phase 74 task 1. | yes | only tests import it | - | 1 |
@@ -124,7 +124,7 @@ Status: `entry point`, `reached from the CLI` (in the shipped binary's import cl
 | lockscreen.clarity | 151 | LockScreen - full-screen lock with clock + password field (Phase 62 task 5). | yes | only tests import it | - | 1 |
 | lsp.clarity | 675 | Clarity Language Server Protocol (LSP) implementation | yes | reached from the CLI | cli.clarity | 1 |
 | mail.clarity | 251 | Mail app - Phase 68 task 2. | yes | only tests import it | - | 1 |
-| mkiso.clarity | 202 | mkiso - assemble a bootable ClarityOS ISO image (Phase 67 task 1). | yes | library | live_usb.clarity | 1 |
+| mkiso.clarity | 202 | mkiso - assemble a bootable KyanOS ISO image (Phase 67 task 1). | yes | library | live_usb.clarity | 1 |
 | mouse.clarity | 125 | Mouse - relative-axis mouse / trackpad event tracking. | yes | reached from the CLI | event_bus.clarity, host.clarity | 4 |
 | mutex.clarity | 381 | Clarity Mutex & Atomic - synchronization primitives. | yes | nothing imports it | - | 0 |
 | net.clarity | 283 | Clarity Networking - HTTP, TCP, and WebSocket utilities. | yes | library | browser.clarity | 0 |
@@ -149,7 +149,7 @@ Status: `entry point`, `reached from the CLI` (in the shipped binary's import cl
 | registry.clarity | 471 | Clarity Package Registry Server - self-hosted package registry. | yes | nothing imports it | - | 0 |
 | release.clarity | 271 | Release tooling - Phase 75 task 5. | yes | only tests import it | - | 1 |
 | repl.clarity | 565 | Clarity Shell REPL - interactive terminal | yes | reached from the CLI | cli.clarity | 1 |
-| run_vm.clarity | 192 | run_vm - QEMU launcher for the ClarityOS ISO (Phase 67 task 4). | yes | library | qemu.clarity, qemu_macos.clarity | 1 |
+| run_vm.clarity | 192 | run_vm - QEMU launcher for the KyanOS ISO (Phase 67 task 4). | yes | library | qemu.clarity, qemu_macos.clarity | 1 |
 | runtime.clarity | 71 | Clarity Runtime - self-hosting implementation | yes | nothing imports it | - | 0 |
 | runtime_gen.clarity | 112 | Runtime Generator - produces native/runtime.js from runtime_spec.clarity. | yes | reached from the CLI | cli.clarity | 0 |
 | runtime_spec.clarity | 368 | Runtime Specification - defines all JavaScript runtime builtins. | yes | reached from the CLI | runtime_gen.clarity | 0 |
@@ -167,7 +167,7 @@ Status: `entry point`, `reached from the CLI` (in the shipped binary's import cl
 | terminal.clarity | 191 | Clarity Terminal UI - ANSI colors, cursor control, terminal info | yes | reached from the CLI | claude.clarity, cli.clarity, debugger.clarity, docgen.clarity, highlight.clarity | 2 |
 | terminal_emulator.clarity | 359 | Terminal emulator - the VT100/xterm state machine, split out from the | yes | reached from the CLI | app_terminal.clarity, kyan_desktop.clarity | 1 |
 | theme.clarity | 110 | Theme - colors, fonts, spacing, corner radii. | yes | library | app_calc.clarity, app_editor.clarity, app_files.clarity, app_monitor.clarity, ap | 2 |
-| theme_aurora.clarity | 160 | Aurora - ClarityOS flagship theme. | yes | library | boot_splash.clarity, branding.clarity, theme_registry.clarity, wallpapers.clarit | 2 |
+| theme_aurora.clarity | 160 | Aurora - KyanOS flagship theme. | yes | library | boot_splash.clarity, branding.clarity, theme_registry.clarity, wallpapers.clarit | 2 |
 | theme_kyan.clarity | 222 | Kyan - the KyanOS flagship identity. "Obsidian & neon." | yes | reached from the CLI | boot_splash_kyan.clarity, branding_kyan.clarity, cli.clarity, kyan_apps.clarity, | 7 |
 | theme_meadow.clarity | 263 | Spring themes - Meadow (default), Bloom, Watercolor. | yes | reached from the CLI | boot_splash_modern.clarity, branding_modern.clarity, theme_registry.clarity, wal | 1 |
 | theme_picker.clarity | 96 | Theme picker - plug into the existing SettingsPanel as the | yes | only tests import it | - | 2 |
@@ -181,7 +181,7 @@ Status: `entry point`, `reached from the CLI` (in the shipped binary's import cl
 | ui_builder.clarity | 363 | Visual UI builder - Phase 69 task 2. | yes | only tests import it | - | 1 |
 | vfs.clarity | 363 | VFS - virtual filesystem layer + tmpfs (Phase 65 task 6). | yes | only tests import it | - | 1 |
 | wallpaper.clarity | 163 | Wallpaper - desktop background (Phase 62 task 4). | yes | only tests import it | - | 1 |
-| wallpapers.clarity | 149 | Built-in ClarityOS wallpapers - Phase 74 UX track. | yes | library | boot_splash.clarity | 1 |
+| wallpapers.clarity | 149 | Built-in KyanOS wallpapers - Phase 74 UX track. | yes | library | boot_splash.clarity | 1 |
 | wallpapers_spring.clarity | 122 | Spring wallpapers - Phase 76 design refresh. | yes | library | boot_splash_modern.clarity | 1 |
 | website_gen.clarity | 289 | Website generator - Phase 75 task 4. | yes | only tests import it | - | 1 |
 | websocket.clarity | 275 | WebSocket client (Phase 68 task 3). | yes | only tests import it | - | 1 |
@@ -266,7 +266,7 @@ Status: `entry point`, `reached from the CLI` (in the shipped binary's import cl
 
 | file | arch | lines | purpose | roots |
 |---|---|---|---|---|
-| kernel/arch/aarch64/boot.S | aarch64 | 287 | ClarityOS aarch64 boot stub - QEMU 'virt' / Apple-Silicon-class AArch64. | assembly |
+| kernel/arch/aarch64/boot.S | aarch64 | 287 | KyanOS aarch64 boot stub - QEMU 'virt' / Apple-Silicon-class AArch64. | assembly |
 | kernel/arch/aarch64/console.zig | aarch64 | 140 | AArch64 early console - PL011 UART. | main, main_aarch64, checkonly |
 | kernel/arch/aarch64/context.S | aarch64 | 112 | Kernel thread context switching on AArch64. | assembly |
 | kernel/arch/aarch64/context.zig | aarch64 | 110 | Kernel thread contexts on AArch64. | main_aarch64 |
@@ -298,11 +298,11 @@ Status: `entry point`, `reached from the CLI` (in the shipped binary's import cl
 | kernel/boot/cmdline.zig | shared | 180 | The kernel command line - the first thing this machine can be told. | main_aarch64 |
 | kernel/boot/fdt.zig | shared | 439 | The flattened device tree - how a machine describes itself. | main_aarch64 |
 | kernel/boot/multiboot2.zig | x86_64 | 175 | Multiboot2 header + boot info parser. | main, checkonly |
-| kernel/boot/start.S | x86_64 | 166 | ClarityOS boot stub - multiboot2 entry, switch to long mode, jump to | assembly |
+| kernel/boot/start.S | x86_64 | 166 | KyanOS boot stub - multiboot2 entry, switch to long mode, jump to | assembly |
 | kernel/boot/uefi.zig | shared | 66 | UEFI loader stub. | checkonly |
-| kernel/build.zig | shared | 310 | ClarityOS kernel build script (Zig 0.13+). | - |
+| kernel/build.zig | shared | 310 | KyanOS kernel build script (Zig 0.13+). | - |
 | kernel/checkonly.zig | shared | 24 | Everything the kernel builds but does not boot. | checkonly |
-| kernel/clarityprog.zig | shared | 37 | /bin/clarity-demo - a Clarity program, compiled and run by ClarityOS. | main, checkonly |
+| kernel/clarityprog.zig | shared | 37 | /bin/clarity-demo - a Clarity program, compiled and run by KyanOS. | main, checkonly |
 | kernel/drivers/ahci.zig | shared | 51 | AHCI driver - SATA storage via AHCI controllers (PCI class 01:06:01). | main, checkonly |
 | kernel/drivers/framebuffer.zig | shared | 111 | Framebuffer driver - VESA / GOP linear framebuffer. | main, checkonly |
 | kernel/drivers/init.zig | shared | 49 | Driver init - registers all built-in drivers with the kernel. | main, checkonly |
@@ -326,8 +326,8 @@ Status: `entry point`, `reached from the CLI` (in the shipped binary's import cl
 | kernel/loader/load.zig | shared | 142 | Loads an ELF executable into a fresh user address space and | main, checkonly |
 | kernel/loader/load_aarch64.zig | aarch64 | 168 | Loading an ELF into an AArch64 process's address space. | main_aarch64 |
 | kernel/loader/segments.zig | shared | 85 | Getting an ELF's PT_LOAD segments into an address space. | main, main_aarch64, checkonly |
-| kernel/main.zig | x86_64 | 251 | ClarityOS micro-kernel - main entry point. | main, checkonly |
-| kernel/main_aarch64.zig | aarch64 | 1487 | ClarityOS aarch64 kernel entry. | main_aarch64 |
+| kernel/main.zig | x86_64 | 251 | KyanOS micro-kernel - main entry point. | main, checkonly |
+| kernel/main_aarch64.zig | aarch64 | 1487 | KyanOS aarch64 kernel entry. | main_aarch64 |
 | kernel/mm/heap.zig | shared | 140 | Kernel heap - slab allocator over the page allocator. | main, main_aarch64, checkonly |
 | kernel/mm/pmm.zig | shared | 171 | Physical memory manager - bitmap page-frame allocator. | main, main_aarch64, checkonly |
 | kernel/mm/uaccess.zig | shared | 168 | The x86_64 user-memory layer: every address a process hands the kernel | main, checkonly |

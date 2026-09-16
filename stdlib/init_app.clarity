@@ -1,4 +1,4 @@
--- /bin/clarity-init — userspace bootstrap for ClarityOS
+-- /bin/clarity-init — userspace bootstrap for KyanOS
 -- (Phase 72 task 1).
 --
 -- The first user process. The kernel `spawn_user`s us; we

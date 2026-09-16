@@ -1,4 +1,4 @@
-//! host_shim — bridges the freestanding JS engine to ClarityOS
+//! host_shim — bridges the freestanding JS engine to KyanOS
 //! kernel syscalls (Phase 66 task 2).
 //!
 //! The freestanding runtime links this object against libquickjs.a,

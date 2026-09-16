@@ -3,7 +3,7 @@
 -- crypto.clarity historically shelled out to `sha256sum`/`shasum`/openssl.
 -- That makes hashing unavailable exactly where it matters most: inside a
 -- `clarity cc` native binary on a machine without those tools, and inside
--- ClarityOS itself (no coreutils, no openssl). This module is pure Clarity,
+-- KyanOS itself (no coreutils, no openssl). This module is pure Clarity,
 -- so it runs anywhere Clarity runs and needs nothing installed, and
 -- `clarity cc` compiles a program that imports it — including its own import
 -- of bits.clarity — into a single native binary.

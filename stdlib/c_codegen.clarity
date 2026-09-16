@@ -130,7 +130,7 @@ let C_PRELUDE = """#ifndef CLARITY_FREESTANDING
 #define _GNU_SOURCE 1
 #endif
 /* CLARITY_FREESTANDING is defined by `clarity cc --freestanding`, for targets
-   with no operating system underneath — ClarityOS itself, to begin with. It
+   with no operating system underneath — KyanOS itself, to begin with. It
    drops the parts of this runtime that are POSIX rather than C: files,
    /proc-backed memory access, process control, dynamic loading and sockets.
    What is left needs a C library of about fifteen functions, which is a
@@ -2702,7 +2702,7 @@ fn compile_to_c(tree) {
 -- The freestanding profile: the same code generator, with the POSIX half of
 -- the runtime compiled out and the builtins that needed it refused. What is
 -- left is C, not Unix — it is what `clarity cc --freestanding` emits for a
--- target that has no operating system underneath it yet, ClarityOS being the
+-- target that has no operating system underneath it yet, KyanOS being the
 -- one this exists for.
 fn compile_to_c_freestanding(tree) {
     let cg = CCodegen()

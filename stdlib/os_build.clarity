@@ -27,7 +27,7 @@
 -- plan() lists what build() will do, so the steps can be checked without
 -- a kernel or GRUB on the machine, which is what the test suite does.
 
-let DEFAULT_VOLUME_ID = "CLARITYOS"
+let DEFAULT_VOLUME_ID = "KYANOS"
 let DEFAULT_OUTPUT = "dist/claritos.iso"
 
 class OsImageBuilder {
@@ -74,7 +74,7 @@ class OsImageBuilder {
         mut lines = []
         push(lines, "set timeout=" + str(this.timeout_s))
         push(lines, "set default=0")
-        push(lines, "menuentry \"ClarityOS\" {")
+        push(lines, "menuentry \"KyanOS\" {")
         if len(this.cmdline) > 0 {
             push(lines, "    multiboot2 /boot/clarity-kernel " + this.cmdline)
         } else {

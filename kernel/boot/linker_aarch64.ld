@@ -1,4 +1,4 @@
-/* ClarityOS aarch64 kernel link script.
+/* KyanOS aarch64 kernel link script.
  *
  * The kernel is *linked* for the top of the address space and *loaded* at
  * the bottom of it. QEMU's `virt` machine places RAM at 0x4000_0000 and the

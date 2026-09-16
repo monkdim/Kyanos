@@ -5,7 +5,7 @@
  * Clarity program under the freestanding profile there are exactly three:
  * write bytes to the console, move the program break, and stop.
  *
- * The numbers differ between ClarityOS and Linux, so they live here and
+ * The numbers differ between KyanOS and Linux, so they live here and
  * nowhere else. The Linux set exists so the same library can be built and run
  * on a Linux host, which is what the test does: the code under test is then
  * the code that ships, not a stand-in for it.

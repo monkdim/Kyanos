@@ -89,7 +89,7 @@ fn _u64(bytes, off) {
     let lo = _u32(bytes, off)
     let hi = _u32(bytes, off + 4)
     -- Clarity ints are 53-bit safe; addresses + offsets we care
-    -- about for ClarityOS userspace stay below 2^48 so we don't
+    -- about for KyanOS userspace stay below 2^48 so we don't
     -- lose precision here. Above that we'd need a BigInt path.
     return lo + (hi * 4294967296)
 }

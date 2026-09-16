@@ -1,6 +1,6 @@
 -- Phase 67 — bootable ISO + installer + QEMU + hardware tests.
 --
--- Pure-state coverage of the build tooling that ships ClarityOS:
+-- Pure-state coverage of the build tooling that ships KyanOS:
 --   * IsoBuilder + LiveUsbBuilder (validate / plan / GRUB config)
 --   * Installer state machine (transitions, validation, plan,
 --     dry-run install)
@@ -33,7 +33,7 @@ fn assert_eq(actual, expected, msg) {
 
 show "-- Phase 67: ISO builder --"
 
-let iso = iso_builder({"output": "claritos-test.iso", "label": "ClarityOS Test"})
+let iso = iso_builder({"output": "claritos-test.iso", "label": "KyanOS Test"})
 iso.add_kernel("/staging/clarity-kernel")
 iso.add_runtime("/staging/clarity-init")
 iso.add_uefi_loader("/staging/BOOTX64.EFI")
@@ -58,18 +58,18 @@ assert(contains(kinds, "pack"), "plan ends with pack")
 let last = plan[len(plan) - 1]
 assert_eq(last["kind"], "pack", "pack is the final op")
 assert_eq(last["image"], "claritos-test.iso", "pack uses configured output")
-assert_eq(last["label"], "ClarityOS Test", "pack uses configured label")
+assert_eq(last["label"], "KyanOS Test", "pack uses configured label")
 
 -- GRUB config has the right entries
 let bios_cfg = iso.bios_grub_cfg()
-assert(contains(bios_cfg, "menuentry 'ClarityOS'"), "bios cfg has main entry")
-assert(contains(bios_cfg, "menuentry 'ClarityOS (rescue shell)'"), "rescue entry")
-assert(contains(bios_cfg, "menuentry 'ClarityOS installer'"), "installer entry")
+assert(contains(bios_cfg, "menuentry 'KyanOS'"), "bios cfg has main entry")
+assert(contains(bios_cfg, "menuentry 'KyanOS (rescue shell)'"), "rescue entry")
+assert(contains(bios_cfg, "menuentry 'KyanOS installer'"), "installer entry")
 assert(contains(bios_cfg, "multiboot2 /boot/clarity-kernel"), "loads kernel")
 assert(contains(bios_cfg, "set timeout=5"), "default timeout")
 
 let uefi_cfg = iso.uefi_grub_cfg()
-assert(contains(uefi_cfg, "menuentry 'ClarityOS'"), "uefi cfg present")
+assert(contains(uefi_cfg, "menuentry 'KyanOS'"), "uefi cfg present")
 assert(contains(uefi_cfg, "(UEFI)"), "uefi mode tag")
 
 -- Validation catches missing pieces
@@ -99,7 +99,7 @@ show "-- Phase 67: live USB --"
 
 let live = live_usb_builder({
     "output": "claritos-live.iso",
-    "label": "ClarityOS Live",
+    "label": "KyanOS Live",
     "persistence": true,
     "persistence_size_mb": 512
 })
@@ -329,10 +329,10 @@ let vm_bt = qemu_runner({
     "iso": "claritos.iso",
     "headless": true,
     "serial": "stdio",
-    "boot_test_marker": "ClarityOS ready.",
+    "boot_test_marker": "KyanOS ready.",
     "timeout_seconds": 180
 })
-assert_eq(vm_bt.boot_test_marker, "ClarityOS ready.", "runner carries the boot-test marker")
+assert_eq(vm_bt.boot_test_marker, "KyanOS ready.", "runner carries the boot-test marker")
 assert_eq(vm_bt.timeout_seconds, 180, "runner carries the boot-test timeout")
 assert_eq(len(vm_bt.validate()), 0, "a boot-test config validates")
 let argv_bt = vm_bt.cmd()

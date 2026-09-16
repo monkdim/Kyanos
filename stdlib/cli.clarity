@@ -69,10 +69,10 @@ fn _help() {
     show "  publish               Pack and publish to registry"
     show "  search <query>        Search the package registry"
     show "  info <pkg>            Show package info from registry"
-    show "  app new <dir>         Scaffold a new ClarityOS app"
-    show "  app list              List installed ClarityOS apps"
-    show "  app install <name>    Install a ClarityOS app"
-    show "  app remove <name>     Uninstall a ClarityOS app"
+    show "  app new <dir>         Scaffold a new KyanOS app"
+    show "  app list              List installed KyanOS apps"
+    show "  app install <name>    Install a KyanOS app"
+    show "  app remove <name>     Uninstall a KyanOS app"
     show "  os build              Build the KyanOS kernel and its boot image (--arch x86_64|aarch64)"
     show "  os run                Boot it under QEMU, serial console here (--boot-test, --window)"
     show "  os iso                Alias for `os build`"
@@ -805,7 +805,7 @@ let _OS_ARM_PATH = "dist/claritos-aarch64.img"
 -- The markers the boot gate asserts last: on x86_64 the kernel printing
 -- that both user processes ran and it outlived them; on aarch64 that a
 -- compiled Clarity program ran at EL0, which is the point of the exercise.
-let _OS_X86_MARKER = "ClarityOS: userspace complete."
+let _OS_X86_MARKER = "KyanOS: userspace complete."
 let _OS_ARM_MARKER = "[ok] demo: a Clarity program ran on aarch64"
 
 fn _print_os_usage() {
@@ -891,7 +891,7 @@ fn os_cmd_build(cli_args) {
     }
 
     show ""
-    show bold("  Building ClarityOS (" + arch + ")")
+    show bold("  Building KyanOS (" + arch + ")")
     show ""
 
     mut out = ""
@@ -901,7 +901,7 @@ fn os_cmd_build(cli_args) {
     } else {
         _zig_build("")
         show "  " + dim("grub-mkrescue") + " ..."
-        let b = os_image_builder({"output": _OS_ISO_PATH, "volume_id": "CLARITYOS"})
+        let b = os_image_builder({"output": _OS_ISO_PATH, "volume_id": "KYANOS"})
         b.set_kernel(_OS_X86_KERNEL)
         out = b.build()
     }
@@ -1039,7 +1039,7 @@ fn os_cmd_run(cli_args) {
     }
 
     show ""
-    show bold("  Booting ClarityOS (" + arch + ")") + dim("   serial console below; Ctrl-A then X quits QEMU")
+    show bold("  Booting KyanOS (" + arch + ")") + dim("   serial console below; Ctrl-A then X quits QEMU")
     show "  " + dim(cmd)
     show ""
     let code = exec_tty(cmd)

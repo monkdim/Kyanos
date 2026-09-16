@@ -33,9 +33,9 @@ show "-- Runtime: live host detection --"
 
 reset_override()
 let host = host_name()
-assert(host == "bun" or host == "node" or host == "claritos", "host_name returns a known value: " + host)
+assert(host == "bun" or host == "node" or host == "kyanos", "host_name returns a known value: " + host)
 let os_id = os_name()
-assert(os_id == "linux" or os_id == "darwin" or os_id == "windows" or os_id == "claritos" or os_id == "unknown",
+assert(os_id == "linux" or os_id == "darwin" or os_id == "windows" or os_id == "kyanos" or os_id == "unknown",
        "os_name is a known value: " + os_id)
 let arch = arch_name()
 assert(len(arch) > 0, "arch_name not empty: " + arch)
@@ -55,22 +55,22 @@ if os_id == "darwin" {
     assert(is_unix(), "darwin: is_unix true")
 }
 
--- ── Override hook: simulate ClarityOS ──────────────
+-- ── Override hook: simulate KyanOS ──────────────
 
 show "-- Runtime: override hook --"
 
 override({
-    "host": "claritos",
-    "os": "claritos",
+    "host": "kyanos",
+    "os": "kyanos",
     "arch": "x86_64",
     "endian": "little",
     "line_sep": "\n"
 })
-assert_eq(host_name(), "claritos", "override host")
-assert_eq(os_name(), "claritos", "override os")
+assert_eq(host_name(), "kyanos", "override host")
+assert_eq(os_name(), "kyanos", "override os")
 assert(is_bare_metal(), "override flips is_bare_metal")
 assert(not is_host(), "override flips is_host")
-assert(not is_linux(), "claritos is not linux")
+assert(not is_linux(), "kyanos is not linux")
 
 -- ── I/O helpers branch on platform ─────────────────
 
@@ -92,7 +92,7 @@ let now1 = now_seconds()
 assert(now1 > 0, "host now_seconds > 0")
 
 -- Bare-metal branch via override + syscall mocks
-override({"host": "claritos", "os": "claritos", "arch": "x86_64", "endian": "little", "line_sep": "\n"})
+override({"host": "kyanos", "os": "kyanos", "arch": "x86_64", "endian": "little", "line_sep": "\n"})
 set_backend("host")          -- still routed through the host fd table
 
 mut sycall_log = []
