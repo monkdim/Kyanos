@@ -1515,6 +1515,106 @@ static void cl_show(Value v){ char* s=cl_display(v); printf("%s\n", s); }
 -- a function's locals need volatile storage: C leaves a non-volatile local of
 -- the function containing a setjmp indeterminate if the try modifies it.
 -- Closures are their own C functions and are checked separately when emitted.
+-- Does this statement list yield anywhere in it? A nested `fn` is its own
+-- call with its own collection, so a yield inside one belongs to it, not to
+-- the function being scanned — the same rule the interpreter follows by
+-- saving and restoring the collection around every call.
+fn _has_yield(stmts) {
+    for s in stmts {
+        if _stmt_yields(s) { return true }
+    }
+    return false
+}
+
+fn _stmt_yields(s) {
+    let nt = s.node_type
+    if nt == "ExpressionStatement" { return _expr_yields(s.expression) }
+    if nt == "LetStatement" { return s.value != null and _expr_yields(s.value) }
+    if nt == "AssignStatement" { return s.value != null and _expr_yields(s.value) }
+    if nt == "ReturnStatement" { return s.value != null and _expr_yields(s.value) }
+    if nt == "ShowStatement" {
+        for v in s.values { if _expr_yields(v) { return true } }
+        return false
+    }
+    if nt == "ThrowStatement" { return s.value != null and _expr_yields(s.value) }
+    if nt == "IfStatement" {
+        if _expr_yields(s.condition) { return true }
+        if _has_yield(_block_stmts(s.body)) { return true }
+        if s.elif_clauses != null {
+            for clause in s.elif_clauses {
+                if _expr_yields(clause[0]) { return true }
+                if _has_yield(_block_stmts(clause[1])) { return true }
+            }
+        }
+        if s.else_body != null and _has_yield(_block_stmts(s.else_body)) { return true }
+        return false
+    }
+    if nt == "WhileStatement" {
+        if _expr_yields(s.condition) { return true }
+        return _has_yield(_block_stmts(s.body))
+    }
+    if nt == "ForStatement" {
+        if _expr_yields(s.iterable) { return true }
+        return _has_yield(_block_stmts(s.body))
+    }
+    if nt == "TryCatch" {
+        if _has_yield(_block_stmts(s.try_body)) { return true }
+        if s.catch_body != null and _has_yield(_block_stmts(s.catch_body)) { return true }
+        if s.finally_body != null and _has_yield(_block_stmts(s.finally_body)) { return true }
+        return false
+    }
+    if nt == "MatchStatement" {
+        if _expr_yields(s.subject) { return true }
+        -- An arm is [pattern, body]; the fallback arm is `default`, not
+        -- `else_body` — reading the wrong name is a runtime error now that a
+        -- missing property throws rather than answering null.
+        for arm in s.arms { if _has_yield(_block_stmts(arm[1])) { return true } }
+        if s.default != null and _has_yield(_block_stmts(s.default)) { return true }
+        return false
+    }
+    if nt == "Block" { return _has_yield(_block_stmts(s)) }
+    return false
+}
+
+fn _expr_yields(e) {
+    if e == null { return false }
+    let nt = e.node_type
+    if nt == "YieldExpression" { return true }
+    -- A nested function is a separate call: its yields are its own.
+    if nt == "FnExpression" { return false }
+    if nt == "BinaryOp" { return _expr_yields(e.left) or _expr_yields(e.right) }
+    if nt == "UnaryOp" { return _expr_yields(e.operand) }
+    if nt == "CallExpression" {
+        if _expr_yields(e.callee) { return true }
+        for a in e.arguments { if _expr_yields(a) { return true } }
+        return false
+    }
+    if nt == "ListLiteral" {
+        for el in e.elements { if _expr_yields(el) { return true } }
+        return false
+    }
+    if nt == "MapLiteral" {
+        for pair in e.pairs {
+            if pair[0] != null and _expr_yields(pair[0]) { return true }
+            if _expr_yields(pair[1]) { return true }
+        }
+        return false
+    }
+    if nt == "RangeExpression" {
+        if _expr_yields(e.start) { return true }
+        return e.end != null and _expr_yields(e.end)
+    }
+    if nt == "SpreadExpression" { return _expr_yields(e.value) }
+    if nt == "IndexExpression" { return _expr_yields(e.object) or _expr_yields(e.index) }
+    if nt == "MemberExpression" { return _expr_yields(e.object) }
+    if nt == "IfExpression" {
+        return _expr_yields(e.condition) or _expr_yields(e.true_expr) or _expr_yields(e.false_expr)
+    }
+    if nt == "NullCoalesce" { return _expr_yields(e.left) or _expr_yields(e.right) }
+    if nt == "PipeExpression" { return _expr_yields(e.value) or _expr_yields(e.function) }
+    return false
+}
+
 fn _has_try(stmts) {
     for s in stmts {
         let nt = s.node_type
@@ -1657,6 +1757,7 @@ class CCodegen {
         this.local_names = []   -- names bound inside the function being emitted
         this.closure_defs = []  -- emitted closure function bodies (line lists)
         this.volatile_locals = false  -- true while emitting a function with a try
+        this.in_generator = false     -- true while emitting a function whose body yields
         this.finally_stack = []       -- finally bodies enclosing the statement being emitted
         this.enums = {}         -- enum name → list of member names, in order
         this.freestanding = false     -- --freestanding: no OS underneath (see _FREESTANDING_EXCLUDED)
@@ -1859,8 +1960,18 @@ class CCodegen {
         -- locals, which is the -O2 hazard the volatile is there to prevent.
         let outer_volatile = this.volatile_locals
         this.volatile_locals = _has_try(_block_stmts(node.body))
-        for s in _block_stmts(node.body) { for l in this.stmt(s, 1) { push(lines, l) } }
+        -- And for the same reason, whether this closure is a generator
+        -- depends on whether *it* yields: a closure written inside a
+        -- generator is a separate call with its own collection.
+        let outer_generator = this.in_generator
+        this.in_generator = _has_yield(_block_stmts(node.body))
+        mut body_lines = []
+        for l in this._generator_prologue() { push(body_lines, l) }
+        for s in _block_stmts(node.body) { for l in this.stmt(s, 1) { push(body_lines, l) } }
+        for l in this._generator_epilogue() { push(body_lines, l) }
+        for l in body_lines { push(lines, l) }
         this.volatile_locals = outer_volatile
+        this.in_generator = outer_generator
         push(lines, "  return cl_null();")
         push(lines, "}")
         push(this.closure_defs, lines)
@@ -2269,6 +2380,22 @@ class CCodegen {
         if nt == "IndexExpression" {
             return "cl_index(" + this.expr(node.object) + ", " + this.expr(node.index) + ")"
         }
+        if nt == "YieldExpression" {
+            -- Clarity's generators are eager: `yield v` is an expression
+            -- worth v that also appends v to what this call has collected,
+            -- and the call returns the collection if it is not empty. The
+            -- scan that set in_generator ignores yields inside a nested fn,
+            -- which is its own call with its own collection.
+            if not this.in_generator {
+                this.reject("yield outside a function", node.line)
+                return "cl_null()"
+            }
+            let id = this.tmp_id
+            this.tmp_id += 1
+            let t = "__y" + str(id)
+            let val = if node.value != null { this.expr(node.value) } else { "cl_null()" }
+            return "({ Value " + t + " = (" + val + "); __yields = cl_list_add(__yields, " + t + "); " + t + "; })"
+        }
         if nt == "MemberExpression" {
             -- `Colour.Red` is not a field read: an enum is a compile-time
             -- table, and its members are C globals initialised once. The
@@ -2388,6 +2515,18 @@ class CCodegen {
         }
         if nt == "ReturnStatement" {
             let val = if node.value != null { this.expr(node.value) } else { "cl_null()" }
+            -- In a generator the collection wins over the returned value, but
+            -- the value is still evaluated: the interpreter evaluates the
+            -- return expression and then discards it, so its side effects
+            -- happen either way.
+            if this.in_generator and len(this.finally_stack) == 0 {
+                let gid = this.tmp_id
+                this.tmp_id += 1
+                let gt = "__gr" + str(gid)
+                return [pad + "{ Value " + gt + " = " + val + ";",
+                        pad + "  if (cl_length(__yields) > 0) return __yields;",
+                        pad + "  return " + gt + "; }"]
+            }
             if len(this.finally_stack) == 0 { return [pad + "return " + val + ";"] }
             -- Returning out of a try has to run the finally blocks it is
             -- leaving, innermost first. The value is computed before they run,
@@ -2409,6 +2548,9 @@ class CCodegen {
                 i = i - 1
             }
             this.finally_stack = saved
+            if this.in_generator {
+                push(lines, pad + "  if (cl_length(__yields) > 0) return __yields;")
+            }
             push(lines, pad + "  return " + t + "; }")
             return lines
         }
@@ -2566,13 +2708,31 @@ class CCodegen {
         -- indeterminate if it is modified inside the try. Any function with a
         -- try therefore gets volatile locals; see the exception runtime.
         this.volatile_locals = _has_try(_block_stmts(node.body))
+        this.in_generator = _has_yield(_block_stmts(node.body))
         mut lines = [this._fn_signature(node) + " {"]
+        for l in this._generator_prologue() { push(lines, l) }
         for s in _block_stmts(node.body) { for l in this.stmt(s, 1) { push(lines, l) } }
+        for l in this._generator_epilogue() { push(lines, l) }
         push(lines, "  return cl_null();")
         push(lines, "}")
         this.local_names = []
         this.volatile_locals = false
+        this.in_generator = false
         return lines
+    }
+
+    -- One list per call, holding what `yield` has collected. A local rather
+    -- than anything global, so a recursive or nested generator keeps its own
+    -- — which is what the interpreter's save-and-restore buys it.
+    fn _generator_prologue() {
+        if not this.in_generator { return [] }
+        return ["  Value __yields = cl_list_new();"]
+    }
+
+    -- Falling off the end of a generator returns what it collected.
+    fn _generator_epilogue() {
+        if not this.in_generator { return [] }
+        return ["  if (cl_length(__yields) > 0) return __yields;"]
     }
 
     -- Every name this function binds: its parameters, and any `let`/`mut` or
@@ -2654,16 +2814,20 @@ class CCodegen {
         mut lines = []
         for m in class_node.methods {
             if m.node_type == "FnStatement" {
+                this.in_generator = _has_yield(_block_stmts(m.body))
                 push(lines, "Value f_" + class_node.name + "_" + m.name + "(Value v_this, Value* __a, long __n) {")
                 push(lines, "  (void)__a; (void)__n;")
+                for l in this._generator_prologue() { push(lines, l) }
                 mut idx = 0
                 for p in m.params {
                     push(lines, this._bind_param(_raw_param(p), idx))
                     idx += 1
                 }
                 for s in _block_stmts(m.body) { for l in this.stmt(s, 1) { push(lines, l) } }
+                for l in this._generator_epilogue() { push(lines, l) }
                 push(lines, "  return cl_null();")
                 push(lines, "}")
+                this.in_generator = false
             }
         }
         push(lines, "Value cl_ctor_" + class_node.name + "(Value* __a, long __n) {")

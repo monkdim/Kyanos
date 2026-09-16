@@ -1449,11 +1449,24 @@ class Interpreter {
                             }
                             m_env.set(substring(rp, 3), m_rest, true)
                         }
+                        -- A method that yields collects like any other
+                        -- generator. Without this a generator worked as a
+                        -- free function and returned null as a method — the
+                        -- same body, two answers, depending on where it was
+                        -- written.
+                        let prev_gc = interp._gen_collection
+                        interp._gen_collection = []
                         try {
                             interp.exec_Block(bound_method.body, m_env)
+                            let collected = interp._gen_collection
+                            interp._gen_collection = prev_gc
+                            if len(collected) > 0 { return collected }
                             return null
                         } catch sig {
+                            let collected = interp._gen_collection
+                            interp._gen_collection = prev_gc
                             if is_signal(sig) and signal_type(sig) == "return" {
+                                if len(collected) > 0 { return collected }
                                 return sig["value"]
                             }
                             throw sig

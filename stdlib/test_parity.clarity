@@ -159,6 +159,30 @@ same("function as a value", "fn f() { return 1 }\nlet g = f\nshow g()\nshow f")
 same("higher order", "fn apply(f, v) { return f(v) }\nshow apply(x => x + 1, 10)")
 same("pipe operator", "fn double(x) { return x * 2 }\nshow 5 |> double")
 
+show "-- Parity: generators --"
+-- Clarity's generators are eager: a body that yields runs to the end and
+-- the call returns the list of what it yielded. The VM compiled `yield` to
+-- the value alone and collected nothing, so `counter(3)` was null under
+-- --fast and a loop over it ran zero times.
+same("a generator returns what it yielded", "fn counter(n) {\n    mut i = 0\n    while i < n {\n        yield i * 10\n        i += 1\n    }\n}\nshow counter(3)")
+same("a for loop over a generator", "fn counter(n) {\n    mut i = 0\n    while i < n {\n        yield i\n        i += 1\n    }\n}\nfor v in counter(4) { show v }")
+same("a generator that yields conditionally", "fn evens(n) {\n    mut i = 0\n    while i < n {\n        if i % 2 == 0 { yield i }\n        i += 1\n    }\n}\nshow evens(7)")
+same("a generator over a generator", "fn evens(n) {\n    mut i = 0\n    while i < n {\n        if i % 2 == 0 { yield i }\n        i += 1\n    }\n}\nfn scaled(n) {\n    for v in evens(n) { yield v * 100 }\n}\nshow scaled(7)")
+same("a function that never yields is unchanged", "fn plain() { return 5 }\nshow plain()")
+-- What was collected wins over what the return statement says, and the
+-- returned expression is still evaluated.
+same("return inside a generator", "fn early(n) {\n    yield 1\n    if n > 0 { return \"ignored\" }\n    yield 2\n}\nshow early(1)\nshow early(0)")
+same("a recursive generator", "fn down(n) {\n    if n <= 0 { return null }\n    yield n\n    for v in down(n - 1) { yield v }\n}\nshow down(3)")
+same("a generator method", "class Box {\n    fn init(items) { this.items = items }\n    fn doubled() {\n        for it in this.items { yield it * 2 }\n    }\n}\nshow Box([1, 2, 3]).doubled()")
+same("a closure inside a generator is not one", "fn outer(n) {\n    let triple = fn(x) { return x * 3 }\n    mut i = 0\n    while i < n {\n        yield triple(i)\n        i += 1\n    }\n}\nshow outer(4)")
+same("yield is an expression", "fn g() {\n    let a = yield 7\n    show \"yielded \" + str(a)\n}\nshow g()")
+same("a generator with a try", "fn risky(n) {\n    try {\n        yield 1\n        if n > 0 { throw \"boom\" }\n        yield 2\n    } catch e {\n        yield 99\n    }\n}\nshow risky(1)\nshow risky(0)")
+same("map over a generator", "fn evens(n) {\n    mut i = 0\n    while i < n {\n        if i % 2 == 0 { yield i }\n        i += 1\n    }\n}\nshow map(evens(6), fn(x) { return x * 2 })")
+-- A yield anywhere an expression can go, including the places a walker
+-- that only knew about calls and lists would miss.
+same("yield inside a map literal", "fn g(n) {\n    let d = { \"a\": yield n, \"b\": yield n + 1 }\n    show d\n}\nshow g(5)")
+same("yield inside a range", "fn r(n) {\n    for v in (yield n)..(yield n + 2) { show v }\n}\nshow r(1)")
+
 show "-- Parity: classes --"
 same("class with a method", "class C {\n    fn init() { this.x = 1 }\n    fn get() { return this.x }\n}\nshow C().get()")
 same("mutation through a method", "class Counter {\n    fn init() { this.n = 0 }\n    fn bump() { this.n += 1; return this.n }\n}\nlet c = Counter()\nc.bump()\nshow c.bump()")
