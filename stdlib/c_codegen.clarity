@@ -235,6 +235,9 @@ static char* cl_obj_display(Value v);
    defined above the exception machinery and the type names they need */
 static void cl_throw(Value v);
 static Value cl_type_of(Value v);
+/* cl_dispatch calls a field that holds a closure, and cl_call is defined
+   below it with the rest of the closure machinery */
+static Value cl_call(Value f, Value* args, long n);
 
 /* ── conservative mark-sweep garbage collector (opt-in) ──
    Every runtime value carries a small header and is tracked in a global list.
@@ -441,6 +444,11 @@ static char* cl_to_cstr(Value v){
     case T_BOOL: strcpy(buf, v.i ? "true" : "false"); return buf;
     case T_INT: snprintf(buf, 64, "%ld", v.i); return buf;
     case T_FLOAT:
+      /* NaN and the infinities print as JavaScript names them, because that
+         is what the other two engines show — C's own spelling is "-nan". */
+      if(v.f != v.f){ strcpy(buf, "NaN"); return buf; }
+      if(v.f > 1.7976931348623157e308){ strcpy(buf, "Infinity"); return buf; }
+      if(v.f < -1.7976931348623157e308){ strcpy(buf, "-Infinity"); return buf; }
       if(v.f == (double)(long)v.f && v.f < 1e18 && v.f > -1e18){ snprintf(buf, 64, "%ld", (long)v.f); return buf; }
       /* shortest %g precision that round-trips — matches JS number formatting
          (3.14, not 3.1400000000000001) */
@@ -496,13 +504,17 @@ static Value cl_mul(Value a, Value b){
   if(a.t==T_FLOAT || b.t==T_FLOAT) return cl_float(cl_num(a)*cl_num(b));
   return cl_int(a.i*b.i);
 }
+/* Dividing by zero is an error, as in both other engines; it answered 0 here,
+   so a `try` around a division never fired and the wrong number carried on. */
 static Value cl_div(Value a, Value b){
   double d = cl_num(b);
-  if(d == 0.0) return cl_int(0);
+  if(d == 0.0) cl_throw(cl_str("RuntimeError: Division by zero"));
   return cl_float(cl_num(a)/d);
 }
+/* `%` by zero is NaN rather than an error, which is what the other two
+   engines answer — it is JavaScript's remainder underneath. */
 static Value cl_mod(Value a, Value b){
-  if(b.i == 0) return cl_int(0);
+  if(cl_num(b) == 0.0) return cl_float(0.0/0.0);
   if(a.t==T_FLOAT || b.t==T_FLOAT) return cl_float(fmod(cl_num(a), cl_num(b)));
   return cl_int(a.i % b.i);
 }
@@ -647,6 +659,48 @@ static Value cl_index(Value c, Value k){
   }
   return cl_null();
 }
+/* ── `...` and destructuring ──
+   Spreading opens a list out into a list or a call's arguments and a map into
+   a map; a list literal and a map literal refuse anything else, while a call
+   passes it as one argument, which is what the interpreter does. */
+static Value cl_list_extend(Value acc, Value v){
+  if(v.t != T_LIST) cl_throw(cl_str("TypeError: Can only spread a list into a list"));
+  List* l=(List*)v.o;
+  for(long i=0;i<l->len;i++) acc = cl_list_add(acc, l->items[i]);
+  return acc;
+}
+static Value cl_map_merge(Value acc, Value v){
+  if(v.t != T_MAP) cl_throw(cl_str("TypeError: Can only spread a map into a map"));
+  Map* m=(Map*)v.o;
+  for(long i=0;i<m->len;i++) acc = cl_map_put(acc, m->keys[i], m->vals[i]);
+  return acc;
+}
+static Value cl_args_add(Value acc, Value v){
+  if(v.t == T_LIST){ List* l=(List*)v.o; for(long i=0;i<l->len;i++) acc = cl_list_add(acc, l->items[i]); return acc; }
+  return cl_list_add(acc, v);
+}
+/* The argument array a call built as a list, so an arity known only at run
+   time can still be passed to the array convention everything here uses. */
+static Value* cl_argv_of(Value list){ return ((List*)list.o)->items; }
+static void cl_require_list(Value v){
+  if(v.t != T_LIST) cl_throw(cl_str("TypeError: Cannot destructure non-list into list pattern"));
+}
+static void cl_require_map(Value v){
+  if(v.t != T_MAP) cl_throw(cl_str("TypeError: Cannot destructure non-map into map pattern"));
+}
+/* A name past the end of the list binds null rather than failing, as in the
+   interpreter: `let [a, b] = [1]` gives b null. */
+static Value cl_destructure_at(Value v, long i){
+  List* l=(List*)v.o;
+  if(i < 0 || i >= l->len) return cl_null();
+  return l->items[i];
+}
+static Value cl_destructure_rest(Value v, long i){
+  List* l=(List*)v.o; Value out=cl_list_new();
+  for(long j=i;j<l->len;j++) out = cl_list_add(out, l->items[j]);
+  return out;
+}
+
 static void cl_index_set(Value c, Value k, Value val){
   if(c.t==T_LIST){ List* l=(List*)c.o; long idx=k.i; if(idx<0) idx+=l->len; if(idx>=0&&idx<l->len) l->items[idx]=val; }
   else if(c.t==T_MAP){ char* ks=cl_to_cstr(k); cl_map_put(c, ks, val); }
@@ -737,6 +791,13 @@ static ClMethod cl_find_method(const char* cls, const char* m){
 }
 /* obj.method(args): resolve on the instance's class, call with the arg array */
 static Value cl_dispatch(Value self, const char* m, Value* a, long n){
+  /* A field or a key holding a function is called before a method of the
+     same name, which is what both other engines do — and it is the only way
+     `counter.next()` works when counter is a map of closures. */
+  if(self.t==T_OBJECT || self.t==T_MAP){
+    Value f = cl_get_field_opt(self, m);
+    if(f.t==T_CLOSURE) return cl_call(f, a, n);
+  }
   const char* cls = (self.t==T_OBJECT) ? ((Obj*)self.o)->cls : "";
   ClMethod fn = cl_find_method(cls, m);
   if(fn) return fn(self, a, n);
@@ -1627,6 +1688,11 @@ static Value cl_ffi_call(Value namev, Value sigv, Value argsv){
 #endif /* !CLARITY_FREESTANDING */
 
 static void cl_show(Value v){ char* s=cl_display(v); printf("%s\n", s); }
+/* `show a, b` is one line with a space between the values. */
+static void cl_show_all(Value* vs, long n){
+  for(long i=0;i<n;i++){ if(i) printf(" "); printf("%s", cl_display(vs[i])); }
+  printf("\n");
+}
 """
 
 -- ── Helpers ─────────────────────────────────────────────
@@ -2001,6 +2067,7 @@ class CCodegen {
         this.in_generator = false     -- true while emitting a function whose body yields
         this.finally_stack = []       -- finally bodies enclosing the statement being emitted
         this.enums = {}         -- enum name → list of member names, in order
+        this.decorated = {}     -- function name → true, when a decorator rebinds it
         this.freestanding = false     -- --freestanding: no OS underneath (see _FREESTANDING_EXCLUDED)
     }
 
@@ -2111,6 +2178,18 @@ class CCodegen {
             this._free_expr(node.value, bound, acc)
             return
         }
+        if nt == "DestructureLetStatement" { this._free_expr(node.value, bound, acc); return }
+        if nt == "MultiAssignStatement" {
+            for v in node.values { this._free_expr(v, bound, acc) }
+            for target in node.targets {
+                if target.node_type == "Identifier" {
+                    if not has(bound, target.name) and not this._is_global(target.name) { acc[target.name] = true }
+                } else {
+                    this._free_expr(target, bound, acc)
+                }
+            }
+            return
+        }
         if nt == "ExpressionStatement" { this._free_expr(node.expression, bound, acc); return }
         if nt == "ReturnStatement" { if node.value != null { this._free_expr(node.value, bound, acc) } return }
         if nt == "ShowStatement" { for v in node.values { this._free_expr(v, bound, acc) } return }
@@ -2164,6 +2243,16 @@ class CCodegen {
         for s in stmts {
             this._free_stmt(s, b, acc)
             if s.node_type == "LetStatement" { b = this._set_add(b, s.name) }
+            -- A pattern binds every name in it, so what follows must not
+            -- capture them: without this a closure containing `let [a, b] = xs`
+            -- took a and b from its capture array *and* declared them, which
+            -- the C compiler rightly called a redefinition.
+            if s.node_type == "DestructureLetStatement" {
+                for target in s.targets {
+                    if starts(target, "...") { b = this._set_add(b, substring(target, 3, len(target))) }
+                    else { b = this._set_add(b, target) }
+                }
+            }
         }
     }
 
@@ -2283,6 +2372,60 @@ class CCodegen {
     -- `v |> f(a)` resolves builtins, constructors and named top-level
     -- functions exactly as `f(v, a)` does, instead of through a second call
     -- site that would drift from this one.
+    -- `f(...xs)`: how many arguments there are is not known while compiling,
+    -- so they are collected into a list and the call takes that list's array.
+    -- A spread list becomes that many arguments and anything else spread is
+    -- passed as one, which is what the interpreter does.
+    fn _spread_call(node, is_member) {
+        let callee = node.callee
+        mut inner = []
+        if is_member { push(inner, callee.object) }
+        for a in node.arguments {
+            if a.node_type == "SpreadExpression" { push(inner, a.value) } else { push(inner, a) }
+        }
+        let parts = this._ordered_parts(inner)
+        let names = parts["names"]
+        mut recv = null
+        mut ai = 0
+        if is_member { recv = names[0]; ai = 1 }
+        let aid = this.tmp_id
+        this.tmp_id += 1
+        let acc = "__as" + str(aid)
+        mut body = "volatile Value " + acc + " = cl_list_new(); "
+        for a in node.arguments {
+            if a.node_type == "SpreadExpression" {
+                body = body + acc + " = cl_args_add(" + acc + ", " + names[ai] + "); "
+            } else {
+                body = body + acc + " = cl_list_add(" + acc + ", " + names[ai] + "); "
+            }
+            ai += 1
+        }
+        let argv = "cl_argv_of(" + acc + "), cl_length(" + acc + ")"
+        mut call = ""
+        if is_member {
+            call = "cl_dispatch(" + recv + ", \"" + callee.property + "\", " + argv + ")"
+        } elif callee.node_type == "Identifier" {
+            if contains(this.classes, callee.name) {
+                call = "cl_ctor_" + callee.name + "(" + argv + ")"
+            } elif has(this.fn_arity, callee.name) {
+                -- A named function takes its parameters individually, so the
+                -- call goes through the one closure that wraps it — the same
+                -- value `apply(twice, 5)` would pass.
+                this.fn_values[callee.name] = true
+                call = "cl_call(__fnv_" + callee.name + ", " + argv + ")"
+            } elif has(_NATIVE_BUILTINS, callee.name) {
+                this.unsupported("spread into the builtin '" + callee.name + "'", node.line)
+                return "cl_null()"
+            } else {
+                call = "cl_call(v_" + callee.name + ", " + argv + ")"
+            }
+        } else {
+            this.unsupported("spread into an indirect call", node.line)
+            return "cl_null()"
+        }
+        return "({ " + parts["decls"] + body + call + "; })"
+    }
+
     -- `recv` is the receiver of a method call, already emitted, when the
     -- caller bound it to a temporary to fix the order it is evaluated in.
     fn _emit_call(callee, args, line, recv) {
@@ -2298,6 +2441,12 @@ class CCodegen {
             if contains(this.classes, callee.name) {
                 return "cl_ctor_" + callee.name + "(" + this._argv(args) + ")"
             }
+            -- A decorated function's name holds whatever the decorator
+            -- returned, so the call is through that value and not the C
+            -- function underneath it.
+            if has(this.decorated, callee.name) and not contains(this.local_names, callee.name) {
+                return "cl_call(v_" + callee.name + ", " + this._argv(args) + ")"
+            }
             let builtin = this._builtin_call(callee.name, args)
             if builtin != "" { return builtin }
             -- A known top-level function calls directly; anything else is a
@@ -2307,8 +2456,9 @@ class CCodegen {
             }
             return "cl_call(v_" + callee.name + ", " + this._argv(args) + ")"
         }
-        this.unsupported("indirect call", line)
-        return "cl_null()"
+        -- Anything else in callee position is a value that should be callable:
+        -- `m["f"](3)`, `(fns[i])(x)`. It used to be refused outright.
+        return "cl_call(" + this.expr(callee) + ", " + this._argv(args) + ")"
     }
 
     -- The C name of one enum member's global.
@@ -2680,6 +2830,9 @@ class CCodegen {
             -- and `f_twice` is the C function, not a Value; so wrap it in a
             -- closure. Skipped when something nearer binds the same name,
             -- because then the local is what the program meant.
+            if has(this.decorated, node.name) and not contains(this.local_names, node.name) {
+                return "v_" + node.name
+            }
             if has(this.fn_arity, node.name) and not contains(this.local_names, node.name) {
                 this.fn_values[node.name] = true
                 -- One closure per function, built once in main, rather than a
@@ -2726,11 +2879,33 @@ class CCodegen {
             return "cl_null()"
         }
         if nt == "ListLiteral" {
-            for el in node.elements {
-                if el.node_type == "SpreadExpression" {
-                    this.unsupported("spread in list literal", node.line)
-                    return "cl_null()"
+            mut has_spread = false
+            for el in node.elements { if el.node_type == "SpreadExpression" { has_spread = true } }
+            if has_spread {
+                -- `[1, ...xs, 4]`: the spread elements are opened out, so the
+                -- length is not known while compiling and the list is built
+                -- one step at a time. The operands are still bound in source
+                -- order, for the reason _ordered_parts gives.
+                mut inner = []
+                for el in node.elements {
+                    if el.node_type == "SpreadExpression" { push(inner, el.value) } else { push(inner, el) }
                 }
+                let sparts = this._ordered_parts(inner)
+                let snames = sparts["names"]
+                let sid = this.tmp_id
+                this.tmp_id += 1
+                let sacc = "__ls" + str(sid)
+                mut sbody = "volatile Value " + sacc + " = cl_list_new(); "
+                mut si = 0
+                for el in node.elements {
+                    if el.node_type == "SpreadExpression" {
+                        sbody = sbody + sacc + " = cl_list_extend(" + sacc + ", " + snames[si] + "); "
+                    } else {
+                        sbody = sbody + sacc + " = cl_list_add(" + sacc + ", " + snames[si] + "); "
+                    }
+                    si += 1
+                }
+                return "({ " + sparts["decls"] + sbody + sacc + "; })"
             }
             let parts = this._ordered_parts(node.elements)
             if not parts["seq"] {
@@ -2750,12 +2925,36 @@ class CCodegen {
             return "({ " + parts["decls"] + body + acc + "; })"
         }
         if nt == "MapLiteral" {
+            mut map_spread = false
+            for pair in node.pairs { if pair[0] == null { map_spread = true } }
+            if map_spread {
+                -- `{...m, "b": 2}` is a pair with no key. Merged in order, so
+                -- a later key beats a spread one.
+                mut inner = []
+                for pair in node.pairs {
+                    if pair[0] == null { push(inner, pair[1].value) }
+                    else { push(inner, pair[0]); push(inner, pair[1]) }
+                }
+                let mparts = this._ordered_parts(inner)
+                let mnames = mparts["names"]
+                let mid2 = this.tmp_id
+                this.tmp_id += 1
+                let macc = "__ms" + str(mid2)
+                mut mbody = "volatile Value " + macc + " = cl_map_new(); "
+                mut mi2 = 0
+                for pair in node.pairs {
+                    if pair[0] == null {
+                        mbody = mbody + macc + " = cl_map_merge(" + macc + ", " + mnames[mi2] + "); "
+                        mi2 += 1
+                    } else {
+                        mbody = mbody + macc + " = cl_map_put(" + macc + ", cl_to_cstr(" + mnames[mi2] + "), " + mnames[mi2 + 1] + "); "
+                        mi2 += 2
+                    }
+                }
+                return "({ " + mparts["decls"] + mbody + macc + "; })"
+            }
             mut flat = []
             for pair in node.pairs {
-                if pair[0] == null {
-                    this.unsupported("spread in map literal", node.line)
-                    return "cl_null()"
-                }
                 push(flat, pair[0])
                 push(flat, pair[1])
             }
@@ -2802,6 +3001,12 @@ class CCodegen {
             let val = if node.value != null { this.expr(node.value) } else { "cl_null()" }
             return "({ Value " + t + " = (" + val + "); __yields = cl_list_add(__yields, " + t + "); " + t + "; })"
         }
+        if nt == "AwaitExpression" {
+            -- There is no scheduler here and none in the interpreter either:
+            -- `await x` evaluates x. Refusing it kept the last example in
+            -- examples/ from compiling for no reason the language has.
+            return this.expr(node.value)
+        }
         if nt == "OptionalMemberExpression" {
             -- `a?.b`: null when reading the property would have failed, which
             -- is what the interpreter answers and what `?.` is for. It was
@@ -2834,6 +3039,9 @@ class CCodegen {
             mut operands = []
             if is_member { push(operands, node.callee.object) }
             for a in node.arguments { push(operands, a) }
+            mut call_spread = false
+            for a in node.arguments { if a.node_type == "SpreadExpression" { call_spread = true } }
+            if call_spread { return this._spread_call(node, is_member) }
             let parts = this._ordered_parts(operands)
             let names = parts["names"]
             mut recv = null
@@ -2893,6 +3101,74 @@ class CCodegen {
         return "cl_null()"
     }
 
+    -- `let [a, b] = pair` and `let {x, y} = m`. The value is bound once, the
+    -- names are read out of it, and a name past the end of a list binds null
+    -- rather than failing — the interpreter's rules. `declare` is false at
+    -- module level, where the names are C globals already.
+    fn _destructure(node, pad, declare) {
+        mut qual = ""
+        if declare {
+            qual = if this.volatile_locals { "volatile Value " } else { "Value " }
+        }
+        let id = this.tmp_id
+        this.tmp_id += 1
+        let t = "__dv" + str(id)
+        mut lines = [pad + "volatile Value " + t + " = " + this.expr(node.value) + ";"]
+        if node.kind == "map" {
+            push(lines, pad + "cl_require_map(" + t + ");")
+            for target in node.targets {
+                push(lines, pad + qual + "v_" + target + " = cl_index(" + t + ", cl_str(\"" + _c_escape(target) + "\"));")
+            }
+            return lines
+        }
+        push(lines, pad + "cl_require_list(" + t + ");")
+        mut i = 0
+        for target in node.targets {
+            if starts(target, "...") {
+                let rest_name = substring(target, 3, len(target))
+                push(lines, pad + qual + "v_" + rest_name + " = cl_destructure_rest(" + t + ", " + str(i) + ");")
+                return lines
+            }
+            push(lines, pad + qual + "v_" + target + " = cl_destructure_at(" + t + ", " + str(i) + ");")
+            i += 1
+        }
+        return lines
+    }
+
+    -- `a, b = b, a`. Every value is evaluated before anything is assigned,
+    -- which is what makes the swap a swap.
+    fn _multi_assign(node, pad) {
+        if len(node.targets) != len(node.values) {
+            this.reject("multi-assignment: " + str(len(node.targets)) + " targets but " +
+                str(len(node.values)) + " values", node.line)
+            return []
+        }
+        mut lines = []
+        mut temps = []
+        for v in node.values {
+            let id = this.tmp_id
+            this.tmp_id += 1
+            let t = "__ma" + str(id)
+            push(lines, pad + "volatile Value " + t + " = " + this.expr(v) + ";")
+            push(temps, t)
+        }
+        mut i = 0
+        for target in node.targets {
+            let tn = target.node_type
+            if tn == "Identifier" {
+                push(lines, pad + "v_" + target.name + " = " + temps[i] + ";")
+            } elif tn == "MemberExpression" {
+                push(lines, pad + "cl_set_field(" + this.expr(target.object) + ", \"" + target.property + "\", " + temps[i] + ");")
+            } elif tn == "IndexExpression" {
+                push(lines, pad + "cl_index_set(" + this.expr(target.object) + ", " + this.expr(target.index) + ", " + temps[i] + ");")
+            } else {
+                this.reject("multi-assignment to " + tn, node.line)
+            }
+            i += 1
+        }
+        return lines
+    }
+
     -- Emit C statement lines (a list of strings) for an AST statement.
     fn stmt(node, indent) {
         let pad = repeat("  ", indent)
@@ -2900,6 +3176,12 @@ class CCodegen {
         if nt == "LetStatement" {
             let qual = if this.volatile_locals { "volatile Value v_" } else { "Value v_" }
             return [pad + qual + node.name + " = " + this.expr(node.value) + ";"]
+        }
+        if nt == "DestructureLetStatement" {
+            return this._destructure(node, pad, true)
+        }
+        if nt == "MultiAssignStatement" {
+            return this._multi_assign(node, pad)
         }
         if nt == "AssignStatement" {
             if node.target.node_type == "Identifier" {
@@ -2941,9 +3223,17 @@ class CCodegen {
             return []
         }
         if nt == "ShowStatement" {
-            mut lines = []
-            for v in node.values { push(lines, pad + "cl_show(" + this.expr(v) + ");") }
-            return lines
+            if len(node.values) == 1 {
+                return [pad + "cl_show(" + this.expr(node.values[0]) + ");"]
+            }
+            -- `show a, b` is one line with a space between, as in both other
+            -- engines. Emitting one cl_show per value put them on separate
+            -- lines, so examples/hello.clarity printed "Colors:" and the list
+            -- underneath it rather than beside it.
+            let parts = this._ordered_parts(node.values)
+            let names = parts["names"]
+            mut call = "cl_show_all((Value[]){" + join(names, ", ") + "}, " + str(len(names)) + ")"
+            return [pad + this._wrap_seq(parts, call) + ";"]
         }
         if nt == "ExpressionStatement" {
             return [pad + "(void)(" + this.expr(node.expression) + ");"]
@@ -3187,6 +3477,12 @@ class CCodegen {
         for s in stmts {
             let nt = s.node_type
             if nt == "LetStatement" { push(acc, s.name) }
+            elif nt == "DestructureLetStatement" {
+                for target in s.targets {
+                    if starts(target, "...") { push(acc, substring(target, 3, len(target))) }
+                    else { push(acc, target) }
+                }
+            }
             elif nt == "ForStatement" {
                 if s.variable != null { push(acc, s.variable) }
                 this._collect_bound(_block_stmts(s.body), acc)
@@ -3303,7 +3599,23 @@ class CCodegen {
                 mut member_names = []
                 for member in stmt.members { push(member_names, member[0]) }
                 this.enums[stmt.name] = member_names
-            } else { push(top, stmt) }
+            }
+            elif stmt.node_type == "DecoratedStatement" and stmt.target.node_type == "FnStatement" {
+                -- `@twice fn f() {...}` is a function *and* a rebinding of
+                -- its name to whatever the decorator returns. The function is
+                -- emitted as usual; the name becomes a global holding the
+                -- wrapped value, and calls go through that.
+                let target = stmt.target
+                push(fns, target)
+                push(this.fn_names, target.name)
+                this.fn_arity[target.name] = len(target.params)
+                if len(target.params) > 0 and _is_rest(target.params[len(target.params) - 1]) {
+                    this.fn_rest[target.name] = true
+                }
+                this.decorated[target.name] = true
+                push(top, stmt)
+            }
+            else { push(top, stmt) }
         }
 
         -- Emit bodies first: this drives expr()/stmt(), which hoist any
@@ -3348,6 +3660,33 @@ class CCodegen {
                     push(globals, s.name)
                 }
                 push(main_body, "  v_" + s.name + " = " + this.expr(s.value) + ";")
+            } elif s.node_type == "DecoratedStatement" {
+                let dname = s.target.name
+                if not has(seen_global, dname) {
+                    seen_global[dname] = true
+                    push(globals, dname)
+                }
+                this.fn_values[dname] = true
+                -- Innermost decorator first, as in the interpreter.
+                mut wrapped = "__fnv_" + dname
+                mut di = len(s.decorators) - 1
+                while di >= 0 {
+                    wrapped = "cl_call(" + this.expr(s.decorators[di]) + ", (Value[]){" + wrapped + "}, 1)"
+                    di -= 1
+                }
+                push(main_body, "  v_" + dname + " = " + wrapped + ";")
+            } elif s.node_type == "DestructureLetStatement" {
+                -- Every name a module-level pattern binds is a C global, for
+                -- the reason the plain `let` above is: a function compiled
+                -- anywhere in the file may name one.
+                for target in s.targets {
+                    let dn = if starts(target, "...") { substring(target, 3, len(target)) } else { target }
+                    if not has(seen_global, dn) {
+                        seen_global[dn] = true
+                        push(globals, dn)
+                    }
+                }
+                for l in this._destructure(s, "  ", false) { push(main_body, l) }
             } else {
                 for l in this.stmt(s, 1) { push(main_body, l) }
             }

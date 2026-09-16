@@ -117,6 +117,18 @@ program using it did not run at all. `...` marks its value now and the list,
 map and call assemblers open the mark out, on the interpreter's rules
 including its leniency about `f(...5)` and its refusal of `[1, ...5]`.
 
+### `clarity cc` refused destructuring, spread, decorators and `await`
+Fixed. `let [a, b] = pair`, `a, b = b, a` and `...` in a call, a list or a map
+were compile-time refusals, and so were `await` and a decorator — which is why
+two files in `examples/` did not compile. All seventeen do now, and a codegen
+case compiles each of them so the claim cannot go stale quietly. Found while
+diffing the examples' native output against the interpreter's, and fixed
+alongside: `show a, b` printed one value per line rather than one line with a
+space; dividing by zero answered 0 instead of raising the error both other
+engines raise; NaN printed as C's `-nan`; a function held in a map or a field
+was not callable (`counter.next()` where counter is a map of closures); and a
+callee that is any other expression (`fns[i](x)`) was refused outright.
+
 ### Mid-run garbage collection kills a program on darwin-arm64
 `CLARITY_GC=1` turns on mid-run collection in a compiled binary. On
 darwin-arm64 a program that holds **two** live allocations across a collection

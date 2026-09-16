@@ -222,10 +222,20 @@ lands with codegen tests that diff native output against the interpreter.
   the strict one. **What that turned up:** the bytecode VM did not short-circuit `and` or `or` —
   `false and side()` called `side()` — which had been invisible because the standard library's own
   guard reads `items[0]` of an empty list and the VM answered `null` rather than failing.
-- **Destructuring and spread in native builds.** With generators done, what stops the last two
-  files in `examples/` compiling is `DestructureLetStatement`, `MultiAssignStatement` (`let [a, b]
-  = pair`, `a, b = b, a`) and `SpreadExpression` in a call or a list. Fifteen of the seventeen
-  examples compile today.
+- **Every file in `examples/` compiles natively (done).** What was left was `let [a, b] = pair`,
+  `a, b = b, a` and `...` in a call, a list or a map, and once those were in, three smaller things
+  the last example needed: `await x` (which is `x`, here as in the interpreter — there is no
+  scheduler in either), a decorator (`@twice fn f()` rebinds the *name* to what the decorator
+  returns, so the name becomes a global holding that value and calls go through it), and calling a
+  function held in a map or a field (`counter.next()`, where `counter` is a map of closures)
+  rather than only a class method. A callee that is any other expression — `fns[i](x)` — is called
+  too, instead of being refused. Three more divergences turned up while diffing the examples
+  against the interpreter and are fixed here: `show a, b` printed one value per line instead of
+  one line with a space; dividing by zero answered 0 instead of raising the error both other
+  engines raise (and `%` by zero answers NaN, as they do); and NaN printed as C's `-nan`. A new
+  codegen case compiles every file in `examples/` so the claim cannot go stale quietly. What still
+  differs when the examples *run* is the builtin pseudo-methods (`text.upper()`), which is its own
+  item, and by-value closure capture, which is already on this list.
 - **Networking.** TLS, then keep-alive and chunked encoding, so the HTTP
   client can talk to real services rather than only to plaintext ones.
 - **Stage 12+ — services stdlib.** Real crypto (not the toy cipher), a real embedded key/value or
