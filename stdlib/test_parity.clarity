@@ -238,6 +238,19 @@ same("map over a generator", "fn evens(n) {\n    mut i = 0\n    while i < n {\n 
 same("yield inside a map literal", "fn g(n) {\n    let d = { \"a\": yield n, \"b\": yield n + 1 }\n    show d\n}\nshow g(5)")
 same("yield inside a range", "fn r(n) {\n    for v in (yield n)..(yield n + 2) { show v }\n}\nshow r(1)")
 
+show "-- Parity: spread and destructuring --"
+-- `...xs` compiled to the value alone in the VM, so it was taken whole
+-- rather than opened out: `[1, ...[2, 3], 4]` was `[1, [2, 3], 4]` and
+-- `f(...[1, 2, 3])` passed one list and two nulls. A spread in a *map*
+-- crashed the VM's compiler outright, with a host TypeError about
+-- node.node_type, so a program using it did not run at all.
+same("spread into a call", "fn t(label, f) { try { show label + \": \" + str(f()) } catch e { show label + \": THROWS\" } }\nfn three(p, q, r) { return [p, q, r] }\nlet xs = [2, 3]\nt(\"only\", fn() { return three(...[1, 2, 3]) })\nt(\"after\", fn() { return three(1, ...xs) })\nt(\"empty\", fn() { return three(1, 2, ...[]) })")
+same("spread into a call with a rest parameter", "fn t(label, f) { try { show label + \": \" + str(f()) } catch e { show label + \": THROWS\" } }\nfn rest_fn(a, ...rest) { return [a, rest] }\nlet xs = [2, 3]\nt(\"rest\", fn() { return rest_fn(1, ...xs) })\nt(\"non-list\", fn() { return rest_fn(...5) })")
+same("spread into a list", "fn t(label, f) { try { show label + \": \" + str(f()) } catch e { show label + \": THROWS\" } }\nlet xs = [2, 3]\nt(\"middle\", fn() { return [1, ...xs, 4] })\nt(\"only\", fn() { return [...xs] })\nt(\"empty\", fn() { return [...[], 1] })\nt(\"nested\", fn() { return [...[1, [2]], 3] })\nt(\"non-list\", fn() { return [1, ...5] })")
+same("spread into a map", "fn t(label, f) { try { show label + \": \" + str(f()) } catch e { show label + \": THROWS\" } }\nlet m = {\"a\": 1, \"b\": 2}\nt(\"after\", fn() { return {...m, \"c\": 3} })\nt(\"before\", fn() { return {\"a\": 9, ...m} })\nt(\"overridden\", fn() { return {...m, \"a\": 9} })\nt(\"two\", fn() { return {...m, ...{\"c\": 3}} })\nt(\"non-map\", fn() { return {...\"x\"} })")
+same("destructuring a list", "let [a, b] = [1, 2]\nshow a\nshow b\nlet [f, ...r] = [1, 2, 3, 4]\nshow f\nshow r")
+same("assigning two names at once", "mut x = 1\nmut y = 2\nx, y = y, x\nshow x\nshow y")
+
 show "-- Parity: classes --"
 same("class with a method", "class C {\n    fn init() { this.x = 1 }\n    fn get() { return this.x }\n}\nshow C().get()")
 same("mutation through a method", "class Counter {\n    fn init() { this.n = 0 }\n    fn bump() { this.n += 1; return this.n }\n}\nlet c = Counter()\nc.bump()\nshow c.bump()")
