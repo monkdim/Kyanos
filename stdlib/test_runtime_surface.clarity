@@ -1,0 +1,270 @@
+-- One language, one set of builtins — checked against all four places
+-- that have an opinion about what a builtin is.
+--
+-- A Clarity program can reach a builtin through three engines: the
+-- tree-walking interpreter (`clarity run`), the bytecode VM (`run --fast`),
+-- and generated JavaScript (`transpile`, and therefore the binary itself).
+-- Each keeps its own list, and nothing compared them, so they drifted:
+--
+--   * `fetch`, `serve`, `compose` and `tap` were imported by the transpiler
+--     and named by the type checker, and were not interpreter builtins —
+--     so `show type(fetch)` printed `function` in a transpiled program and
+--     died with NameError under `clarity run`. stdlib/net.clarity's
+--     HttpServer.listen() calls serve(), so that class worked compiled and
+--     failed interpreted.
+--   * The VM's table held 82 names against the interpreter's 158. `hash`,
+--     `pad_left`, `pad_right`, `encode64`, `decode64`, `read_bytes`,
+--     `write_bytes`, `read_mem` and `write_mem` were builtins on one engine
+--     and undefined variables on the other, as were all 54 of the FFI,
+--     pseudo-terminal and host-window bridges the standard library's own
+--     modules call.
+--   * The five regex functions and exec_full_regex were exported by the
+--     runtime, imported by nothing and registered nowhere: no program could
+--     reach them in any engine.
+--
+-- This reads the four sources and requires them to agree. It parses by
+-- hand rather than with the regex builtins on purpose: the CI test jobs
+-- bootstrap from the previous release, whose transpiler cannot import a
+-- name newer than that release, and a test that used regex_find would be
+-- the first thing to break there.
+
+mut PASSED = 0
+mut FAILED = 0
+
+fn assert(val, msg) {
+    if val { PASSED += 1 } else { FAILED += 1; show "  FAIL: " + msg }
+}
+
+fn assert_eq(actual, expected, msg) {
+    if actual == expected { PASSED += 1 }
+    else { FAILED += 1; show "  FAIL: {msg} (expected {expected}, got {actual})" }
+}
+
+-- The suite runs from the repository root; a checkout is what it reads.
+fn _read_repo_file(rel) {
+    for prefix in ["", "../", "../../"] {
+        let candidate = prefix + rel
+        if exists(candidate) { return read(candidate) }
+    }
+    throw "test_runtime_surface: cannot find " + rel + " — run it from the repository"
+}
+
+-- Every occurrence of `open` ... `close`, as the text between them.
+fn _between_all(text, open_marker, close_marker) {
+    mut found = []
+    let parts = split(text, open_marker)
+    mut i = 1
+    while i < len(parts) {
+        let rest = parts[i]
+        let end = index_of(rest, close_marker)
+        if end >= 0 { push(found, substring(rest, 0, end)) }
+        i += 1
+    }
+    return found
+}
+
+fn _first_between(text, open_marker, close_marker) {
+    let start = index_of(text, open_marker)
+    if start < 0 { return null }
+    let rest = substring(text, start + len(open_marker), len(text))
+    let end = index_of(rest, close_marker)
+    if end < 0 { return null }
+    return substring(rest, 0, end)
+}
+
+-- `name` or `name as alias` → name, the name the runtime exports.
+fn _exported_name(token) {
+    let t = trim(token)
+    if len(t) == 0 { return null }
+    let at = index_of(t, " as ")
+    if at >= 0 { return trim(substring(t, 0, at)) }
+    return t
+}
+
+-- `name as alias` → alias, the name generated code writes.
+fn _local_name(token) {
+    let t = trim(token)
+    if len(t) == 0 { return null }
+    let at = index_of(t, " as ")
+    if at >= 0 { return trim(substring(t, at + 4, len(t))) }
+    return t
+}
+
+fn _names_from_import_header(source) {
+    let block = _first_between(source, "import { show as $show", "} from \"./runtime.js\"")
+    if block == null { throw "no runtime import header found" }
+    -- Put back the opening the search consumed, and drop the line breaks
+    -- and quoting that each transpiler wraps its header in.
+    mut text = "show as $show" + block
+    text = replace(text, "\\n", " ")
+    text = replace(text, "'", " ")
+    text = replace(text, "\n", " ")
+    mut names = []
+    for token in split(text, ",") {
+        let n = _exported_name(token)
+        if n != null and len(n) > 0 { push(names, n) }
+    }
+    return names
+}
+
+fn _local_names_from_import_header(source) {
+    let block = _first_between(source, "import { show as $show", "} from \"./runtime.js\"")
+    mut text = "show as $show" + block
+    text = replace(text, "\\n", " ")
+    text = replace(text, "'", " ")
+    text = replace(text, "\n", " ")
+    mut names = []
+    for token in split(text, ",") {
+        let n = _local_name(token)
+        if n != null and len(n) > 0 { push(names, n) }
+    }
+    return names
+}
+
+fn _runtime_exports(source) {
+    mut names = []
+    for line in split(source, "\n") {
+        let t = trim(line)
+        for marker in ["export function ", "export const ", "export class "] {
+            if starts(t, marker) {
+                let rest = substring(t, len(marker), len(t))
+                mut name = ""
+                mut i = 0
+                while i < len(rest) {
+                    let ch = char_at(rest, i)
+                    if is_alnum(ch) or ch == "_" or ch == "$" { name = name + ch } else { break }
+                    i += 1
+                }
+                if len(name) > 0 { push(names, name) }
+            }
+        }
+    }
+    -- `export { show as print }` re-exports under a second name.
+    for block in _between_all(source, "export {", "}") {
+        for token in split(block, ",") {
+            let n = _local_name(token)
+            if n != null and len(n) > 0 { push(names, n) }
+        }
+    }
+    return unique(names)
+}
+
+fn _contains_name(names, name) {
+    for n in names { if n == name { return true } }
+    return false
+}
+
+fn _missing_from(names, required) {
+    mut missing = []
+    for n in required {
+        if not _contains_name(names, n) { push(missing, n) }
+    }
+    return missing
+}
+
+-- Names generated code uses that a Clarity program never calls: the entry
+-- wrapper, the error renderer, the truthiness and display helpers the
+-- emitter inserts, the class shims, and the control-flow signals.
+let INTERNAL = [
+    "clarityMain", "formatClarityError", "truthy", "$truthy",
+    "ClarityEnum", "ClarityInstance", "$ClarityEnum", "$ClarityInstance",
+    "BreakSignal", "ContinueSignal", "ReturnSignal",
+    "$eq", "$ne", "$index", "$path", "$os",
+    "_register_embedded_stdlib"
+]
+
+-- Aliases the emitter writes for names that collide with JavaScript's own
+-- keywords or globals. The Clarity name is the one on the left.
+let ALIAS_OF = {
+    "$int": "int", "$float": "float", "$bool": "bool", "$join": "join",
+    "$repeat": "repeat", "$range": "range", "$min": "min", "$max": "max",
+    "$set": "set", "$error": "error", "$show": "show", "$ask": "ask"
+}
+
+fn _clarity_name(local) {
+    if has(ALIAS_OF, local) { return ALIAS_OF[local] }
+    return local
+}
+
+show "-- Runtime surface: reading the four lists --"
+
+let runtime_js = _read_repo_file("native/runtime.js")
+let py_transpiler = _read_repo_file("native/transpile.py")
+let self_transpiler = _read_repo_file("stdlib/transpile.clarity")
+let interpreter_src = _read_repo_file("stdlib/interpreter.clarity")
+let bytecode_src = _read_repo_file("stdlib/bytecode.clarity")
+
+let exports = _runtime_exports(runtime_js)
+let py_header = _names_from_import_header(py_transpiler)
+let self_header = _names_from_import_header(self_transpiler)
+let py_locals = _local_names_from_import_header(py_transpiler)
+
+mut interp_builtins = []
+for name in _between_all(interpreter_src, "global_env.set(\"", "\"") { push(interp_builtins, name) }
+interp_builtins = unique(interp_builtins)
+
+mut vm_builtins = []
+for name in _between_all(bytecode_src, "this.globals[\"", "\"") { push(vm_builtins, name) }
+vm_builtins = unique(vm_builtins)
+
+assert(len(exports) > 100, "the runtime exports were parsed (" + str(len(exports)) + " names)")
+assert(len(py_header) > 100, "the Python transpiler's header was parsed (" + str(len(py_header)) + " names)")
+assert(len(self_header) > 100, "the self-hosted transpiler's header was parsed (" + str(len(self_header)) + " names)")
+assert(len(interp_builtins) > 100, "the interpreter's builtins were parsed (" + str(len(interp_builtins)) + " names)")
+assert(len(vm_builtins) > 100, "the VM's builtins were parsed (" + str(len(vm_builtins)) + " names)")
+
+show "-- Runtime surface: the two transpilers agree --"
+
+-- They emit the same header, so a bundle built by either imports the same
+-- runtime. They are separate hand-written lists, which is exactly why this
+-- is checked rather than assumed.
+let py_not_self = _missing_from(self_header, py_header)
+let self_not_py = _missing_from(py_header, self_header)
+assert_eq(len(py_not_self), 0, "every name the Python transpiler imports, the self-hosted one imports: " + join(py_not_self, ", "))
+assert_eq(len(self_not_py), 0, "every name the self-hosted transpiler imports, the Python one imports: " + join(self_not_py, ", "))
+
+show "-- Runtime surface: nothing the runtime exports is unreachable --"
+
+mut unreachable = []
+for name in exports {
+    if _contains_name(INTERNAL, name) { continue }
+    if starts(name, "_") { continue }   -- bridges, checked by engine below
+    if not _contains_name(py_header, name) { push(unreachable, name) }
+}
+assert_eq(len(unreachable), 0, "runtime exports no program can reach: " + join(unreachable, ", "))
+
+show "-- Runtime surface: the engines offer the same builtins --"
+
+-- The sharpest check of the three: a name either works in both engines or
+-- in neither, and the difference used to be 22 public names wide.
+let in_interp_only = _missing_from(vm_builtins, interp_builtins)
+let in_vm_only = _missing_from(interp_builtins, vm_builtins)
+assert_eq(len(in_interp_only), 0, "builtins the interpreter has and the VM does not: " + join(in_interp_only, ", "))
+assert_eq(len(in_vm_only), 0, "builtins the VM has and the interpreter does not: " + join(in_vm_only, ", "))
+
+show "-- Runtime surface: what compiled code imports, the engines provide --"
+
+mut not_a_builtin = []
+for local in py_locals {
+    if _contains_name(INTERNAL, local) { continue }
+    if starts(local, "_") { continue }
+    let name = _clarity_name(local)
+    if not _contains_name(interp_builtins, name) { push(not_a_builtin, name) }
+}
+assert_eq(len(not_a_builtin), 0, "imported by compiled code, not a builtin in the engines: " + join(not_a_builtin, ", "))
+
+show "-- Runtime surface: the names this drift was found through --"
+
+-- Spot checks, so a future refactor of the parsing above cannot pass by
+-- finding nothing.
+for name in ["fetch", "serve", "compose", "tap", "hash", "pad_left", "encode64",
+             "read_bytes", "write_mem", "regex_match", "regex_find", "regex_replace",
+             "regex_split", "regex_search", "exec_full_regex", "display", "repr"] {
+    assert(_contains_name(interp_builtins, name), name + " is an interpreter builtin")
+    assert(_contains_name(vm_builtins, name), name + " is a VM builtin")
+    assert(_contains_name(py_header, name), name + " is imported by compiled code")
+}
+
+show ""
+show "Runtime surface: " + str(PASSED) + " passed, " + str(FAILED) + " failed"
+if FAILED > 0 { throw str(FAILED) + " runtime-surface check(s) failed" }

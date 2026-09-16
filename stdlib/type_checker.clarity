@@ -36,7 +36,9 @@ let BUILTIN_TYPES = {
     "char_at": "string", "char_code": "int", "from_char_code": "string",
     "index_of": "int", "substring": "string",
     "pad_left": "string", "pad_right": "string",
-    "pi": "float", "e": "float"
+    "pi": "float", "e": "float",
+    "regex_match": "bool", "regex_search": "bool", "regex_find": "list",
+    "regex_replace": "string", "regex_split": "list", "exec_full_regex": "any"
 }
 
 let BUILTIN_NAMES = [

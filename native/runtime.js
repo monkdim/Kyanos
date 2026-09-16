@@ -556,9 +556,17 @@ export function fetch(url) {
   return execSync(`curl -sL '${url}'`, { encoding: 'utf-8' });
 }
 
+// The handler is called with one argument: the request, as a map with
+// `method` and `path`. Both callers in this repository — net.clarity's
+// HttpServer.listen and registry.clarity's create_handler — were written
+// against that shape and read `req.method` and `req.path`, while this
+// passed the method and the URL as two separate strings, so a handler
+// received "GET" where it expected a request and read a property off a
+// string. Nothing caught it because `serve` was not a builtin the
+// interpreter offered, so neither caller had ever run.
 export function serve(port, handler) {
   const server = createServer((req, res) => {
-    const result = handler(req.method, req.url);
+    const result = handler({ method: req.method, path: req.url });
     if (typeof result === 'object' && result !== null) {
       res.writeHead(result.status || 200, { 'Content-Type': result.type || 'text/html' });
       res.end(result.body || '');

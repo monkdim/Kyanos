@@ -210,7 +210,7 @@ let HTTP_SECTION = {
     label: "HTTP",
     fns: [
         {name: "fetch", params: "url", body: "return execSync('curl -sL \\'' + url + '\\'', { encoding: 'utf-8' });"},
-        {name: "serve", params: "port, handler", body: "const server = createServer((req, res) => {\n    const result = handler(req.method, req.url);\n    if (typeof result === 'object' && result !== null) {\n      res.writeHead(result.status || 200, { 'Content-Type': result.type || 'text/html' });\n      res.end(result.body || '');\n    } else {\n      res.writeHead(200, { 'Content-Type': 'text/html' });\n      res.end(display(result));\n    }\n  });\n  server.listen(port);\n  console.log('  Serving on http://localhost:' + port);"}
+        {name: "serve", params: "port, handler", body: "const server = createServer((req, res) => {\n    const result = handler({ method: req.method, path: req.url });\n    if (typeof result === 'object' && result !== null) {\n      res.writeHead(result.status || 200, { 'Content-Type': result.type || 'text/html' });\n      res.end(result.body || '');\n    } else {\n      res.writeHead(200, { 'Content-Type': 'text/html' });\n      res.end(display(result));\n    }\n  });\n  server.listen(port);\n  console.log('  Serving on http://localhost:' + port);"}
     ]
 }
 

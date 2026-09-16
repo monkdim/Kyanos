@@ -471,6 +471,49 @@ class Interpreter {
         this.global_env.set("json_parse", fn(t) { return json_parse(t) }, true)
         this.global_env.set("json_string", fn(v) { return json_string(v) }, true)
 
+        -- Network, functional helpers, and the value printers.
+        --
+        -- These were builtins everywhere except here: the transpiler
+        -- imported them, the type checker listed them by name, and this
+        -- table did not have them — so `show type(fetch)` printed
+        -- `function` in a transpiled program and died with NameError under
+        -- `clarity run`, and net.clarity's HttpServer.listen(), which calls
+        -- serve(), worked compiled and failed interpreted.
+        this.global_env.set("fetch", fn(url) { return fetch(url) }, true)
+        -- A Clarity function is not a JS one: the host builtins that take a
+        -- callback have to be handed a wrapper that calls back into this
+        -- interpreter, exactly as map and filter above do. Passing the
+        -- ClarityFunction straight through type-errors inside the runtime.
+        this.global_env.set("serve", fn(port, handler) {
+            return serve(port, fn(...call_args) { return interp._call(handler, call_args, 0) })
+        }, true)
+        this.global_env.set("compose", fn(...fns) {
+            return fn(...call_args) {
+                mut value = if len(call_args) > 0 { call_args[0] } else { null }
+                mut i = len(fns) - 1
+                while i >= 0 {
+                    value = interp._call(fns[i], [value], 0)
+                    i -= 1
+                }
+                return value
+            }
+        }, true)
+        this.global_env.set("tap", fn(v, f) { interp._call(f, [v], 0); return v }, true)
+        this.global_env.set("display", fn(v) { return display(v) }, true)
+        this.global_env.set("repr", fn(v) { return repr(v) }, true)
+        this.global_env.set("set", fn(lst) { return set(lst) }, true)
+        this.global_env.set("error", fn(msg) { return error(msg) }, true)
+
+        -- Regular expressions. Exported by the runtime since it was
+        -- written, imported by nothing and registered nowhere, so no
+        -- Clarity program could reach them in any engine.
+        this.global_env.set("regex_match", fn(pat, text) { return regex_match(pat, text) }, true)
+        this.global_env.set("regex_search", fn(pat, text) { return regex_search(pat, text) }, true)
+        this.global_env.set("regex_find", fn(pat, text) { return regex_find(pat, text) }, true)
+        this.global_env.set("regex_replace", fn(pat, text, repl) { return regex_replace(pat, text, repl) }, true)
+        this.global_env.set("regex_split", fn(pat, text) { return regex_split(pat, text) }, true)
+        this.global_env.set("exec_full_regex", fn(pat, text) { return exec_full_regex(pat, text) }, true)
+
         -- File I/O
         this.global_env.set("read", fn(p) { return read(p) }, true)
         this.global_env.set("write", fn(p, c) { return write(p, c) }, true)
