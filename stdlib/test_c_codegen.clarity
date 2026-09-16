@@ -409,6 +409,22 @@ if CC == null {
     -- has to see it through the C stack.
     same_gc("gen_gc", "fn words(n) {\n    mut i = 0\n    while i < n {\n        yield \"item-\" + str(i)\n        i += 1\n    }\n}\nmut junk = []\nmut k = 0\nwhile k < 20000 {\n    junk = [str(k)]\n    k += 1\n}\nshow words(4)")
 
+    -- ── indexing and property access ──
+    -- Native answered null for every one of these: indexing null, reading a
+    -- property of null, an index past either end, a property an object does
+    -- not have. A compiled program carried the mistake onwards instead of
+    -- stopping at it, and a `try` written to catch exactly this never fired.
+    same("index_what_cannot_be_indexed", "fn t(label, f) { try { show label + \": \" + str(f()) } catch e { show label + \": THROWS\" } }\nlet z = null\nlet n = 5\nlet b = true\nt(\"null[0]\", fn() { return z[0] })\nt(\"null.f\", fn() { return z.f })\nt(\"int[0]\", fn() { return n[0] })\nt(\"int.f\", fn() { return n.f })\nt(\"bool[0]\", fn() { return b[0] })\nt(\"bool.f\", fn() { return b.f })")
+    same("index_list_bounds", "fn t(label, f) { try { show label + \": \" + str(f()) } catch e { show label + \": THROWS\" } }\nlet xs = [1, 2]\nt(\"[0]\", fn() { return xs[0] })\nt(\"[-1]\", fn() { return xs[-1] })\nt(\"[2]\", fn() { return xs[2] })\nt(\"[-3]\", fn() { return xs[-3] })\nt(\"[str]\", fn() { return xs[\"a\"] })")
+    same("index_string_bounds", "fn t(label, f) { try { show label + \": \" + str(f()) } catch e { show label + \": THROWS\" } }\nlet s = \"ab\"\nt(\"[0]\", fn() { return s[0] })\nt(\"[-1]\", fn() { return s[-1] })\nt(\"[2]\", fn() { return s[2] })\nt(\"[-3]\", fn() { return s[-3] })")
+    same("index_map_and_instance", "fn t(label, f) { try { show label + \": \" + str(f()) } catch e { show label + \": THROWS\" } }\nclass C {\n    fn init() { this.a = 1 }\n}\nlet m = {\"a\": 1}\nlet c = C()\nt(\"map[a]\", fn() { return m[\"a\"] })\nt(\"map[b]\", fn() { return m[\"b\"] })\nt(\"map.b\", fn() { return m.b })\nt(\"map[0]\", fn() { return m[0] })\nt(\"obj.a\", fn() { return c.a })\nt(\"obj.missing\", fn() { return c.missing })\nt(\"obj[a]\", fn() { return c[\"a\"] })\nt(\"obj[0]\", fn() { return c[0] })")
+    -- `?.` did not compile at all, so the one way to read a field that might
+    -- not be there was unavailable in a native build.
+    same("optional_chaining", "fn t(label, f) { try { show label + \": \" + str(f()) } catch e { show label + \": THROWS\" } }\nclass C {\n    fn init() { this.a = 1 }\n}\nlet z = null\nlet c = C()\nlet m = {\"a\": 1}\nt(\"null?.f\", fn() { return z?.f })\nt(\"obj?.a\", fn() { return c?.a })\nt(\"obj?.missing\", fn() { return c?.missing })\nt(\"map?.a\", fn() { return m?.a })\nt(\"map?.b\", fn() { return m?.b })\nt(\"int?.f\", fn() { return 5?.f })\nt(\"chain\", fn() { return z?.a?.b })")
+    -- The error a bounds failure raises is a real throw, catchable where it
+    -- happens and not only at the top.
+    same("index_error_is_catchable_in_place", "let xs = [1]\nmut seen = []\nfor i in [0, 1, 2] {\n    try { push(seen, xs[i]) } catch e { push(seen, \"miss\") }\n}\nshow seen")
+
     -- ── stage 4: closures ──
     same("closure_map", "show map([1, 2, 3], fn(x) { return x * 2 })")
     same("closure_capture", "let factor = 10\nshow map([1, 2, 3], fn(x) { return x * factor })")

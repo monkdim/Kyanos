@@ -231,6 +231,10 @@ static Value cl_thrown;
 static int cl_equal(Value a, Value b);
 static ClMethod cl_find_method(const char* cls, const char* m);
 static char* cl_obj_display(Value v);
+/* indexing and property access raise the interpreter's errors, and both are
+   defined above the exception machinery and the type names they need */
+static void cl_throw(Value v);
+static Value cl_type_of(Value v);
 
 /* ── conservative mark-sweep garbage collector (opt-in) ──
    Every runtime value carries a small header and is tracked in a global list.
@@ -599,14 +603,48 @@ static long cl_length(Value v){
   if(v.t==T_STR) return (long)strlen(v.s);
   return 0;
 }
+/* Reading past the end of a list or a string, and indexing something that
+   cannot be indexed at all, are errors — the same errors the interpreter
+   raises, in the same words. They used to answer null here, so a compiled
+   program carried the mistake onwards instead of stopping at it, and a `try`
+   written to catch exactly this never fired. */
 static Value cl_index(Value c, Value k){
-  if(c.t==T_LIST){ List* l=(List*)c.o; long idx=k.i; if(idx<0) idx+=l->len; if(idx<0||idx>=l->len) return cl_null(); return l->items[idx]; }
+  if(c.t==T_LIST){
+    List* l=(List*)c.o;
+    /* A key that is not a number is not an index: the interpreter's bounds
+       comparison is false for one, and the lookup answers null. */
+    if(!cl_is_num(k)) return cl_null();
+    long want=(long)cl_num(k);
+    long idx = want < 0 ? want + l->len : want;
+    if(idx<0||idx>=l->len){
+      char buf[160];
+      snprintf(buf, sizeof buf, "RuntimeError: Index %ld out of bounds (list has %ld items)", want, l->len);
+      cl_throw(cl_str(cl_strdup(buf)));
+    }
+    return l->items[idx];
+  }
   if(c.t==T_MAP){ Map* m=(Map*)c.o; char* ks=cl_to_cstr(k); for(long j=0;j<m->len;j++) if(strcmp(m->keys[j],ks)==0) return m->vals[j]; return cl_null(); }
-  if(c.t==T_STR){ long n=(long)strlen(c.s); long idx=k.i; if(idx<0) idx+=n; if(idx<0||idx>=n) return cl_null(); char* ch=(char*)cl_alloc(2); ch[0]=c.s[idx]; ch[1]=0; return cl_str(ch); }
+  if(c.t==T_STR){
+    long n=(long)strlen(c.s);
+    if(!cl_is_num(k)) return cl_null();
+    long want=(long)cl_num(k);
+    long idx = want < 0 ? want + n : want;
+    if(idx<0||idx>=n){
+      char buf[160];
+      snprintf(buf, sizeof buf, "RuntimeError: Index %ld out of bounds", want);
+      cl_throw(cl_str(cl_strdup(buf)));
+    }
+    char* ch=(char*)cl_alloc(2); ch[0]=c.s[idx]; ch[1]=0; return cl_str(ch);
+  }
   /* An instance reads like the map of its fields — what makes keys(obj)
      useful, since `for k in keys(p) { p[k] }` is the loop anyone writes next.
      A missing field is null, the same answer a map gives. */
   if(c.t==T_OBJECT){ Obj* o=(Obj*)c.o; return cl_index(o->fields, k); }
+  {
+    char buf[160];
+    snprintf(buf, sizeof buf, "TypeError: Cannot index into %s", cl_type_of(c).s);
+    cl_throw(cl_str(cl_strdup(buf)));
+  }
   return cl_null();
 }
 static void cl_index_set(Value c, Value k, Value val){
@@ -643,12 +681,41 @@ static Value cl_object_new(const char* cls){
   o->cls=cls; o->fields=cl_map_new();
   Value v=cl_null(); v.t=T_OBJECT; v.o=o; return v;
 }
+/* `.field` is the strict way of asking, and indexing is the lenient one: a
+   map answers null for a key it does not hold, an instance does not. Reading
+   a property off anything that has none is an error, as in both other
+   engines; it used to answer null, so a typo compiled into a null that
+   surfaced somewhere else entirely. */
+/* `a?.b` answers null whenever `a.b` would have failed — not only when a is
+   null, which is what the interpreter does and what the name promises. The
+   lookup is cl_get_field's, without the errors. */
+static Value cl_get_field_opt(Value obj, const char* name){
+  Map* m=0;
+  if(obj.t==T_OBJECT) m=(Map*)((Obj*)obj.o)->fields.o;
+  else if(obj.t==T_MAP) m=(Map*)obj.o;
+  else return cl_null();
+  for(long j=0;j<m->len;j++) if(strcmp(m->keys[j],name)==0) return m->vals[j];
+  return cl_null();
+}
 static Value cl_get_field(Value obj, const char* name){
   Map* m=0;
   if(obj.t==T_OBJECT) m=(Map*)((Obj*)obj.o)->fields.o;   /* instance field map */
   else if(obj.t==T_MAP) m=(Map*)obj.o;                    /* map.key sugar for map["key"] */
-  else return cl_null();
+  else {
+    char buf[160];
+    if(obj.t==T_STR) snprintf(buf, sizeof buf, "RuntimeError: String has no property '%s'", name);
+    else if(obj.t==T_LIST) snprintf(buf, sizeof buf, "RuntimeError: List has no property '%s'", name);
+    else if(cl_is_num(obj)) snprintf(buf, sizeof buf, "RuntimeError: Number has no property '%s'", name);
+    else snprintf(buf, sizeof buf, "TypeError: Cannot access property on %s", cl_type_of(obj).s);
+    cl_throw(cl_str(cl_strdup(buf)));
+    return cl_null();
+  }
   for(long j=0;j<m->len;j++) if(strcmp(m->keys[j],name)==0) return m->vals[j];
+  if(obj.t==T_OBJECT){
+    char buf[160];
+    snprintf(buf, sizeof buf, "RuntimeError: %s has no property '%s'", ((Obj*)obj.o)->cls, name);
+    cl_throw(cl_str(cl_strdup(buf)));
+  }
   return cl_null();
 }
 static Value cl_set_field(Value obj, const char* name, Value val){
@@ -2734,6 +2801,13 @@ class CCodegen {
             let t = "__y" + str(id)
             let val = if node.value != null { this.expr(node.value) } else { "cl_null()" }
             return "({ Value " + t + " = (" + val + "); __yields = cl_list_add(__yields, " + t + "); " + t + "; })"
+        }
+        if nt == "OptionalMemberExpression" {
+            -- `a?.b`: null when reading the property would have failed, which
+            -- is what the interpreter answers and what `?.` is for. It was
+            -- refused outright before, so the one way to read a field that
+            -- might not be there did not compile.
+            return "cl_get_field_opt(" + this.expr(node.object) + ", \"" + node.property + "\")"
         }
         if nt == "MemberExpression" {
             -- `Colour.Red` is not a field read: an enum is a compile-time
