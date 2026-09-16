@@ -262,6 +262,39 @@ if CC == null {
     -- arguments in, which is a separate defect (see GAPS.md).
     same("gen_in_map_literal", "fn g(n) {\n    let d = { \"a\": yield n, \"b\": 1 }\n    show d\n}\nshow g(5)")
     same("gen_in_range", "fn r(n) {\n    for v in (yield n)..3 { show v }\n}\nshow r(1)")
+
+    -- ── string interpolation ──
+    -- The compiler emitted a string literal's braces verbatim, so every
+    -- interpolated string in a native build printed the source text of what
+    -- it should have interpolated — silently, with no error, and with a
+    -- length to match. The rules are the interpreter's, checked against it
+    -- here: `{X}` interpolates only when X starts with a letter or an
+    -- underscore, braces nest, an unbalanced brace is literal, and an
+    -- expression that does not parse stays as the text it was written as.
+    same("interp_name", "let name = \"world\"\nshow \"hello {name}\"")
+    same("interp_length", "let n = 42\nshow len(\"a{n}b\")")
+    same("interp_expression", "let n = 7\nshow \"n is {n}, twice {n * 2}\"")
+    same("interp_call", "fn f(x) { return x * 2 }\nlet n = 7\nshow \"call {f(n)}\"")
+    same("interp_index_and_member", "let xs = [1, 2]\nlet m = { \"a\": 9 }\nshow \"idx {xs[0]} member {m.a}\"")
+    same("interp_collections", "let xs = [1, 2]\nlet ss = [\"a\", \"b\"]\nlet m = { \"a\": 1 }\nshow \"l={xs} s={ss} m={m}\"")
+    same("interp_scalars", "let f = 3.5\nlet t = true\nlet z = null\nshow \"f={f} t={t} z={z}\"")
+    same("interp_to_string", "class P {\n    fn init() {}\n    fn to_string() { return \"P7\" }\n}\nshow \"obj {P()}\"")
+    -- A brace that is not interpolation stays as written, which is what lets
+    -- a program print code.
+    same("interp_prose", "show \"if true { 1 } else { 2 }\"")
+    same("interp_unbalanced", "show \"unbalanced {name\"\nshow \"brace only {\"")
+    same("interp_not_an_identifier", "show \"digit {1 + 2}\"\nshow \"empty {}\"")
+    same("interp_raw_string", "let n = 5\nshow r\"raw {n}\"\nshow \"cooked {n}\"")
+    -- Two interpolations are two operands of one C expression, and C picks
+    -- the order it evaluates them in — so they go through temporaries in
+    -- source order, as the interpreter evaluates them.
+    same("interp_order", "mut c = 0\nfn bump() { c += 1; return c }\nshow \"{bump()} then {bump()}\"")
+    same("interp_in_a_generator", "fn labels(n) {\n    mut i = 0\n    while i < n {\n        yield \"item-{i}\"\n        i += 1\n    }\n}\nshow labels(3)")
+    same("interp_in_a_method", "class Box {\n    fn init(n) { this.n = n }\n    fn label() { return \"box {this.n}\" }\n}\nshow Box(4).label()")
+    same("interp_in_a_closure", "let n = 3\nshow map([1, 2], fn(x) { return \"v{x} of {n}\" })")
+    -- Every piece is a fresh heap string, so a collection mid-run has to see
+    -- the temporaries the concatenation is holding.
+    same_gc("interp_gc", "mut junk = []\nmut i = 0\nwhile i < 20000 {\n    junk = [\"x{i}\"]\n    i += 1\n}\nshow \"done {len(junk)} at {i}\"")
     -- The collection is a local holding heap values, so mid-run collection
     -- has to see it through the C stack.
     same_gc("gen_gc", "fn words(n) {\n    mut i = 0\n    while i < n {\n        yield \"item-\" + str(i)\n        i += 1\n    }\n}\nmut junk = []\nmut k = 0\nwhile k < 20000 {\n    junk = [str(k)]\n    k += 1\n}\nshow words(4)")

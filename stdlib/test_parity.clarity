@@ -103,6 +103,10 @@ same("interpolation of other types", "let b = true\nlet n = null\nlet f = 1.5\ns
 same("interpolation of a call and a property", "class C {\n    fn init() { this.v = 7 }\n}\nfn f() { return 2 }\nlet c = C()\nshow \"{c.v} and {f()}\"")
 same("interpolation of an instance", "class C {\n    fn init() { this.v = 1 }\n}\nshow \"{C()}\"")
 same("braces that are not interpolation", "show \"if x { 1 } else { 2 }\"\nshow \"{1}\"\nshow \"{ n }\"")
+same("a raw string does not interpolate", "let n = 5\nshow r\"raw {n}\"\nshow \"cooked {n}\"")
+-- Two interpolations in one string are evaluated left to right, so one that
+-- has a side effect is seen by the next.
+same("interpolations run left to right", "mut c = 0\nfn bump() { c += 1; return c }\nshow \"{bump()} then {bump()}\"")
 same("an unclosed brace stays literal", "let n = 1\nshow \"open {n and {n}\"")
 
 show "-- Parity: builtins both engines must have --"
