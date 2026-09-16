@@ -211,6 +211,17 @@ lands with codegen tests that diff native output against the interpreter.
   order for a map — and instances and closures by identity, which is what the other two engines
   do. A top-level function named as a value is built once into a global rather than freshly at
   every mention, so `f == f` is true.
+- **Indexing and property access (done).** A twenty-five case matrix — indexing and reading a
+  property of `null`, an int, a bool, a string, a list, a map and an instance; past either end;
+  with a key that is not a number; present and absent — ran three different ways in the three
+  engines. `clarity cc` answered `null` to every mistake, the VM answered `null` to a read past
+  either end and refused to index an instance, and `?.` neither compiled natively nor meant the
+  same thing in the VM as in the interpreter. They agree now, on the interpreter's answers.
+  Reading past the end of a list or a string is an error; a map answers `null` for a key it does
+  not hold and an instance does not, because indexing is the lenient way of asking and `.field` is
+  the strict one. **What that turned up:** the bytecode VM did not short-circuit `and` or `or` —
+  `false and side()` called `side()` — which had been invisible because the standard library's own
+  guard reads `items[0]` of an empty list and the VM answered `null` rather than failing.
 - **Destructuring and spread in native builds.** With generators done, what stops the last two
   files in `examples/` compiling is `DestructureLetStatement`, `MultiAssignStatement` (`let [a, b]
   = pair`, `a, b = b, a`) and `SpreadExpression` in a call or a list. Fifteen of the seventeen

@@ -75,6 +75,7 @@ let OP_ROT3 = 54        -- Rotate top 3: [a, b, c] -> [c, a, b]
 let OP_JUMP_TRUE = 55   -- Jump if top is truthy (pops)
 let OP_IMPORT = 56      -- Import a module (operand = const index of {path, names, alias, line})
 let OP_YIELD = 57       -- Collect the top of the stack into this frame's yields
+let OP_GET_PROP_OPT = 58 -- `a?.b`: the property, or null if reading it fails
 let OP_HALT = 255
 
 -- Opcode names for disassembly
@@ -90,7 +91,7 @@ let OP_NAMES = {
     42: "RANGE", 43: "NULL", 44: "TRUE", 45: "FALSE", 46: "CONCAT",
     47: "PIPE", 48: "THROW", 49: "MAKE_CLASS", 50: "SLICE",
     51: "SETUP_TRY", 52: "POP_TRY", 53: "SWAP", 54: "ROT3",
-    55: "JUMP_TRUE", 56: "IMPORT", 57: "YIELD", 255: "HALT"
+    55: "JUMP_TRUE", 56: "IMPORT", 57: "YIELD", 58: "GET_PROP_OPT", 255: "HALT"
 }
 
 -- ── Bytecode container ──────────────────────────────────
@@ -897,6 +898,27 @@ class Compiler {
     fn compile_BinaryOp(node) {
         let line = node.line ?? 0
         let op = node.operator
+        -- `and` and `or` short-circuit: the right side runs only when the
+        -- left does not already decide the answer. The VM compiled both
+        -- sides and then combined them, so `false and side()` *called*
+        -- side() under --fast, and collections.clarity's own
+        -- `if len(items) == 1 and type(items[0]) == "list"` read items[0] of
+        -- an empty list — which answered null while the VM let a read past
+        -- the end pass, and became an error the moment it did not.
+        if op == "and" or op == "or" {
+            this.compile_node(node.left)
+            this.code.emit(OP_DUP, 0, line)
+            let skip = if op == "and" {
+                this.code.emit(OP_JUMP_FALSE, 0, line)
+            } else {
+                this.code.emit(OP_JUMP_TRUE, 0, line)
+            }
+            -- The left value decided nothing: drop it and take the right.
+            this.code.emit(OP_POP, 0, line)
+            this.compile_node(node.right)
+            this.code.patch_jump(skip)
+            return null
+        }
         this.compile_node(node.left)
         this.compile_node(node.right)
 
@@ -980,17 +1002,10 @@ class Compiler {
     fn compile_OptionalMemberExpression(node) {
         let line = node.line ?? 0
         this.compile_node(node.object)
-        -- If null, skip property access and leave null on stack
-        this.code.emit(OP_DUP, 0, line)
-        this.code.emit(OP_NULL, 0, line)
-        this.code.emit(OP_EQ, 0, line)
-        let jump_null = this.code.emit(OP_JUMP_TRUE, 0, line)
-        let prop_idx = this.code.add_const(node.property)
-        this.code.emit(OP_GET_PROP, prop_idx, line)
-        let jump_end = this.code.emit(OP_JUMP, 0)
-        this.code.patch_jump(jump_null)
-        -- Already null on stack, just leave it
-        this.code.patch_jump(jump_end)
+        -- One opcode, because the question `?.` asks is not only "is the
+        -- object null": the interpreter answers null whenever reading the
+        -- property would have failed at all.
+        this.code.emit(OP_GET_PROP_OPT, this.code.add_const(node.property), line)
     }
 
     fn compile_SliceExpression(node) {
@@ -1712,6 +1727,49 @@ class VM {
         return instance
     }
 
+    -- Reading `obj.prop`, shared by OP_GET_PROP and its optional form.
+    fn _get_prop(obj, prop) {
+        let t = type(obj)
+        if t == "VMInstance" {
+            -- A property explicitly set to null is still present and must
+            -- read back as null; a name that is neither a property nor a
+            -- method is an error, as in the interpreter, which names the
+            -- class and the property.
+            if has(obj.properties, prop) { return obj.properties[prop] }
+            let val = obj.get_prop(prop)
+            if val == null { throw "RuntimeError: {obj.klass.name} has no property '{prop}'" }
+            return val
+        }
+        if t == "map" {
+            if has(obj, prop) { return obj[prop] }
+            return null
+        }
+        if t == "list" {
+            if prop == "length" { return len(obj) }
+            if prop == "first" {
+                if len(obj) > 0 { return obj[0] }
+                return null
+            }
+            if prop == "last" {
+                if len(obj) > 0 { return obj[len(obj) - 1] }
+                return null
+            }
+            throw "RuntimeError: List has no property '{prop}'"
+        }
+        if t == "string" {
+            if prop == "length" { return len(obj) }
+            if prop == "upper" { return upper(obj) }
+            if prop == "lower" { return lower(obj) }
+            throw "RuntimeError: String has no property '{prop}'"
+        }
+        if t == "VMClass" {
+            -- Static access / enum-like access
+            if has(obj.methods, prop) { return obj.methods[prop] }
+            return null
+        }
+        throw "RuntimeError: Cannot access property '{prop}' on {t}"
+    }
+
     fn _call_method(instance, method, call_args) {
         let frame = VMFrame(method.code, len(this.stack))
         frame.locals["this"] = instance
@@ -2067,12 +2125,34 @@ class VM {
                 let idx = pop(this.stack)
                 let obj = pop(this.stack)
                 let t = type(obj)
-                if t == "list" { push(this.stack, obj[idx]) }
+                -- Reading past either end of a list or a string is an error,
+                -- as in the interpreter. The VM answered null, so a program
+                -- that walked off the end kept going under --fast and stopped
+                -- under `clarity run`. The comparison is the interpreter's,
+                -- character for character, so a key that is not a number
+                -- still reads as a miss rather than a bounds failure.
+                if t == "list" {
+                    if idx < -len(obj) or idx >= len(obj) {
+                        throw "RuntimeError: Index {idx} out of bounds (list has {len(obj)} items)"
+                    }
+                    push(this.stack, obj[idx])
+                }
                 elif t == "map" {
                     if has(obj, idx) { push(this.stack, obj[idx]) }
                     else { push(this.stack, null) }
                 }
-                elif t == "string" { push(this.stack, obj[idx]) }
+                elif t == "string" {
+                    if idx < -len(obj) or idx >= len(obj) {
+                        throw "RuntimeError: Index {idx} out of bounds"
+                    }
+                    push(this.stack, obj[idx])
+                }
+                -- An instance reads like the map of its fields, which is what
+                -- makes `for k in keys(p) { p[k] }` work; the VM refused it.
+                elif t == "VMInstance" {
+                    if has(obj.properties, idx) { push(this.stack, obj.properties[idx]) }
+                    else { push(this.stack, null) }
+                }
                 else { throw "RuntimeError: Cannot index into {t}" }
             }
             elif op == OP_SET_IDX {
@@ -2083,47 +2163,20 @@ class VM {
             }
             elif op == OP_GET_PROP {
                 let prop = code.constants[operand]
+                push(this.stack, this._get_prop(pop(this.stack), prop))
+            }
+            -- `a?.b` is the interpreter's: null when the object is null, and
+            -- null when reading the property would have failed for any other
+            -- reason too. The VM only guarded the null, so `c?.missing` and
+            -- `5?.f` threw under --fast and answered null under `clarity run`.
+            elif op == OP_GET_PROP_OPT {
+                let prop = code.constants[operand]
                 let obj = pop(this.stack)
-                let t = type(obj)
-                if t == "VMInstance" {
-                    -- A property explicitly set to null is still present and
-                    -- must read back as null; a name that is neither a
-                    -- property nor a method is an error, as in the
-                    -- interpreter, which names the class and the property.
-                    if has(obj.properties, prop) {
-                        push(this.stack, obj.properties[prop])
-                    } else {
-                        let val = obj.get_prop(prop)
-                        if val == null {
-                            throw "RuntimeError: {obj.klass.name} has no property '{prop}'"
-                        }
-                        push(this.stack, val)
-                    }
-                } elif t == "map" {
-                    if has(obj, prop) { push(this.stack, obj[prop]) }
-                    else { push(this.stack, null) }
-                } elif t == "list" {
-                    if prop == "length" { push(this.stack, len(obj)) }
-                    elif prop == "first" {
-                        if len(obj) > 0 { push(this.stack, obj[0]) }
-                        else { push(this.stack, null) }
-                    }
-                    elif prop == "last" {
-                        if len(obj) > 0 { push(this.stack, obj[len(obj) - 1]) }
-                        else { push(this.stack, null) }
-                    }
-                    else { throw "RuntimeError: List has no property '{prop}'" }
-                } elif t == "string" {
-                    if prop == "length" { push(this.stack, len(obj)) }
-                    elif prop == "upper" { push(this.stack, upper(obj)) }
-                    elif prop == "lower" { push(this.stack, lower(obj)) }
-                    else { throw "RuntimeError: String has no property '{prop}'" }
-                } elif t == "VMClass" {
-                    -- Static access / enum-like access
-                    if has(obj.methods, prop) { push(this.stack, obj.methods[prop]) }
-                    else { push(this.stack, null) }
-                } else {
-                    throw "RuntimeError: Cannot access property '{prop}' on {t}"
+                if obj == null { push(this.stack, null) }
+                else {
+                    mut v = null
+                    try { v = this._get_prop(obj, prop) } catch e_opt { v = null }
+                    push(this.stack, v)
                 }
             }
             elif op == OP_SET_PROP {

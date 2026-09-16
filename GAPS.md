@@ -77,6 +77,26 @@ and closures by identity, as everywhere else. A top-level function named as a
 value gets one closure built once, so `f == f` is true rather than comparing
 two freshly made ones.
 
+### Indexing and property access disagreed across the three engines
+Fixed. `clarity cc` answered `null` for every mistake: indexing `null`, reading
+a property of `null`, an index past either end of a list or a string, a
+property an object does not have. A compiled program carried the mistake
+onwards instead of stopping at it, and a `try` written to catch exactly that
+never fired. The bytecode VM answered `null` for a read past either end, so a
+program that walked off the end kept going under `--fast` and stopped under
+`clarity run`, and it refused to index an instance at all. `?.` did not
+compile natively, and in the VM it guarded only a null object where the
+interpreter answers null for any failure. All three agree now, over a
+twenty-five case matrix.
+
+**Found by that change:** the VM did not short-circuit `and` or `or` — it
+compiled both sides and then combined them, so `false and side()` *called*
+`side()`. It was invisible while a read past the end answered null, because
+the standard library's own guard (`if len(items) == 1 and type(items[0]) ==
+"list"`, in `collections.clarity`) reads `items[0]` of an empty list and got
+null for it. The moment that became an error, `Set()` stopped working under
+`--fast`. Both operators jump now.
+
 ### Mid-run garbage collection kills a program on darwin-arm64
 `CLARITY_GC=1` turns on mid-run collection in a compiled binary. On
 darwin-arm64 a program that holds **two** live allocations across a collection
