@@ -169,6 +169,20 @@ lands with codegen tests that diff native output against the interpreter.
   chooses, which is the reverse of the interpreter's whenever two of them have side effects
   (`[bump(), bump()]` is `[1, 2]` interpreted and `[2, 1]` native). It is a defect in every
   multi-operand emission, not in generators, so it is written up in GAPS.md as its own change.
+- **String interpolation (done).** It was not compiled at all: `clarity cc` wrote a string
+  literal's braces into the binary verbatim, so `show "hello {name}"` printed `hello {name}` from
+  a native build, and `len("a{n}b")` was 5 there against 4 everywhere else — silently, with no
+  error, for the most ordinary line in the language. Interpolation is not a parser construct here:
+  the literal keeps its braces and each engine decides what they mean, so the compiler now
+  tokenizes and parses the interpolated expressions itself, by exactly the interpreter's rules —
+  `{X}` interpolates only when X starts with a letter or an underscore, so prose survives; braces
+  nest; an unbalanced brace is literal; text that does not parse stays as it was written. Native
+  `+` already renders a value the way the interpreter displays it, down to an instance's
+  `to_string()`, so the concatenation *is* the interpolation. Two or more interpolations in one
+  string go through temporaries in source order, since C would otherwise pick the order it
+  evaluates them in. One divergence, shared with the bytecode VM and inherent to resolving a name
+  while compiling: the interpreter wraps each `{X}` in a try and falls back to the literal text on
+  any failure, so `"a {nope} b"` prints itself there and is an error in the other two engines.
 - **Destructuring and spread in native builds.** With generators done, what stops the last two
   files in `examples/` compiling is `DestructureLetStatement`, `MultiAssignStatement` (`let [a, b]
   = pair`, `a, b = b, a`) and `SpreadExpression` in a call or a list. Fifteen of the seventeen

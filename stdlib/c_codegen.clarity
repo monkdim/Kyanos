@@ -114,6 +114,13 @@
 -- Names are prefixed (v_ for variables/params, f_ for functions) so a
 -- Clarity identifier can never collide with a C keyword.
 
+-- String interpolation is not a parser construct: a string literal keeps its
+-- braces, and each engine decides for itself what `{x}` means inside one. So
+-- the compiler has to tokenize and parse the interpolated expressions the same
+-- way the interpreter does at run time.
+from "lexer.clarity" import tokenize
+from "parser.clarity" import parse
+
 -- ── C runtime prelude ───────────────────────────────────
 -- A dynamically-typed Value as a tagged struct; lists/maps/objects/closures
 -- hang off `o`. Every allocation is bump-allocated from the arena (cl_alloc)
@@ -1644,6 +1651,74 @@ fn _block_stmts(b) {
     return b
 }
 
+-- Split a string literal's text into the pieces the interpreter would build
+-- it from: literal text, and expressions to evaluate and display. Returns
+-- null when there is nothing to interpolate, so the caller emits a plain C
+-- string literal.
+--
+-- The rules are Interpreter._interpolate_string's, to the character: `{X}`
+-- is interpolation only when X starts with a letter or an underscore, so
+-- prose like "if true { 1 } else { 2 }" survives verbatim; braces nest; an
+-- unbalanced `{` is literal; an expression that does not parse stays as the
+-- text it was written as, braces included; and one that parses to nothing
+-- contributes nothing.
+--
+-- The result always begins with a literal piece, possibly empty, because
+-- the concatenation has to start from a string: `"{n} apples"` is
+-- `"" + n + " apples"`, and starting it at `n` would be adding a string to
+-- a number rather than the other way round.
+fn _interp_parts(text) {
+    if index_of(text, "{") < 0 { return null }
+    let text_len = len(text)
+    mut parts = []
+    mut literal = ""
+    mut any = false
+    mut i = 0
+    while i < text_len {
+        let ch = char_at(text, i)
+        if ch == "{" and i + 1 < text_len and (is_alpha(char_at(text, i + 1)) or char_at(text, i + 1) == "_") {
+            mut j = i + 1
+            mut depth = 1
+            while j < text_len and depth > 0 {
+                if char_at(text, j) == "{" { depth += 1 }
+                if char_at(text, j) == "}" { depth -= 1 }
+                if depth > 0 { j += 1 }
+            }
+            if depth != 0 {
+                literal = literal + ch
+                i += 1
+                continue
+            }
+            let expr_str = substring(text, i + 1, j)
+            mut expr_node = null
+            mut parsed = false
+            try {
+                let tree = parse(tokenize(expr_str, "<interp>"), expr_str)
+                parsed = true
+                if len(tree.body) > 0 { expr_node = tree.body[0].expression }
+            } catch e_parse { parsed = false }
+            if not parsed {
+                literal = literal + "{" + expr_str + "}"
+                i = j + 1
+                continue
+            }
+            if expr_node != null {
+                push(parts, { "kind": "lit", "text": literal })
+                push(parts, { "kind": "expr", "node": expr_node })
+                literal = ""
+                any = true
+            }
+            i = j + 1
+        } else {
+            literal = literal + ch
+            i += 1
+        }
+    }
+    if not any { return null }
+    if len(literal) > 0 { push(parts, { "kind": "lit", "text": literal }) }
+    return parts
+}
+
 fn _c_escape(s) {
     mut out = ""
     for ch in s {
@@ -2305,6 +2380,64 @@ class CCodegen {
         return ""
     }
 
+    -- A string literal, interpolated if it has anything to interpolate.
+    -- Native `+` already renders a value exactly as the interpreter's display
+    -- does — a list as [1, 2], a map as {a: 1}, an instance through its
+    -- to_string() — so the concatenation *is* the interpolation.
+    --
+    -- Two divergences from `clarity run`, both shared with the bytecode VM
+    -- and both inherent to resolving a name while compiling rather than while
+    -- running. The interpreter wraps the whole of `{X}` in a try and falls
+    -- back to the literal text on *any* failure, so `"a {nope} b"` prints
+    -- `a {nope} b` there and is an error here, as it already is under
+    -- --fast. And the expressions run when the string is built, so a
+    -- compiled program cannot decide at run time that a brace was prose.
+    fn _string(node) {
+        mut raw = false
+        try { raw = node.raw ?? false } catch e_raw { raw = false }
+        if raw { return "cl_str(\"" + _c_escape(node.value) + "\")" }
+        let parts = _interp_parts(node.value)
+        if parts == null { return "cl_str(\"" + _c_escape(node.value) + "\")" }
+
+        -- Two or more interpolated expressions are two or more operands of
+        -- one C expression, whose evaluation order C leaves unspecified —
+        -- so bind them to temporaries in source order first. The
+        -- interpreter evaluates them left to right, and one of them may
+        -- have a side effect the next one reads.
+        mut exprs = []
+        for part in parts {
+            if part["kind"] == "expr" { push(exprs, part["node"]) }
+        }
+        mut names = []
+        mut decls = ""
+        if len(exprs) > 1 {
+            for e in exprs {
+                let id = this.tmp_id
+                this.tmp_id += 1
+                let t = "__ip" + str(id)
+                decls = decls + "Value " + t + " = (" + this.expr(e) + "); "
+                push(names, t)
+            }
+        }
+
+        mut out = ""
+        mut started = false
+        mut k = 0
+        for part in parts {
+            mut piece = ""
+            if part["kind"] == "lit" {
+                piece = "cl_str(\"" + _c_escape(part["text"]) + "\")"
+            } else {
+                piece = if len(names) > 0 { names[k] } else { this.expr(part["node"]) }
+                k += 1
+            }
+            if started { out = "cl_add(" + out + ", " + piece + ")" }
+            else { out = piece; started = true }
+        }
+        if len(names) > 0 { return "({ " + decls + out + "; })" }
+        return out
+    }
+
     -- Emit a C expression (of type Value) for an AST expression node.
     fn expr(node) {
         let nt = node.node_type
@@ -2313,7 +2446,7 @@ class CCodegen {
             if type(v) == "float" or str(v) != str(int(v)) { return "cl_float(" + str(v) + ")" }
             return "cl_int(" + str(int(v)) + ")"
         }
-        if nt == "StringLiteral" { return "cl_str(\"" + _c_escape(node.value) + "\")" }
+        if nt == "StringLiteral" { return this._string(node) }
         if nt == "BoolLiteral" { return if node.value { "cl_bool(1)" } else { "cl_bool(0)" } }
         if nt == "NullLiteral" { return "cl_null()" }
         if nt == "Identifier" {
