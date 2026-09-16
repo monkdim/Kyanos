@@ -1310,6 +1310,19 @@ class VMInstance {
     }
 }
 
+-- `xs.slice(a, b)` and `xs.copy()`, without the interpreter module's
+-- helpers: a plain copy of the range, clamped at the end like theirs.
+fn _vm_slice(lst, start, end_i) {
+    mut out = []
+    let stop = if end_i != null { end_i } else { len(lst) }
+    mut i = start
+    while i < stop and i < len(lst) {
+        push(out, lst[i])
+        i += 1
+    }
+    return out
+}
+
 -- A value marked by `...` — a list opened out into a list or a call's
 -- arguments, a map merged into a map. It exists only between OP_SPREAD and
 -- whatever assembles the values around it, and never reaches a program.
@@ -1772,23 +1785,57 @@ class VM {
             if has(obj, prop) { return obj[prop] }
             return null
         }
+        -- A list's and a string's builtin methods, exactly the interpreter's
+        -- set and exactly its shape: each is a *method*, so `xs.length` is a
+        -- callable and `xs.length()` calls it. The VM had five of the
+        -- thirty as plain properties and threw for the rest, so `xs.sort()`,
+        -- `s.split(" ")` and `s.trim()` — ordinary lines — all failed under
+        -- --fast while working under `clarity run`.
         if t == "list" {
-            if prop == "length" { return len(obj) }
-            if prop == "first" {
-                if len(obj) > 0 { return obj[0] }
-                return null
-            }
-            if prop == "last" {
-                if len(obj) > 0 { return obj[len(obj) - 1] }
-                return null
-            }
+            if prop == "length" { return fn() { return len(obj) } }
+            if prop == "push" { return fn(v) { push(obj, v) } }
+            if prop == "pop" { return fn() { return pop(obj) } }
+            if prop == "first" { return fn() { return if len(obj) > 0 { obj[0] } else { null } } }
+            if prop == "last" { return fn() { return if len(obj) > 0 { obj[len(obj) - 1] } else { null } } }
+            if prop == "reverse" { return fn() { return reverse(obj) } }
+            if prop == "sort" { return fn() { return sort(obj) } }
+            if prop == "join" { return fn(sep) { return join(obj, sep ?? "") } }
+            if prop == "contains" { return fn(v) { return contains(obj, v) } }
+            if prop == "empty" { return fn() { return len(obj) == 0 } }
+            if prop == "count" { return fn() { return len(obj) } }
+            if prop == "slice" { return fn(start, end_i) { return _vm_slice(obj, start, end_i) } }
+            if prop == "index" { return fn(v) { return index_of(obj, v) } }
+            if prop == "copy" { return fn() { return _vm_slice(obj, 0, null) } }
             throw "RuntimeError: List has no property '{prop}'"
         }
         if t == "string" {
-            if prop == "length" { return len(obj) }
-            if prop == "upper" { return upper(obj) }
-            if prop == "lower" { return lower(obj) }
+            if prop == "length" { return fn() { return len(obj) } }
+            if prop == "upper" { return fn() { return upper(obj) } }
+            if prop == "lower" { return fn() { return lower(obj) } }
+            if prop == "trim" { return fn() { return trim(obj) } }
+            if prop == "split" { return fn(sep) { return split(obj, sep ?? " ") } }
+            if prop == "replace" { return fn(old_s, new_s) { return replace(obj, old_s, new_s) } }
+            if prop == "contains" { return fn(sub) { return contains(obj, sub) } }
+            if prop == "starts" { return fn(sub) { return starts(obj, sub) } }
+            if prop == "ends" { return fn(sub) { return ends(obj, sub) } }
+            if prop == "chars" { return fn() { return chars(obj) } }
+            if prop == "count" { return fn() { return len(obj) } }
+            if prop == "reverse" { return fn() { return reverse(obj) } }
+            if prop == "empty" { return fn() { return len(obj) == 0 } }
+            if prop == "slice" {
+                return fn(start, end_i) {
+                    if end_i != null { return substring(obj, start, end_i) }
+                    return substring(obj, start, len(obj))
+                }
+            }
+            if prop == "find" { return fn(sub) { return index_of(obj, sub) } }
+            if prop == "repeat" { return fn(n) { return repeat(obj, n) } }
             throw "RuntimeError: String has no property '{prop}'"
+        }
+        if t == "int" or t == "float" {
+            if prop == "abs" { return fn() { return abs(obj) } }
+            if prop == "str" { return fn() { return str(obj) } }
+            throw "RuntimeError: Number has no property '{prop}'"
         }
         if t == "VMClass" {
             -- Static access / enum-like access

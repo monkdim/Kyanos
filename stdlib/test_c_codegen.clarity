@@ -481,6 +481,15 @@ if CC == null {
         assert_eq(len(_ex_refused), 0, "every example compiles: " + join(_ex_refused, "; "))
     }
 
+    -- ── builtin methods ──
+    -- Every one of these answered null in a compiled binary: cl_dispatch
+    -- looked only for a user class's method and found none, so
+    -- `text.upper()` was null rather than the text.
+    same("bm_list", "fn t(label, f) { try { show label + \": \" + str(f()) } catch e { show label + \": THROWS\" } }\nlet xs = [3, 1, 2]\nt(\"length\", fn() { return xs.length() })\nt(\"first\", fn() { return xs.first() })\nt(\"last\", fn() { return xs.last() })\nt(\"reverse\", fn() { return xs.reverse() })\nt(\"sort\", fn() { return xs.sort() })\nt(\"join\", fn() { return xs.join(\"-\") })\nt(\"contains\", fn() { return xs.contains(1) })\nt(\"empty\", fn() { return xs.empty() })\nt(\"count\", fn() { return xs.count() })\nt(\"slice\", fn() { return xs.slice(1, 3) })\nt(\"index\", fn() { return xs.index(1) })\nt(\"copy\", fn() { return xs.copy() })\nt(\"unknown\", fn() { return xs.nope() })")
+    same("bm_string", "fn t(label, f) { try { show label + \": \" + str(f()) } catch e { show label + \": THROWS\" } }\nlet s = \"Hello World\"\nt(\"length\", fn() { return s.length() })\nt(\"upper\", fn() { return s.upper() })\nt(\"lower\", fn() { return s.lower() })\nt(\"trim\", fn() { return \"  x  \".trim() })\nt(\"split\", fn() { return s.split(\" \") })\nt(\"replace\", fn() { return s.replace(\"World\", \"there\") })\nt(\"contains\", fn() { return s.contains(\"World\") })\nt(\"starts\", fn() { return s.starts(\"Hello\") })\nt(\"ends\", fn() { return s.ends(\"World\") })\nt(\"chars\", fn() { return \"ab\".chars() })\nt(\"count\", fn() { return s.count() })\nt(\"reverse\", fn() { return \"abc\".reverse() })\nt(\"empty\", fn() { return \"\".empty() })\nt(\"slice\", fn() { return s.slice(0, 5) })\nt(\"find\", fn() { return s.find(\"World\") })\nt(\"repeat\", fn() { return \"ab\".repeat(2) })\nt(\"unknown\", fn() { return s.nope() })")
+    same("bm_number", "fn t(label, f) { try { show label + \": \" + str(f()) } catch e { show label + \": THROWS\" } }\nlet n = 0 - 5\nt(\"abs\", fn() { return n.abs() })\nt(\"str\", fn() { return n.str() })\nt(\"unknown\", fn() { return n.nope() })")
+    same("bm_bound", "fn t(label, f) { try { show label + \": \" + str(f()) } catch e { show label + \": THROWS\" } }\nlet s = \"Hello\"\nlet xs = [3, 1]\nt(\"bound string\", fn() { let f = s.upper\n    return f() })\nt(\"bound list\", fn() { let g = xs.sort\n    return g() })\nt(\"bound with an argument\", fn() { let h = s.starts\n    return h(\"He\") })\nt(\"unknown bound\", fn() { let k = s.nope\n    return k() })\nt(\"in a closure\", fn() { return map([\"a\", \"b\"], fn(c) { return c.upper() }) })")
+
     -- ── stage 4: closures ──
     same("closure_map", "show map([1, 2, 3], fn(x) { return x * 2 })")
     same("closure_capture", "let factor = 10\nshow map([1, 2, 3], fn(x) { return x * factor })")

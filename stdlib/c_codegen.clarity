@@ -238,6 +238,13 @@ static Value cl_type_of(Value v);
 /* cl_dispatch calls a field that holds a closure, and cl_call is defined
    below it with the rest of the closure machinery */
 static Value cl_call(Value f, Value* args, long n);
+/* a list, a string and a number have methods; cl_get_field binds one and the
+   definitions sit with cl_dispatch below */
+static Value cl_builtin_method(Value self, const char* m, Value* a, long n);
+static int cl_has_builtin_methods(Value v);
+static int cl_bm_known(Value v, const char* m);
+static Value cl_bound_builtin_method(Value self, const char* name);
+static Value cl_abs(Value v);   /* n.abs(), defined with the math helpers */
 
 /* ── conservative mark-sweep garbage collector (opt-in) ──
    Every runtime value carries a small header and is tracked in a global list.
@@ -755,12 +762,16 @@ static Value cl_get_field(Value obj, const char* name){
   Map* m=0;
   if(obj.t==T_OBJECT) m=(Map*)((Obj*)obj.o)->fields.o;   /* instance field map */
   else if(obj.t==T_MAP) m=(Map*)obj.o;                    /* map.key sugar for map["key"] */
+  else if(cl_has_builtin_methods(obj)){
+    /* A list, a string or a number has methods rather than fields, and
+       naming one without calling it binds it to its receiver. An unknown
+       name still raises the interpreter's error, from cl_builtin_method. */
+    if(!cl_bm_known(obj, name)) return cl_builtin_method(obj, name, 0, 0);
+    return cl_bound_builtin_method(obj, name);
+  }
   else {
     char buf[160];
-    if(obj.t==T_STR) snprintf(buf, sizeof buf, "RuntimeError: String has no property '%s'", name);
-    else if(obj.t==T_LIST) snprintf(buf, sizeof buf, "RuntimeError: List has no property '%s'", name);
-    else if(cl_is_num(obj)) snprintf(buf, sizeof buf, "RuntimeError: Number has no property '%s'", name);
-    else snprintf(buf, sizeof buf, "TypeError: Cannot access property on %s", cl_type_of(obj).s);
+    snprintf(buf, sizeof buf, "TypeError: Cannot access property on %s", cl_type_of(obj).s);
     cl_throw(cl_str(cl_strdup(buf)));
     return cl_null();
   }
@@ -798,6 +809,7 @@ static Value cl_dispatch(Value self, const char* m, Value* a, long n){
     Value f = cl_get_field_opt(self, m);
     if(f.t==T_CLOSURE) return cl_call(f, a, n);
   }
+  if(cl_has_builtin_methods(self)) return cl_builtin_method(self, m, a, n);
   const char* cls = (self.t==T_OBJECT) ? ((Obj*)self.o)->cls : "";
   ClMethod fn = cl_find_method(cls, m);
   if(fn) return fn(self, a, n);
@@ -1463,6 +1475,97 @@ static Value cl_write_mem(Value pidv, Value addrv, Value lv){
   return cl_int((long)w);
 }
 #endif /* !CLARITY_FREESTANDING */
+
+/* ── builtin methods on a list, a string and a number ──
+   `xs.sort()`, `text.split(" ")`, `n.abs()`. These are methods in the
+   interpreter, and every one of them answered null here: cl_dispatch looked
+   only for a user class's method and found none. The set and the errors are
+   the interpreter's. */
+static Value cl_bm_index_of(Value c, Value v){
+  if(c.t==T_LIST){ List* l=(List*)c.o; for(long j=0;j<l->len;j++) if(cl_equal(l->items[j], v)) return cl_int(j); return cl_int(-1); }
+  return cl_index_of(c, v);
+}
+static Value cl_bm_list_slice(Value c, Value* a, long n){
+  List* l=(List*)c.o;
+  long start = n > 0 ? (long)cl_num(a[0]) : 0;
+  long stop  = (n > 1 && a[1].t != T_NULL) ? (long)cl_num(a[1]) : l->len;
+  Value out = cl_list_new();
+  for(long j=start; j<stop && j<l->len; j++) if(j>=0) out = cl_list_add(out, l->items[j]);
+  return out;
+}
+static Value cl_bm_arg(Value* a, long n, long i){ return i < n ? a[i] : cl_null(); }
+static Value cl_builtin_method(Value self, const char* m, Value* a, long n){
+  char buf[160];
+  if(self.t==T_LIST){
+    if(!strcmp(m,"length") || !strcmp(m,"count")) return cl_int(cl_length(self));
+    if(!strcmp(m,"push")) return cl_list_add(self, cl_bm_arg(a,n,0));
+    if(!strcmp(m,"pop")) return cl_pop(self);
+    if(!strcmp(m,"first")){ List* l=(List*)self.o; return l->len ? l->items[0] : cl_null(); }
+    if(!strcmp(m,"last")){ List* l=(List*)self.o; return l->len ? l->items[l->len-1] : cl_null(); }
+    if(!strcmp(m,"reverse")) return cl_reverse(self);
+    if(!strcmp(m,"sort")) return cl_sort(self);
+    if(!strcmp(m,"join")) return cl_str_join(self, n > 0 ? a[0] : cl_str(""));
+    if(!strcmp(m,"contains")) return cl_contains(self, cl_bm_arg(a,n,0));
+    if(!strcmp(m,"empty")) return cl_bool(cl_length(self)==0);
+    if(!strcmp(m,"slice")) return cl_bm_list_slice(self, a, n);
+    if(!strcmp(m,"index")) return cl_bm_index_of(self, cl_bm_arg(a,n,0));
+    if(!strcmp(m,"copy")) return cl_bm_list_slice(self, 0, 0);
+    snprintf(buf, sizeof buf, "RuntimeError: List has no property '%s'", m);
+    cl_throw(cl_str(cl_strdup(buf)));
+  }
+  if(self.t==T_STR){
+    if(!strcmp(m,"length") || !strcmp(m,"count")) return cl_int((long)strlen(self.s));
+    if(!strcmp(m,"upper")) return cl_upper(self);
+    if(!strcmp(m,"lower")) return cl_lower(self);
+    if(!strcmp(m,"trim")) return cl_trim(self);
+    if(!strcmp(m,"split")) return cl_str_split(self, n > 0 ? a[0] : cl_str(" "));
+    if(!strcmp(m,"replace")) return cl_replace(self, cl_bm_arg(a,n,0), cl_bm_arg(a,n,1));
+    if(!strcmp(m,"contains")) return cl_contains(self, cl_bm_arg(a,n,0));
+    if(!strcmp(m,"starts")) return cl_starts(self, cl_bm_arg(a,n,0));
+    if(!strcmp(m,"ends")) return cl_ends(self, cl_bm_arg(a,n,0));
+    if(!strcmp(m,"chars")) return cl_chars(self);
+    if(!strcmp(m,"reverse")) return cl_reverse(self);
+    if(!strcmp(m,"empty")) return cl_bool(strlen(self.s)==0);
+    if(!strcmp(m,"slice")){
+      long start = n > 0 ? (long)cl_num(a[0]) : 0;
+      long stop  = (n > 1 && a[1].t != T_NULL) ? (long)cl_num(a[1]) : (long)strlen(self.s);
+      return cl_substr(self, start, stop);
+    }
+    if(!strcmp(m,"find")) return cl_index_of(self, cl_bm_arg(a,n,0));
+    if(!strcmp(m,"repeat")) return cl_str_repeat(self, n > 0 ? (long)cl_num(a[0]) : 0);
+    snprintf(buf, sizeof buf, "RuntimeError: String has no property '%s'", m);
+    cl_throw(cl_str(cl_strdup(buf)));
+  }
+  if(cl_is_num(self)){
+    if(!strcmp(m,"abs")) return cl_abs(self);
+    if(!strcmp(m,"str")) return cl_str(cl_to_cstr(self));
+    snprintf(buf, sizeof buf, "RuntimeError: Number has no property '%s'", m);
+    cl_throw(cl_str(cl_strdup(buf)));
+  }
+  return cl_null();
+}
+static int cl_has_builtin_methods(Value v){
+  return v.t==T_LIST || v.t==T_STR || cl_is_num(v);
+}
+/* Is `name` one of them? Asked before binding, so an unknown name raises the
+   interpreter's error at the mention rather than at the call. */
+static int cl_bm_known(Value v, const char* m){
+  static const char* list_m[] = {"length","count","push","pop","first","last","reverse","sort","join","contains","empty","slice","index","copy",0};
+  static const char* str_m[]  = {"length","count","upper","lower","trim","split","replace","contains","starts","ends","chars","reverse","empty","slice","find","repeat",0};
+  static const char* num_m[]  = {"abs","str",0};
+  const char** t = v.t==T_LIST ? list_m : (v.t==T_STR ? str_m : num_m);
+  for(int i=0; t[i]; i++) if(!strcmp(t[i], m)) return 1;
+  return 0;
+}
+/* `let f = text.upper` binds the method to its receiver, so f() is
+   text.upper(). The receiver and the name travel in the closure's captures. */
+static Value cl_bm_thunk(Value* args, Value* cap, long n){
+  return cl_builtin_method(cap[0], cap[1].s, args, n);
+}
+static Value cl_bound_builtin_method(Value self, const char* name){
+  Value cap[2]; cap[0]=self; cap[1]=cl_str(name);
+  return cl_closure_new(&cl_bm_thunk, cap, 2);
+}
 
 /* ── app stdlib: process/env ── */
 static Value cl_env(Value kv, Value dv){ const char* v=getenv(kv.s); if(v) return cl_str(cl_strdup(v)); return dv; }
