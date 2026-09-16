@@ -363,7 +363,8 @@ Things that work today are useful in QEMU. Real hardware coverage is shallow.
 - **Input.** macOS IOKit input (real keyboard/mouse/trackpad on bare metal Macs) is its own programming model — deferred to a dedicated phase.
 - **Multi-touch.** Slot tracking for true multi-touch surfaces.
 - **Devices.** USB HID, NVMe, real Intel NIC drivers — the kernel's PCI enumeration is generic; concrete drivers are stubs.
-- **Audio.** Real ALSA / PulseAudio / PipeWire streaming via FFI. The audio app exists; the backend doesn't yet leave software mixing.
+- **Audio.** Real ALSA / PulseAudio / PipeWire streaming via FFI. `stdlib/audio.clarity` shells out to whichever stock player is installed (`paplay`, `aplay`, `afplay`, `ffplay`) and moves one master level through `amixer`. There is no stream API of our own, which is why the next entry is a feature and not a setting.
+- **A volume per app, not one for the machine.** Every sound an app makes goes through a stream the mixer owns, each stream carries its own level, and Sound in Settings lists whatever is playing so you can turn one app down without touching the rest — the browser tab that shouts over your music, the game whose menu is louder than the game. macOS still has a single output slider and sends you to third-party software (Background Music, SoundSource) for per-app control; on a desktop OS that is a thing the system should own. It needs the PCM stream API above first: per-stream gain is a property of the mixer, and today there is no mixer to give it to.
 - **GPU.** Vulkan/Metal FFI bindings for a hardware-accelerated framebuffer. Software framebuffer is the current path; this is the largest single-feature deferral.
 - **Image decoders.** PNG (DEFLATE) and JPEG (DCT) decoders. Sizeable enough to be their own phase. Wallpapers and app icons currently use procedural Clarity drawing instead of bitmaps.
 
