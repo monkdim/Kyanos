@@ -78,6 +78,8 @@ let OP_YIELD = 57       -- Collect the top of the stack into this frame's yields
 let OP_GET_PROP_OPT = 58 -- `a?.b`: the property, or null if reading it fails
 let OP_SPREAD = 59      -- Mark the top of the stack as spread into what follows
 let OP_COMP_BIND = 60   -- Bind one target of a multi-variable map comprehension
+let OP_PUSH_SCOPE = 61  -- Enter a block: names bound after this are its own
+let OP_POP_SCOPE = 62   -- Leave a block, and everything it bound with it
 let OP_HALT = 255
 
 -- Opcode names for disassembly
@@ -94,7 +96,8 @@ let OP_NAMES = {
     47: "PIPE", 48: "THROW", 49: "MAKE_CLASS", 50: "SLICE",
     51: "SETUP_TRY", 52: "POP_TRY", 53: "SWAP", 54: "ROT3",
     55: "JUMP_TRUE", 56: "IMPORT", 57: "YIELD", 58: "GET_PROP_OPT",
-    59: "SPREAD", 60: "COMP_BIND", 255: "HALT"
+    59: "SPREAD", 60: "COMP_BIND", 61: "PUSH_SCOPE", 62: "POP_SCOPE",
+    255: "HALT"
 }
 
 -- ── Bytecode container ──────────────────────────────────
@@ -167,7 +170,11 @@ class CodeObject {
 class Compiler {
     fn init() {
         this.code = CodeObject(null)
-        this.loop_stack = []   -- [{start, break_patches, try_base}]
+        this.loop_stack = []   -- [{start, break_patches, try_base, scope_base}]
+        -- How many block scopes this point is inside, within this function.
+        -- Leaving a loop early has to close the ones between here and it,
+        -- the same way _unwind_tries closes its trys.
+        this.scope_depth = 0
         -- The try regions this point is inside, innermost last, each with
         -- its finally body or null. Leaving one early — by return, break or
         -- continue — has to run its finally and drop its handler, which is
@@ -385,9 +392,12 @@ class Compiler {
         -- A function compiled inside a try must not inherit it: a return in
         -- there leaves the inner function, not the try around its text.
         let saved_tries = this.open_tries
+        let saved_depth = this.scope_depth
         this.open_tries = []
+        this.scope_depth = 0
         let result = this._compile_function_body(name, params, body)
         this.open_tries = saved_tries
+        this.scope_depth = saved_depth
         return result
     }
 
@@ -412,12 +422,36 @@ class Compiler {
     -- handler left it registered on a frame that had moved on, and the next
     -- error in that frame jumped to a catch block in code that was no longer
     -- running.
+    -- A block: everything it binds is its own, and goes when it does. Every
+    -- block form gets one, because `clarity run` gives every block form an
+    -- Environment of its own -- an if body, an else body, a loop body (a
+    -- fresh one per iteration, so a closure made in a loop captures *that*
+    -- round's variable), a try, a catch, a finally, a match arm and a
+    -- comprehension body.
+    fn _scoped_block(block, line) {
+        this.code.emit(OP_PUSH_SCOPE, 0, line ?? 0)
+        this.scope_depth += 1
+        this.compile_block(block)
+        this.code.emit(OP_POP_SCOPE, 0, line ?? 0)
+        this.scope_depth -= 1
+    }
+
+    -- Close the blocks between here and `base` without pretending we left
+    -- them: the code after a break or continue is still lexically inside.
+    fn _unwind_scopes(base, line) {
+        mut d = this.scope_depth
+        while d > base {
+            this.code.emit(OP_POP_SCOPE, 0, line ?? 0)
+            d -= 1
+        }
+    }
+
     fn _unwind_tries(base) {
         mut ti = len(this.open_tries) - 1
         while ti >= base {
             this.code.emit(OP_POP_TRY, 0, 0)
             let fin = this.open_tries[ti]["finally"]
-            if fin != null { this.compile_block(fin) }
+            if fin != null { this._scoped_block(fin, 0) }
             ti -= 1
         }
     }
@@ -448,7 +482,7 @@ class Compiler {
         let line = node.line ?? 0
         this.compile_node(node.condition)
         let jump_false = this.code.emit(OP_JUMP_FALSE, 0, line)
-        this.compile_block(node.body)
+        this._scoped_block(node.body, line)
         let jump_end = this.code.emit(OP_JUMP, 0)
         this.code.patch_jump(jump_false)
 
@@ -463,14 +497,14 @@ class Compiler {
                 let elif_body = clause[1]
                 this.compile_node(elif_cond)
                 let elif_jump_false = this.code.emit(OP_JUMP_FALSE, 0, line)
-                this.compile_block(elif_body)
+                this._scoped_block(elif_body, line)
                 let elif_jump_end = this.code.emit(OP_JUMP, 0)
                 push(elif_end_jumps, elif_jump_end)
                 this.code.patch_jump(elif_jump_false)
                 ei += 1
             }
             if node.else_body != null {
-                this.compile_block(node.else_body)
+                this._scoped_block(node.else_body, line)
             }
             mut ji = 0
             while ji < len(elif_end_jumps) {
@@ -479,7 +513,7 @@ class Compiler {
             }
         } else {
             if node.else_body != null {
-                this.compile_block(node.else_body)
+                this._scoped_block(node.else_body, line)
             }
         }
         this.code.patch_jump(jump_end)
@@ -488,11 +522,12 @@ class Compiler {
     fn compile_WhileStatement(node) {
         let line = node.line ?? 0
         let loop_start = len(this.code.instructions)
-        push(this.loop_stack, {"start": loop_start, "break_patches": [], "try_base": len(this.open_tries)})
+        push(this.loop_stack, {"start": loop_start, "break_patches": [],
+            "try_base": len(this.open_tries), "scope_base": this.scope_depth})
 
         this.compile_node(node.condition)
         let jump_false = this.code.emit(OP_JUMP_FALSE, 0, line)
-        this.compile_block(node.body)
+        this._scoped_block(node.body, line)
         this.code.emit(OP_JUMP, loop_start)
         this.code.patch_jump(jump_false)
 
@@ -509,16 +544,25 @@ class Compiler {
         this.compile_node(node.iterable)
         this.code.emit(OP_ITER_INIT, 0, line)
         let loop_start = len(this.code.instructions)
-        push(this.loop_stack, {"start": loop_start, "break_patches": [], "try_base": len(this.open_tries)})
+        push(this.loop_stack, {"start": loop_start, "break_patches": [],
+            "try_base": len(this.open_tries), "scope_base": this.scope_depth})
 
         -- ITER_NEXT peeks the iterator (it does not pop it), so the iterator
         -- must stay on the stack across iterations WITHOUT an extra DUP — a
         -- DUP here leaks one iterator per iteration.
         this.code.emit(OP_ITER_NEXT)
         let jump_end = this.code.emit(OP_JUMP_FALSE, 0)
+        -- The loop variable is part of the iteration's own scope, so it does
+        -- not outlive the loop and a closure made in the body captures *this*
+        -- round's binding. Both were wrong before: `for z in [1,2,3] { }; z`
+        -- answered 3, and three closures made in a loop all answered 3.
+        this.code.emit(OP_PUSH_SCOPE, 0, line)
+        this.scope_depth += 1
         let name_idx = this.code.add_const(node.variable)
         this.code.emit(OP_STORE_NEW, name_idx)
         this.compile_block(node.body)
+        this.code.emit(OP_POP_SCOPE, 0, line)
+        this.scope_depth -= 1
         this.code.emit(OP_JUMP, loop_start)
         this.code.patch_jump(jump_end)
 
@@ -541,6 +585,7 @@ class Compiler {
         if len(this.loop_stack) > 0 {
             let loop_ctx = this.loop_stack[len(this.loop_stack) - 1]
             this._unwind_tries(loop_ctx["try_base"])
+            this._unwind_scopes(loop_ctx["scope_base"], line)
             let patch_idx = this.code.emit(OP_JUMP, 0, line)
             push(loop_ctx["break_patches"], patch_idx)
         }
@@ -551,6 +596,7 @@ class Compiler {
         if len(this.loop_stack) > 0 {
             let loop_ctx = this.loop_stack[len(this.loop_stack) - 1]
             this._unwind_tries(loop_ctx["try_base"])
+            this._unwind_scopes(loop_ctx["scope_base"], line)
             this.code.emit(OP_JUMP, loop_ctx["start"], line)
         }
     }
@@ -567,13 +613,18 @@ class Compiler {
         let line = node.line ?? 0
         let try_start = this.code.emit(OP_SETUP_TRY, 0, line)
         push(this.open_tries, {"finally": node.finally_body})
-        this.compile_block(node.try_body)
+        this._scoped_block(node.try_body, line)
         pop(this.open_tries)
         this.code.emit(OP_POP_TRY, 0, line)
-        if node.finally_body != null { this.compile_block(node.finally_body) }
+        if node.finally_body != null { this._scoped_block(node.finally_body, line) }
         let jump_end = this.code.emit(OP_JUMP, 0)
         -- Patch try handler to point here (catch block)
         this.code.patch_jump(try_start)
+        -- The catch variable belongs to the catch block, not to the function
+        -- around it: `try { throw "x" } catch e { }` used to leave `e` bound
+        -- afterwards here, where `clarity run` does not.
+        this.code.emit(OP_PUSH_SCOPE, 0, line)
+        this.scope_depth += 1
         -- Store error into catch variable
         if node.catch_var != null {
             let var_idx = this.code.add_const(node.catch_var)
@@ -588,6 +639,8 @@ class Compiler {
         -- under the VM and ran it under the interpreter.
         if node.finally_body == null {
             this.compile_block(node.catch_body)
+            this.code.emit(OP_POP_SCOPE, 0, line)
+            this.scope_depth -= 1
             this.code.patch_jump(jump_end)
             return null
         }
@@ -597,10 +650,12 @@ class Compiler {
         this.compile_block(node.catch_body)
         pop(this.open_tries)
         this.code.emit(OP_POP_TRY, 0, line)
-        this.compile_block(node.finally_body)
+        this.code.emit(OP_POP_SCOPE, 0, line)
+        this.scope_depth -= 1
+        this._scoped_block(node.finally_body, line)
         let jump_end2 = this.code.emit(OP_JUMP, 0)
         this.code.patch_jump(catch_guard)
-        this.compile_block(node.finally_body)
+        this._scoped_block(node.finally_body, line)
         this.code.emit(OP_THROW, 0, line)
         this.code.patch_jump(jump_end)
         this.code.patch_jump(jump_end2)
@@ -700,7 +755,7 @@ class Compiler {
             } catch e {}
             if is_default {
                 this.code.emit(OP_POP, 0, line)
-                this.compile_block(body)
+                this._scoped_block(body, line)
                 let jump_end = this.code.emit(OP_JUMP, 0)
                 push(end_jumps, jump_end)
             } else {
@@ -709,7 +764,7 @@ class Compiler {
                 this.code.emit(OP_EQ, 0, line)
                 let jump_miss = this.code.emit(OP_JUMP_FALSE, 0, line)
                 this.code.emit(OP_POP, 0, line)
-                this.compile_block(body)
+                this._scoped_block(body, line)
                 let jump_end = this.code.emit(OP_JUMP, 0)
                 push(end_jumps, jump_end)
                 this.code.patch_jump(jump_miss)
@@ -721,7 +776,7 @@ class Compiler {
         try { has_default = node.default != null } catch e {}
         if has_default {
             this.code.emit(OP_POP, 0, line)
-            this.compile_block(node.default)
+            this._scoped_block(node.default, line)
             let jump_end = this.code.emit(OP_JUMP, 0)
             push(end_jumps, jump_end)
         } else {
@@ -786,7 +841,7 @@ class Compiler {
     }
 
     fn compile_Block(node) {
-        this.compile_block(node)
+        this._scoped_block(node, node.line ?? 0)
     }
 
     -- ── Expression compilers ────────────────────────────
@@ -1131,6 +1186,11 @@ class Compiler {
         -- unlike a for-loop the leak actually corrupts them).
         this.code.emit(OP_ITER_NEXT)
         let jump_end = this.code.emit(OP_JUMP_FALSE, 0)
+        -- The loop variable is the iteration's own, as it is in a for-loop
+        -- and as it is under `clarity run`: it does not outlive the
+        -- comprehension, and it does not overwrite an outer name it shadows.
+        this.code.emit(OP_PUSH_SCOPE, 0, line)
+        this.scope_depth += 1
         let var_idx = this.code.add_const(node.variable)
         this.code.emit(OP_STORE_NEW, var_idx)
         -- Check filter condition if present
@@ -1153,6 +1213,8 @@ class Compiler {
         if jump_skip >= 0 {
             this.code.patch_jump(jump_skip)
         }
+        this.code.emit(OP_POP_SCOPE, 0, line)
+        this.scope_depth -= 1
         this.code.emit(OP_JUMP, loop_start)
         this.code.patch_jump(jump_end)
         this.code.emit(OP_POP)   -- pop iterator, result_list remains
@@ -1167,6 +1229,8 @@ class Compiler {
         -- No DUP: ITER_NEXT peeks the iterator (see the list comprehension).
         this.code.emit(OP_ITER_NEXT)
         let jump_end = this.code.emit(OP_JUMP_FALSE, 0)
+        this.code.emit(OP_PUSH_SCOPE, 0, line)
+        this.scope_depth += 1
         -- The AST stores loop targets as `variables` (a list). One target takes
         -- the item whole; several destructure a list item element-wise, which
         -- is what the interpreter does, so COMP_BIND carries that rule --
@@ -1204,6 +1268,8 @@ class Compiler {
         if jump_skip >= 0 {
             this.code.patch_jump(jump_skip)
         }
+        this.code.emit(OP_POP_SCOPE, 0, line)
+        this.scope_depth -= 1
         this.code.emit(OP_JUMP, loop_start)
         this.code.patch_jump(jump_end)
         this.code.emit(OP_POP)
@@ -1249,7 +1315,14 @@ class VMFrame {
     fn init(code, base_pointer) {
         this.code = code
         this.ip = 0
+        -- `locals` is the *innermost* scope, and `parents` the blocks around
+        -- it, outermost first. A block pushes the current innermost onto
+        -- parents and starts a fresh map; leaving it puts the old one back,
+        -- and everything the block bound goes with it. Before this the frame
+        -- had one flat map, so a `for` variable outlived its loop and a loop
+        -- over a name that already existed overwrote it.
         this.locals = {}
+        this.parents = []
         this.base_pointer = base_pointer ?? 0
         this.closure = null
         -- What `yield` has collected in this call. Per frame, so a recursive
@@ -1266,9 +1339,13 @@ class VMFunction {
         this.code = code
         this.params = params
         this.name = name ?? "<fn>"
-        -- Captured locals from the enclosing frame at definition time.
-        -- Set by OP_MAKE_FN; consumed by OP_LOAD when a name is missing
-        -- from the current frame.
+        -- The enclosing frame's scopes at definition time, innermost first.
+        -- A *list* of maps rather than one map, because the frame has a scope
+        -- per block it is inside: capturing only the flat map gave every
+        -- closure made in a loop the same binding, so `for k in [1,2,3] {
+        -- push(fs, fn() { return k }) }` answered [3, 3, 3] where the
+        -- interpreter answers [1, 2, 3]. Held by reference, so a closure that
+        -- mutates a captured variable still sees later writes.
         this.closure = null
     }
 
@@ -1758,6 +1835,44 @@ class VM {
         return null
     }
 
+    -- The scope in `frame` that holds `name` -- innermost first, then out
+    -- through the blocks the frame is inside. null when the frame has no such
+    -- name anywhere.
+    fn _frame_scope(frame, name) {
+        if has(frame.locals, name) { return frame.locals }
+        mut pi = len(frame.parents) - 1
+        while pi >= 0 {
+            if has(frame.parents[pi], name) { return frame.parents[pi] }
+            pi -= 1
+        }
+        return null
+    }
+
+    -- The same, over a captured chain (already innermost first).
+    fn _chain_scope(chain, name) {
+        if chain == null { return null }
+        mut ci = 0
+        while ci < len(chain) {
+            if has(chain[ci], name) { return chain[ci] }
+            ci += 1
+        }
+        return null
+    }
+
+    -- What a closure made here should capture: this frame's scopes, innermost
+    -- first. A copy of the *list*, sharing the maps -- so a block entered
+    -- later does not reach back into a closure already made, but a write to a
+    -- variable the closure captured is still seen by it.
+    fn _capture_chain(frame) {
+        mut chain = [frame.locals]
+        mut pi = len(frame.parents) - 1
+        while pi >= 0 {
+            push(chain, frame.parents[pi])
+            pi -= 1
+        }
+        return chain
+    }
+
     fn _call_fn(f, call_args) {
         let t = type(f)
         if t == "VMFunction" {
@@ -1980,10 +2095,12 @@ class VM {
             -- Variables
             elif op == OP_LOAD {
                 let name = code.constants[operand]
-                if has(frame.locals, name) {
-                    push(this.stack, frame.locals[name])
-                } elif frame.closure != null and has(frame.closure, name) {
-                    push(this.stack, frame.closure[name])
+                let load_scope = this._frame_scope(frame, name)
+                let load_captured = if load_scope == null { this._chain_scope(frame.closure, name) } else { null }
+                if load_scope != null {
+                    push(this.stack, load_scope[name])
+                } elif load_captured != null {
+                    push(this.stack, load_captured[name])
                 } elif has(this.globals, name) {
                     push(this.stack, this.globals[name])
                 } else {
@@ -1993,9 +2110,9 @@ class VM {
                     mut found = false
                     mut fi = len(this.frames) - 2
                     while fi >= 0 {
-                        let parent_frame = this.frames[fi]
-                        if has(parent_frame.locals, name) {
-                            push(this.stack, parent_frame.locals[name])
+                        let parent_scope = this._frame_scope(this.frames[fi], name)
+                        if parent_scope != null {
+                            push(this.stack, parent_scope[name])
                             found = true
                             break
                         }
@@ -2013,22 +2130,31 @@ class VM {
             elif op == OP_STORE {
                 let name = code.constants[operand]
                 let value = pop(this.stack)
-                -- Check current frame first, then walk up
-                if has(frame.locals, name) {
-                    frame.locals[name] = value
+                -- Assign where the name lives: the innermost block of this
+                -- frame that has it, then what this call captured, then an
+                -- enclosing frame. Only a name nothing has becomes new here.
+                let store_scope = this._frame_scope(frame, name)
+                if store_scope != null {
+                    store_scope[name] = value
                 } else {
-                    mut found = false
-                    mut fi = len(this.frames) - 2
-                    while fi >= 0 {
-                        if has(this.frames[fi].locals, name) {
-                            this.frames[fi].locals[name] = value
-                            found = true
-                            break
+                    let captured = this._chain_scope(frame.closure, name)
+                    if captured != null {
+                        captured[name] = value
+                    } else {
+                        mut found = false
+                        mut fi = len(this.frames) - 2
+                        while fi >= 0 {
+                            let parent_scope = this._frame_scope(this.frames[fi], name)
+                            if parent_scope != null {
+                                parent_scope[name] = value
+                                found = true
+                                break
+                            }
+                            fi -= 1
                         }
-                        fi -= 1
-                    }
-                    if not found {
-                        frame.locals[name] = value
+                        if not found {
+                            frame.locals[name] = value
+                        }
                     }
                 }
             }
@@ -2146,14 +2272,23 @@ class VM {
                     }
                 }
                 let vm_fn = VMFunction(fn_code, params, fn_code.name)
-                -- Capture the enclosing frame's locals as the closure env.
-                -- Snapshot by reference: a closure that mutates its captured
-                -- variable still sees later writes (matches lexical scope).
-                vm_fn.closure = frame.locals
+                -- Capture the enclosing frame's scopes as the closure env:
+                -- the innermost block first, then out. Snapshot the list by
+                -- value and the maps by reference, so a closure that mutates
+                -- its captured variable still sees later writes, while a
+                -- block entered afterwards is none of its business.
+                vm_fn.closure = this._capture_chain(frame)
                 push(this.stack, vm_fn)
             }
             elif op == OP_SPREAD {
                 push(this.stack, VMSpread(pop(this.stack)))
+            }
+            elif op == OP_PUSH_SCOPE {
+                push(frame.parents, frame.locals)
+                frame.locals = {}
+            }
+            elif op == OP_POP_SCOPE {
+                if len(frame.parents) > 0 { frame.locals = pop(frame.parents) }
             }
             elif op == OP_COMP_BIND {
                 -- One target of `{k: v for a, b in xs}`. A list item is taken
@@ -2442,6 +2577,9 @@ class VM {
                         while len(this.stack) > handler["stack_depth"] {
                             pop(this.stack)
                         }
+                        while len(frame.parents) > handler["scope_depth"] {
+                            frame.locals = pop(frame.parents)
+                        }
                         push(this.stack, err_val)
                         frame.ip = handler["catch_ip"]
                         continue
@@ -2481,6 +2619,12 @@ class VM {
                 push(this.try_stack, {
                     "catch_ip": operand,
                     "stack_depth": len(this.stack),
+                    -- How many blocks deep the try is. An error thrown from
+                    -- inside a block in the try body jumps straight to the
+                    -- catch, past that block's POP_SCOPE, so the catch has to
+                    -- close it on arrival -- or it would run with the try
+                    -- body's innermost scope still in place.
+                    "scope_depth": len(frame.parents),
                     "frame_idx": len(this.frames) - 1
                 })
             }
@@ -2506,6 +2650,9 @@ class VM {
                         pop(this.try_stack)
                         while len(this.stack) > handler["stack_depth"] {
                             pop(this.stack)
+                        }
+                        while len(frame.parents) > handler["scope_depth"] {
+                            frame.locals = pop(frame.parents)
                         }
                         push(this.stack, err)
                         frame.ip = handler["catch_ip"]

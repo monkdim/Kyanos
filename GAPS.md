@@ -166,6 +166,45 @@ A name in scope is what a call means now, whatever else the name refers to at
 module level. Calling something that is not a function also raises the
 interpreter's error rather than answering null.
 
+### The bytecode VM had no block scoping
+Fixed. `run --fast` kept every binding of a call in one flat map, so no block
+scoped at all — not an `if` body, a loop body, a `try`, a `catch`, a `finally`,
+a `match` arm or a comprehension:
+
+```clarity
+for z in [1, 2, 3] { }
+show z                          -- clarity run NameError, run --fast 3
+
+let y = 99
+for y in [1, 2] { }
+show y                          -- clarity run 99, run --fast 2
+
+mut fs = []
+for k in [1, 2, 3] { push(fs, fn() { return k }) }
+show [f() for f in fs]          -- clarity run [1, 2, 3], run --fast [3, 3, 3]
+```
+
+The second is the damaging one: an ordinary loop over a name that already
+exists silently overwrote it under one engine and not the other. The third is
+the same fault seen from the other side — every closure made in the loop
+captured the one map, so all three answered the last value.
+
+A frame now holds a stack of scopes: `locals` is the innermost and `parents`
+the blocks around it. `PUSH_SCOPE` and `POP_SCOPE` bracket every block form,
+a loop body gets a fresh one *per iteration* (so a closure captures that
+round's variable, as it does under `clarity run`), and a closure captures the
+chain rather than one map. `break` and `continue` close the blocks between
+themselves and their loop, the same way they already ran the finallys; an
+error thrown from inside a block lands in the catch with that block closed,
+because the handler records how deep it was.
+
+Assignment follows the same chain now — it used to check only the frame's flat
+map and then enclosing *frames*, never what the call had captured, so writing
+to a captured variable made a new local instead of writing through.
+
+Four of the seventeen files in `examples/` still do not run the same under
+`--fast`; all four predate this and are filed separately.
+
 ### Slicing meant three different things, and `clarity cc` meant none of them
 Fixed, with one question left open. `xs[1..3]` did not compile at all —
 `SliceExpression` had no case in the C backend — and the two engines that did

@@ -271,9 +271,18 @@ lands with codegen tests that diff native output against the interpreter.
   the corners. What a slice *should* mean is a separate, open language question — the subscript
   gives characters where the language's own `.slice()` gives a substring — and it is written up
   in GAPS.md rather than decided here.
-- **VM block scoping (next on the trunk).** The VM keeps every binding in one flat per-frame map,
-  so blocks do not scope: a `for` or comprehension variable leaks past its loop, and a loop over a
-  name that already exists silently overwrites it under `--fast` and not under `clarity run`.
+- **VM block scoping (done).** `run --fast` kept every binding of a call in one flat map, so no
+  block scoped: a `for` or comprehension variable outlived its loop, a loop over a name that
+  already existed silently overwrote it, and every closure made in a loop shared one binding
+  (`[3, 3, 3]` where the interpreter gives `[1, 2, 3]`). A frame now carries a stack of scopes,
+  `PUSH_SCOPE`/`POP_SCOPE` bracket every block form, a loop body gets a fresh scope per iteration,
+  and a closure captures the chain rather than one map. Assignment follows the same chain, which
+  it did not before — writing to a captured variable made a new local instead.
+- **The examples that still differ under `--fast` (next on the trunk).** Four of the seventeen
+  files in `examples/` do not run the same under the VM: `async_generators` dies in the compiler,
+  `classes` calls null, `patterns` gets `type(42)` wrong, and `control_flow` leaves the line off an
+  engine-raised error. A language whose own examples do not run on one of its engines is not
+  finished.
 - **Networking.** TLS, then keep-alive and chunked encoding, so the HTTP
   client can talk to real services rather than only to plaintext ones.
 - **Stage 12+ — services stdlib.** Real crypto (not the toy cipher), a real embedded key/value or
