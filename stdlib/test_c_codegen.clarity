@@ -218,6 +218,27 @@ if CC == null {
     same("class_method_calls_method", "class Greeter { fn init(name) { this.name = name }\nfn greeting() { return \"Hello, \" + this.name }\nfn shout() { return this.greeting() + \"!\" } }\nshow Greeter(\"Kyan\").shout()")
     same("class_inheritance", "class Animal { fn init(name) { this.name = name }\nfn speak() { return \"...\" }\nfn describe() { return this.name + \" says \" + this.speak() } }\nclass Dog < Animal { fn speak() { return \"woof\" } }\nlet d = Dog(\"Rex\")\nshow d.describe()")
 
+    -- ── enums ──
+    -- An enum is a compile-time table here: its members become C globals
+    -- initialised before any module-level binding, and `E.member` resolves
+    -- while compiling. Everything below is diffed against the interpreter.
+    same("enum_members", "enum Color { Red, Green, Blue }\nshow Color.Red\nshow Color.Green\nshow Color.Blue")
+    same("enum_explicit_values", "enum Status { Ok = 200, NotFound = 404, Error = 500 }\nshow Status.Ok\nshow Status.NotFound\nshow Status.Error")
+    same("enum_names", "enum Color { Red, Green, Blue }\nshow Color.names()")
+    same("enum_values", "enum Status { Ok = 200, NotFound = 404 }\nshow Status.values()")
+    same("enum_entries", "enum Status { Ok = 200, NotFound = 404 }\nshow Status.entries()")
+    same("enum_has", "enum Color { Red, Green }\nshow Color.has(\"Red\")\nshow Color.has(\"Blue\")")
+    same("enum_in_expression", "enum Status { Ok = 200, Missing = 404 }\nfn describe(code) {\n    if code == Status.Ok { return \"fine\" }\n    if code == Status.Missing { return \"missing\" }\n    return \"unknown\"\n}\nshow describe(200)\nshow describe(404)\nshow describe(1)\nshow Status.Ok + 1")
+    -- A function defined above the enum still sees it: module scope in
+    -- Clarity is the whole file, so the table is registered before any body
+    -- is emitted.
+    same("enum_used_before_declared", "fn label(l) { return \"level=\" + Level.names()[l] }\nenum Level { Low = \"low\", High = \"high\" }\nshow Level.Low\nshow label(1)")
+    same("enum_two_enums", "enum A { X, Y }\nenum B { P = 10, Q = 20 }\nshow A.Y + B.P\nshow A.names()\nshow B.values()")
+    -- A member holding a string is heap-allocated, so the collector has to
+    -- see the global holding it. Without rooting this prints garbage once
+    -- mid-run collection starts.
+    same_gc("enum_string_members_gc", "enum Level { Low = \"low\", High = \"high\" }\nmut junk = []\nmut i = 0\nwhile i < 20000 {\n    junk = [str(i), str(i + 1)]\n    i += 1\n}\nshow Level.Low\nshow Level.names()\nshow Level.values()")
+
     -- ── stage 4: closures ──
     same("closure_map", "show map([1, 2, 3], fn(x) { return x * 2 })")
     same("closure_capture", "let factor = 10\nshow map([1, 2, 3], fn(x) { return x * factor })")

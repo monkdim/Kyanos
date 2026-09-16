@@ -142,6 +142,17 @@ lands with codegen tests that diff native output against the interpreter.
   references with a scope-aware walk so a local shadowing one is left alone. Both failure modes
   (a missed rename, a wrongly renamed local) are an undefined identifier in the generated C rather
   than silent misbehaviour, which is what makes it tractable.
+- **Enums (done).** An enum is a compile-time table rather than a runtime object: its members
+  become C globals initialised before any module-level binding, and `Colour.Red` resolves while
+  compiling. `names()`, `values()`, `entries()` and `has()` are emitted as one C function each,
+  building a fresh value per call the way the interpreter's do, so a caller that mutates the list
+  it gets back does not change what the next call returns. Members with an explicit value take it;
+  the rest take their index, as in the interpreter. Two divergences, stated rather than hidden:
+  reading a member an enum does not have is a *compile* error here and a runtime one there — the
+  same program refused earlier — and the enum name is not a value, so `let c = Colour` is refused
+  rather than compiled into something that only looks like one. Eleven cases in the codegen suite
+  diff the native output against the interpreter, including one under `CLARITY_GC=1`, because a
+  member holding a string is heap-allocated and the collector has to see the global holding it.
 - **Generators.** `YieldExpression` is the one construct in `examples/` still unsupported. It
   needs real coroutines in C and is its own piece of work.
 - **Networking.** TLS, then keep-alive and chunked encoding, so the HTTP

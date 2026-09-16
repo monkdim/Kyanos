@@ -1658,6 +1658,7 @@ class CCodegen {
         this.closure_defs = []  -- emitted closure function bodies (line lists)
         this.volatile_locals = false  -- true while emitting a function with a try
         this.finally_stack = []       -- finally bodies enclosing the statement being emitted
+        this.enums = {}         -- enum name → list of member names, in order
         this.freestanding = false     -- --freestanding: no OS underneath (see _FREESTANDING_EXCLUDED)
     }
 
@@ -1933,6 +1934,8 @@ class CCodegen {
     fn _emit_call(callee, args, line) {
         -- obj.method(args) → dynamic dispatch on the instance's class
         if callee.node_type == "MemberExpression" {
+            let on_enum = this._enum_call(callee, args, line)
+            if on_enum != null { return on_enum }
             return "cl_dispatch(" + this.expr(callee.object) + ", \"" + callee.property + "\", " + this._argv(args) + ")"
         }
         if callee.node_type == "Identifier" {
@@ -1953,8 +1956,104 @@ class CCodegen {
         return "cl_null()"
     }
 
+    -- The C name of one enum member's global.
+    fn _enum_global(enum_name, member) {
+        return "e_" + enum_name + "_" + member
+    }
+
+    -- `E.member` when E names an enum, else null so the caller falls through
+    -- to an ordinary field read.
+    fn _enum_member(node) {
+        if node.object.node_type != "Identifier" { return null }
+        let enum_name = node.object.name
+        if not has(this.enums, enum_name) { return null }
+        let members = this.enums[enum_name]
+        if contains(members, node.property) {
+            return this._enum_global(enum_name, node.property)
+        }
+        -- The four an enum answers besides its members are calls, handled in
+        -- _enum_call; naming one without calling it is a function value, and
+        -- there is nothing to hand back.
+        if contains(["names", "values", "entries", "has"], node.property) {
+            this.unsupported("enum method " + enum_name + "." + node.property + " as a value", node.line)
+            return "cl_null()"
+        }
+        this.reject("enum " + enum_name + " has no member '" + node.property + "'", node.line)
+        return "cl_null()"
+    }
+
+    -- `E.names()`, `E.values()`, `E.entries()`, `E.has(name)`. Each builds a
+    -- fresh value, as the interpreter's do — a caller that mutates the list
+    -- it gets back must not change what the next call returns.
+    fn _enum_call(callee, args, line) {
+        if callee.object.node_type != "Identifier" { return null }
+        let enum_name = callee.object.name
+        if not has(this.enums, enum_name) { return null }
+        let members = this.enums[enum_name]
+        let prop = callee.property
+        if contains(members, prop) {
+            this.reject("calling enum member " + enum_name + "." + prop + ", which is a value", line)
+            return "cl_null()"
+        }
+        if prop == "names" or prop == "values" or prop == "entries" {
+            if len(args) != 0 {
+                this.reject("enum " + enum_name + "." + prop + " takes no arguments", line)
+                return "cl_null()"
+            }
+            return "cl_enum_" + enum_name + "_" + prop + "()"
+        }
+        if prop == "has" {
+            if len(args) != 1 {
+                this.reject("enum " + enum_name + ".has takes one argument", line)
+                return "cl_null()"
+            }
+            return "cl_enum_" + enum_name + "_has(" + args[0] + ")"
+        }
+        this.reject("enum " + enum_name + " has no member '" + prop + "'", line)
+        return "cl_null()"
+    }
+
+    -- names(), values(), entries() and has() for one enum, as C functions.
+    fn _enum_helpers(enum_name, members) {
+        mut lines = []
+        push(lines, "static Value cl_enum_" + enum_name + "_names(void) {")
+        push(lines, "  Value l = cl_list_new();")
+        for m in members { push(lines, "  l = cl_list_add(l, cl_str(\"" + m + "\"));") }
+        push(lines, "  return l;")
+        push(lines, "}")
+        push(lines, "static Value cl_enum_" + enum_name + "_values(void) {")
+        push(lines, "  Value l = cl_list_new();")
+        for m in members { push(lines, "  l = cl_list_add(l, " + this._enum_global(enum_name, m) + ");") }
+        push(lines, "  return l;")
+        push(lines, "}")
+        push(lines, "static Value cl_enum_" + enum_name + "_entries(void) {")
+        push(lines, "  Value l = cl_list_new();")
+        for m in members {
+            push(lines, "  { Value p = cl_list_new();")
+            push(lines, "    p = cl_list_add(p, cl_str(\"" + m + "\"));")
+            push(lines, "    p = cl_list_add(p, " + this._enum_global(enum_name, m) + ");")
+            push(lines, "    l = cl_list_add(l, p); }")
+        }
+        push(lines, "  return l;")
+        push(lines, "}")
+        push(lines, "static Value cl_enum_" + enum_name + "_has(Value name) {")
+        for m in members {
+            push(lines, "  if (cl_truthy(cl_eq(name, cl_str(\"" + m + "\")))) return cl_bool(1);")
+        }
+        push(lines, "  return cl_bool(0);")
+        push(lines, "}")
+        return lines
+    }
+
     fn unsupported(what, line) {
         push(this.errors, "native compile: unsupported " + what + " (line " + str(line ?? 0) + ")")
+    }
+
+    -- A program this compiler understands and refuses: not a gap in the
+    -- backend but a mistake in the source, and calling it "unsupported"
+    -- would send whoever reads it looking for a missing feature.
+    fn reject(what, line) {
+        push(this.errors, "native compile: " + what + " (line " + str(line ?? 0) + ")")
     }
 
     -- Unique id for the temporaries a for-loop needs (iterable + index).
@@ -2171,6 +2270,13 @@ class CCodegen {
             return "cl_index(" + this.expr(node.object) + ", " + this.expr(node.index) + ")"
         }
         if nt == "MemberExpression" {
+            -- `Colour.Red` is not a field read: an enum is a compile-time
+            -- table, and its members are C globals initialised once. The
+            -- interpreter reports an unknown member as a runtime error; here
+            -- the whole table is known while compiling, so it is a compile
+            -- error, which is the same program rejected earlier.
+            let enum_member = this._enum_member(node)
+            if enum_member != null { return enum_member }
             -- Field/property read: `obj.field`. Method *calls* are handled in
             -- CallExpression below; a bare member is always a field lookup.
             return "cl_get_field(" + this.expr(node.object) + ", \"" + node.property + "\")"
@@ -2574,6 +2680,7 @@ class CCodegen {
     fn compile(tree) {
         mut fns = []
         mut classes = []
+        mut enums = []
         mut top = []
         for stmt in tree.body {
             if stmt.node_type == "FnStatement" {
@@ -2588,6 +2695,15 @@ class CCodegen {
                 push(classes, stmt)
                 push(this.classes, stmt.name)
                 this.class_defs[stmt.name] = stmt
+            }
+            -- An enum is a compile-time table: registered before any body is
+            -- emitted, because a function defined above the enum may still
+            -- refer to it (Clarity resolves module scope from anywhere).
+            elif stmt.node_type == "EnumStatement" {
+                push(enums, stmt)
+                mut member_names = []
+                for member in stmt.members { push(member_names, member[0]) }
+                this.enums[stmt.name] = member_names
             } else { push(top, stmt) }
         }
 
@@ -2601,6 +2717,22 @@ class CCodegen {
         for c in classes {
             for pair in this._resolve_methods(c) {
                 push(main_body, "  cl_register(\"" + c.name + "\", \"" + pair[0] + "\", &f_" + pair[1] + "_" + pair[0] + ");")
+            }
+        }
+        -- Enum members are initialised before any module-level binding, so a
+        -- `let` may name one. A member with no value of its own is its index,
+        -- which is what the interpreter assigns.
+        mut enum_globals = []
+        for e in enums {
+            mut index = 0
+            for member in e.members {
+                let member_name = member[0]
+                let value_node = member[1]
+                let global_name = this._enum_global(e.name, member_name)
+                push(enum_globals, global_name)
+                let init = if value_node != null { this.expr(value_node) } else { "cl_int(" + str(index) + ")" }
+                push(main_body, "  " + global_name + " = " + init + ";")
+                index += 1
             }
         }
         -- Module-level bindings become C globals rather than locals of main().
@@ -2631,14 +2763,27 @@ class CCodegen {
         if this.freestanding { push(out, "#define CLARITY_FREESTANDING 1") }
         push(out, C_PRELUDE)
         push(out, "")
-        if len(globals) > 0 {
+        if len(globals) > 0 or len(enum_globals) > 0 {
             push(out, "/* module-level bindings */")
             mut roots = []
             for g in globals {
                 push(out, "Value v_" + g + ";")
                 push(roots, "&v_" + g)
             }
+            -- Enum members are roots too: a member whose value is a string or
+            -- a list is heap-allocated, and the collector has to see it held.
+            for g in enum_globals {
+                push(out, "Value " + g + ";")
+                push(roots, "&" + g)
+            }
             push(out, "static Value* cl_global_roots[] = {" + join(roots, ", ") + "};")
+            push(out, "")
+        }
+        if len(enums) > 0 {
+            push(out, "/* enums */")
+            for e in enums {
+                for l in this._enum_helpers(e.name, this.enums[e.name]) { push(out, l) }
+            }
             push(out, "")
         }
         for f in fns { push(out, this._fn_signature(f) + ";") }
@@ -2679,8 +2824,8 @@ class CCodegen {
         push(out, "  cl_argc = argc; cl_argv = argv;")
         push(out, "  GC_CAPTURE_STACK_BASE();")
         push(out, "  if(getenv(\"CLARITY_GC\")) gc_enabled = 1;")
-        if len(globals) > 0 {
-            push(out, "  cl_globals = cl_global_roots; cl_globals_n = " + str(len(globals)) + ";")
+        if len(globals) > 0 or len(enum_globals) > 0 {
+            push(out, "  cl_globals = cl_global_roots; cl_globals_n = " + str(len(globals) + len(enum_globals)) + ";")
         }
         for l in main_body { push(out, l) }
         push(out, "  cl_arena_free();")
