@@ -75,6 +75,33 @@ assert(not contains(out7, "__signal__"), "still hides the signal")
 let plain_map = format_error({"a": 1}, null, null)
 assert(contains(plain_map, "a"), "a thrown-looking map that is not a signal is unchanged")
 
+show "-- errors: a host error --"
+-- A stack overflow is not a Clarity throw: it arrives as a host error
+-- object whose properties are not enumerable, so str() rendered it `{}` and
+-- the program was told it had failed without being told anything else.
+--   fn f(n) { return f(n + 1) }
+--   show f(0)      ->    Clarity Error in x.clarity:  {}
+--
+-- There is no way to build one of these by hand — error("x") makes a
+-- string — so the test causes a real overflow and checks first that it got
+-- the shape it is here to test, rather than passing on something else.
+fn _overflow(n) { return _overflow(n + 1) }
+mut host = null
+try { _overflow(0) } catch e_host { host = e_host }
+
+if host == null or type(host) != "map" or len(keys(host)) != 0 or not has(host, "message") {
+    FAILED += 1
+    show "  BROKEN CASE: the overflow did not produce a host error object"
+} else {
+    let out8 = format_error(host, null, null)
+    assert(contains(out8, "call stack"), "a host error shows its message")
+    assert(not contains(out8, "Clarity Error:\n\n  {}"), "a host error is not rendered as an empty map")
+    assert(contains(out8, "RangeError"), "a host error names its kind")
+    -- And a Clarity map that happens to carry a "message" key is still a map.
+    let as_map = format_error({"message": "not a host error"}, null, null)
+    assert(contains(as_map, "message:"), "a map with a message key is still shown as a map")
+}
+
 show ""
 show "errors: " + str(PASSED) + " passed, " + str(FAILED) + " failed"
 if FAILED > 0 { throw str(FAILED) + " error-rendering test(s) failed" }
