@@ -129,6 +129,25 @@ engines raise; NaN printed as C's `-nan`; a function held in a map or a field
 was not callable (`counter.next()` where counter is a map of closures); and a
 callee that is any other expression (`fns[i](x)`) was refused outright.
 
+### A list's and a string's builtin methods meant three different things
+Fixed. `xs.length` and `"ab".upper` were a callable method in the interpreter,
+a plain value in the bytecode VM, and nothing at all in a compiled binary. The
+practical half of that was worse than the display: **every one of the thirty
+method calls threw under `run --fast`** — `xs.sort()`, `s.split(" ")`,
+`s.trim()` — and every one of them answered `null` from `clarity cc`, because
+`cl_dispatch` looked only for a user class's method. All three engines now
+have the interpreter's set, with its errors, and a method named without being
+called is bound to its receiver so `let f = s.upper; f()` works everywhere.
+Found on the way: the interpreter's *number* methods (`n.abs()`, `n.str()`)
+could never be reached, because the branch tested for a type named "number"
+and `type(5)` is `"int"`.
+
+**Still different, and recorded rather than fixed:** *displaying* a function
+value. `show f` for a lambda is `<fn <anonymous>>` interpreted and
+`<fn <lambda>>` under `--fast`; a builtin is `<builtin>` interpreted,
+`<fn anonymous>` in the VM and `<closure>` natively. Behaviour agrees; the
+name each engine prints does not.
+
 ### Mid-run garbage collection kills a program on darwin-arm64
 `CLARITY_GC=1` turns on mid-run collection in a compiled binary. On
 darwin-arm64 a program that holds **two** live allocations across a collection

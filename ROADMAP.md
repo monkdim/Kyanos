@@ -236,6 +236,17 @@ lands with codegen tests that diff native output against the interpreter.
   codegen case compiles every file in `examples/` so the claim cannot go stale quietly. What still
   differs when the examples *run* is the builtin pseudo-methods (`text.upper()`), which is its own
   item, and by-value closure capture, which is already on this list.
+- **A list's, a string's and a number's methods (done).** `xs.sort()`, `text.split(" ")`,
+  `n.abs()` — thirty of them, and they meant three different things. The interpreter binds a
+  builtin *method*, so `xs.length` is callable and `xs.length()` calls it. The bytecode VM had
+  five of the thirty as plain properties and **threw for the other twenty-five**, so ordinary
+  lines failed under `run --fast` and worked under `clarity run`. A compiled binary answered
+  `null` to all of them, because dispatch looked only for a user class's method. All three now
+  have the interpreter's set and its errors, and a method named without being called is bound to
+  its receiver, so `let f = s.upper; f()` works everywhere. The interpreter's *number* methods
+  were unreachable in it too: the branch tested for a type named `number`, and `type(5)` is
+  `int`. What still differs is only the *name* each engine prints for a function value, which is
+  recorded in GAPS.md.
 - **Networking.** TLS, then keep-alive and chunked encoding, so the HTTP
   client can talk to real services rather than only to plaintext ones.
 - **Stage 12+ — services stdlib.** Real crypto (not the toy cipher), a real embedded key/value or
