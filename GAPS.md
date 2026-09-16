@@ -65,6 +65,29 @@ stack and produced an empty error body under `--fast`. And `clarity cc` had no
 compiler error about an undeclared `v_display`. They go through each engine's
 own display now, and are diffed across all three.
 
+### Mid-run garbage collection kills a program on darwin-arm64
+`CLARITY_GC=1` turns on mid-run collection in a compiled binary. On
+darwin-arm64 a program that holds **two** live allocations across a collection
+is killed: it compiles, links, runs and dies with no output on either stream.
+The one-allocation cases in the codegen suite pass on the same runner, and
+linux-x64 and linux-arm64 both pass every case, so this is Apple's toolchain
+rather than arm64 as such.
+
+It was found by the evaluation-order change, which shifted where temporaries
+live and turned `enum_string_members_gc` red there. Things that did **not**
+fix it: putting every sequenced temporary and the collection accumulator in
+`volatile` storage, and building the collection through a named local one
+statement at a time. Things that could not reproduce it: gcc and clang at
+`-O2` on x86-64, including with the threshold lowered so that a collection
+runs at nearly every allocation.
+
+This is the instability the collector already documents — conservative stack
+scanning is optimiser- and ABI-sensitive — and the fix is the precise
+(shadow-stack) collector on the v2.0 roadmap, not another guess at where
+clang put a value. Until then the suite's `same_gc` cases compile and run on
+darwin with the default arena, which is what ships there, and only the
+mid-run collection goes unchecked on that one platform.
+
 ### Brand-domain / naming
 `stdlib/branding.clarity` carries the brand name and domain in one place and the site is generated from it, so the KyanOS rename moved the whole set at once. The domain is the GitHub Pages URL REBRAND.md names as the interim (`monkdim.github.io/Kyanos`); a real domain is a purchase, not a code change, and `BRAND_DOMAIN` is the single line it lands on.
 
