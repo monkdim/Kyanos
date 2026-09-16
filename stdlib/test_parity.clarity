@@ -196,6 +196,20 @@ same("field access and assignment", "class Box {\n    fn init() { this.v = 0 }\n
 same("a property set to null still reads back as null", "class C {\n    fn init() { this.x = null }\n}\nshow C().x")
 same("a missing map key is null, and stays null", "let m = {\"a\": 1}\nshow m[\"b\"]\nshow m.b")
 
+-- A class that says how it prints says so for every engine. The VM never
+-- looked for a to_string method, so `show p`, `str(p)`, `"" + p` and
+-- `"{p}"` were all `<P instance>` under --fast and the class's own
+-- rendering under `clarity run`.
+same("to_string decides how an instance shows", "class P {\n    fn init(v) { this.v = v }\n    fn to_string() { return \"P<{this.v}>\" }\n}\nshow P(1)")
+same("to_string through str, concatenation and interpolation", "class P {\n    fn init(v) { this.v = v }\n    fn to_string() { return \"P<{this.v}>\" }\n}\nlet p = P(2)\nshow str(p)\nshow \"\" + p\nshow \"{p}\"")
+same("to_string inside a collection", "class P {\n    fn init(v) { this.v = v }\n    fn to_string() { return \"P<{this.v}>\" }\n}\nshow [P(3), P(4)]\nshow { \"k\": P(5) }")
+same("a class without to_string keeps the default", "class Q {\n    fn init() { this.n = 1 }\n}\nshow Q()\nshow [Q()]")
+same("to_string is inherited", "class P {\n    fn init(v) { this.v = v }\n    fn to_string() { return \"P<{this.v}>\" }\n}\nclass U < P { }\nshow U()")
+-- Displaying a value must not be able to end the program, so a to_string
+-- that throws falls back to the default rendering.
+same("a to_string that throws falls back", "class S {\n    fn init() {}\n    fn to_string() { throw \"nope\" }\n}\nshow S()")
+same("a to_string that does not return a string", "class R {\n    fn init() {}\n    fn to_string() { return 42 }\n}\nclass T {\n    fn init() {}\n    fn to_string() { return [1, 2] }\n}\nshow R()\nshow T()")
+
 show "-- Parity: errors --"
 same("try / catch", "try { throw \"boom\" } catch e { show \"caught \" + str(e) }")
 same("catch does not swallow the rest", "try { throw \"x\" } catch e { show \"a\" }\nshow \"b\"")
