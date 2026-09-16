@@ -425,6 +425,62 @@ if CC == null {
     -- happens and not only at the top.
     same("index_error_is_catchable_in_place", "let xs = [1]\nmut seen = []\nfor i in [0, 1, 2] {\n    try { push(seen, xs[i]) } catch e { push(seen, \"miss\") }\n}\nshow seen")
 
+    -- ── destructuring, spread, and the rest of what examples/ needs ──
+    -- `clarity cc` refused DestructureLetStatement, MultiAssignStatement and
+    -- SpreadExpression outright, which is what kept the last examples from
+    -- compiling. Everything here is diffed against the interpreter.
+    same("destructure_list", "let [a, b] = [1, 2]\nshow a\nshow b\nlet [c, d, e] = [1, 2]\nshow e\nlet [f, ...rest] = [1, 2, 3, 4]\nshow f\nshow rest\nlet [g, ...none] = [1]\nshow none")
+    same("destructure_map", "let {x, y} = { \"x\": 1, \"y\": 2, \"z\": 3 }\nshow x\nshow y\nlet {q} = { \"x\": 1 }\nshow q")
+    same("destructure_wrong_type", "fn t(label, f) { try { show label + \": \" + str(f()) } catch e { show label + \": THROWS\" } }\nt(\"list pattern\", fn() { let [a, b] = 5\n    return a })\nt(\"map pattern\", fn() { let {a} = 5\n    return a })")
+    same("destructure_in_a_function", "fn swap_ends(xs) {\n    let [first, ...rest] = xs\n    return [rest, first]\n}\nshow swap_ends([1, 2, 3])")
+    same("multi_assign", "mut x = 1\nmut y = 2\nx, y = y, x\nshow x\nshow y\nmut a = 0\nmut b = 0\na, b = 1 + 1, 2 + 2\nshow a\nshow b")
+    same("multi_assign_into_a_collection", "let xs = [0, 0]\nlet m = { \"k\": 0 }\nxs[0], m[\"k\"] = 7, 8\nshow xs\nshow m")
+    same("spread_into_a_call", "fn t(label, f) { try { show label + \": \" + str(f()) } catch e { show label + \": THROWS\" } }\nfn three(p, q, r) { return [p, q, r] }\nlet xs = [2, 3]\nt(\"only\", fn() { return three(...[1, 2, 3]) })\nt(\"after\", fn() { return three(1, ...xs) })\nt(\"empty\", fn() { return three(1, 2, ...[]) })")
+    same("spread_into_a_rest_parameter", "fn t(label, f) { try { show label + \": \" + str(f()) } catch e { show label + \": THROWS\" } }\nfn rest_fn(a, ...rest) { return [a, rest] }\nlet xs = [2, 3]\nt(\"rest\", fn() { return rest_fn(1, ...xs) })\nt(\"non-list\", fn() { return rest_fn(...5) })")
+    same("spread_into_a_list", "fn t(label, f) { try { show label + \": \" + str(f()) } catch e { show label + \": THROWS\" } }\nlet xs = [2, 3]\nt(\"middle\", fn() { return [1, ...xs, 4] })\nt(\"only\", fn() { return [...xs] })\nt(\"empty\", fn() { return [...[], 1] })\nt(\"non-list\", fn() { return [1, ...5] })")
+    same("spread_into_a_map", "fn t(label, f) { try { show label + \": \" + str(f()) } catch e { show label + \": THROWS\" } }\nlet m = {\"a\": 1, \"b\": 2}\nt(\"after\", fn() { return {...m, \"c\": 3} })\nt(\"before\", fn() { return {\"a\": 9, ...m} })\nt(\"overridden\", fn() { return {...m, \"a\": 9} })\nt(\"two\", fn() { return {...m, ...{\"c\": 3}} })\nt(\"non-map\", fn() { return {...\"x\"} })")
+    same("spread_into_a_constructor", "class P {\n    fn init(a, b) { this.a = a; this.b = b }\n    fn sum() { return this.a + this.b }\n}\nshow P(...[2, 3]).sum()")
+    same("spread_into_a_method", "class Box {\n    fn init() {}\n    fn add(a, b) { return a + b }\n}\nshow Box().add(...[2, 3])")
+    -- A decorator rebinds the function's name to what it returns, so the name
+    -- is a value and calls go through it.
+    same("decorated_function", "fn twice(f) {\n    return fn(...args) { f(...args); f(...args) }\n}\n@twice\nfn hello() { show \"hi\" }\nhello()")
+    same("decorated_function_as_a_value", "fn tag(f) {\n    return fn(x) { return \"<\" + str(f(x)) + \">\" }\n}\n@tag\nfn double(x) { return x * 2 }\nshow double(4)\nshow map([1, 2], double)")
+    -- `await x` is x, here as in the interpreter: there is no scheduler.
+    same("await_is_its_value", "fn fetch_it() { return 7 }\nasync fn go() {\n    let v = await fetch_it()\n    return v + 1\n}\nshow go()")
+    -- `show a, b` is one line with a space between.
+    same("show_several_values", "let xs = [1, 2]\nshow \"a:\", xs\nshow 1, 2, 3\nshow \"x\"")
+    -- Dividing by zero is an error, as in both other engines; `%` by zero is
+    -- NaN, and NaN prints as NaN rather than C's own spelling.
+    same("division_by_zero", "fn t(label, f) { try { show label + \": \" + str(f()) } catch e { show label + \": THROWS\" } }\nt(\"int\", fn() { return 1 / 0 })\nt(\"float\", fn() { return 1.0 / 0.0 })\nt(\"mod\", fn() { return 1 % 0 })")
+    -- A function stored in a map or a field is called before a method of the
+    -- same name, and a callee that is any other expression is called too.
+    same("calling_a_stored_function", "fn t(label, f) { try { show label + \": \" + str(f()) } catch e { show label + \": THROWS\" } }\nlet m = { \"f\": fn(x) { return x * 2 } }\nt(\"map\", fn() { return m.f(3) })\nt(\"indexed\", fn() { return m[\"f\"](3) })\nclass C {\n    fn init() { this.g = fn(x) { return x + 1 } }\n    fn meth(x) { return x * 10 }\n}\nlet c = C()\nt(\"method\", fn() { return c.meth(2) })\nt(\"field\", fn() { return c.g(2) })")
+
+    -- Every file in examples/ compiles. That was the roadmap item this work
+    -- closes, and it is the kind of claim that goes stale silently, so it is
+    -- checked rather than asserted: the compiler is handed each example and
+    -- has to produce C for it. Running them is a separate matter — the FFI
+    -- examples are native-only and have no interpreter counterpart.
+    let _ex_dir = if exists("examples") { "examples" } else { "../examples" }
+    if exists(_ex_dir) {
+        mut _ex_total = 0
+        mut _ex_refused = []
+        for _ex_name in split(trim(exec("ls " + _ex_dir + " | grep '\\.clarity$'")), "\n") {
+            let _ex_file = _ex_dir + "/" + trim(_ex_name)
+            if len(trim(_ex_name)) > 0 and exists(_ex_file) {
+                _ex_total += 1
+                let _ex_src = read(_ex_file)
+                try {
+                    compile_to_c(parse(tokenize(_ex_src, _ex_file), _ex_src))
+                } catch _ex_err {
+                    push(_ex_refused, trim(_ex_name) + ": " + str(_ex_err))
+                }
+            }
+        }
+        assert_eq(_ex_total >= 17, true, "every example was found (" + str(_ex_total) + ")")
+        assert_eq(len(_ex_refused), 0, "every example compiles: " + join(_ex_refused, "; "))
+    }
+
     -- ── stage 4: closures ──
     same("closure_map", "show map([1, 2, 3], fn(x) { return x * 2 })")
     same("closure_capture", "let factor = 10\nshow map([1, 2, 3], fn(x) { return x * factor })")

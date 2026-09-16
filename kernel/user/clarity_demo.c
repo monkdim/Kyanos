@@ -101,6 +101,9 @@ static char* cl_obj_display(Value v);
    defined above the exception machinery and the type names they need */
 static void cl_throw(Value v);
 static Value cl_type_of(Value v);
+/* cl_dispatch calls a field that holds a closure, and cl_call is defined
+   below it with the rest of the closure machinery */
+static Value cl_call(Value f, Value* args, long n);
 
 /* ── conservative mark-sweep garbage collector (opt-in) ──
    Every runtime value carries a small header and is tracked in a global list.
@@ -307,6 +310,11 @@ static char* cl_to_cstr(Value v){
     case T_BOOL: strcpy(buf, v.i ? "true" : "false"); return buf;
     case T_INT: snprintf(buf, 64, "%ld", v.i); return buf;
     case T_FLOAT:
+      /* NaN and the infinities print as JavaScript names them, because that
+         is what the other two engines show — C's own spelling is "-nan". */
+      if(v.f != v.f){ strcpy(buf, "NaN"); return buf; }
+      if(v.f > 1.7976931348623157e308){ strcpy(buf, "Infinity"); return buf; }
+      if(v.f < -1.7976931348623157e308){ strcpy(buf, "-Infinity"); return buf; }
       if(v.f == (double)(long)v.f && v.f < 1e18 && v.f > -1e18){ snprintf(buf, 64, "%ld", (long)v.f); return buf; }
       /* shortest %g precision that round-trips — matches JS number formatting
          (3.14, not 3.1400000000000001) */
@@ -362,13 +370,17 @@ static Value cl_mul(Value a, Value b){
   if(a.t==T_FLOAT || b.t==T_FLOAT) return cl_float(cl_num(a)*cl_num(b));
   return cl_int(a.i*b.i);
 }
+/* Dividing by zero is an error, as in both other engines; it answered 0 here,
+   so a `try` around a division never fired and the wrong number carried on. */
 static Value cl_div(Value a, Value b){
   double d = cl_num(b);
-  if(d == 0.0) return cl_int(0);
+  if(d == 0.0) cl_throw(cl_str("RuntimeError: Division by zero"));
   return cl_float(cl_num(a)/d);
 }
+/* `%` by zero is NaN rather than an error, which is what the other two
+   engines answer — it is JavaScript's remainder underneath. */
 static Value cl_mod(Value a, Value b){
-  if(b.i == 0) return cl_int(0);
+  if(cl_num(b) == 0.0) return cl_float(0.0/0.0);
   if(a.t==T_FLOAT || b.t==T_FLOAT) return cl_float(fmod(cl_num(a), cl_num(b)));
   return cl_int(a.i % b.i);
 }
@@ -513,6 +525,48 @@ static Value cl_index(Value c, Value k){
   }
   return cl_null();
 }
+/* ── `...` and destructuring ──
+   Spreading opens a list out into a list or a call's arguments and a map into
+   a map; a list literal and a map literal refuse anything else, while a call
+   passes it as one argument, which is what the interpreter does. */
+static Value cl_list_extend(Value acc, Value v){
+  if(v.t != T_LIST) cl_throw(cl_str("TypeError: Can only spread a list into a list"));
+  List* l=(List*)v.o;
+  for(long i=0;i<l->len;i++) acc = cl_list_add(acc, l->items[i]);
+  return acc;
+}
+static Value cl_map_merge(Value acc, Value v){
+  if(v.t != T_MAP) cl_throw(cl_str("TypeError: Can only spread a map into a map"));
+  Map* m=(Map*)v.o;
+  for(long i=0;i<m->len;i++) acc = cl_map_put(acc, m->keys[i], m->vals[i]);
+  return acc;
+}
+static Value cl_args_add(Value acc, Value v){
+  if(v.t == T_LIST){ List* l=(List*)v.o; for(long i=0;i<l->len;i++) acc = cl_list_add(acc, l->items[i]); return acc; }
+  return cl_list_add(acc, v);
+}
+/* The argument array a call built as a list, so an arity known only at run
+   time can still be passed to the array convention everything here uses. */
+static Value* cl_argv_of(Value list){ return ((List*)list.o)->items; }
+static void cl_require_list(Value v){
+  if(v.t != T_LIST) cl_throw(cl_str("TypeError: Cannot destructure non-list into list pattern"));
+}
+static void cl_require_map(Value v){
+  if(v.t != T_MAP) cl_throw(cl_str("TypeError: Cannot destructure non-map into map pattern"));
+}
+/* A name past the end of the list binds null rather than failing, as in the
+   interpreter: `let [a, b] = [1]` gives b null. */
+static Value cl_destructure_at(Value v, long i){
+  List* l=(List*)v.o;
+  if(i < 0 || i >= l->len) return cl_null();
+  return l->items[i];
+}
+static Value cl_destructure_rest(Value v, long i){
+  List* l=(List*)v.o; Value out=cl_list_new();
+  for(long j=i;j<l->len;j++) out = cl_list_add(out, l->items[j]);
+  return out;
+}
+
 static void cl_index_set(Value c, Value k, Value val){
   if(c.t==T_LIST){ List* l=(List*)c.o; long idx=k.i; if(idx<0) idx+=l->len; if(idx>=0&&idx<l->len) l->items[idx]=val; }
   else if(c.t==T_MAP){ char* ks=cl_to_cstr(k); cl_map_put(c, ks, val); }
@@ -603,6 +657,13 @@ static ClMethod cl_find_method(const char* cls, const char* m){
 }
 /* obj.method(args): resolve on the instance's class, call with the arg array */
 static Value cl_dispatch(Value self, const char* m, Value* a, long n){
+  /* A field or a key holding a function is called before a method of the
+     same name, which is what both other engines do — and it is the only way
+     `counter.next()` works when counter is a map of closures. */
+  if(self.t==T_OBJECT || self.t==T_MAP){
+    Value f = cl_get_field_opt(self, m);
+    if(f.t==T_CLOSURE) return cl_call(f, a, n);
+  }
   const char* cls = (self.t==T_OBJECT) ? ((Obj*)self.o)->cls : "";
   ClMethod fn = cl_find_method(cls, m);
   if(fn) return fn(self, a, n);
@@ -1493,6 +1554,11 @@ static Value cl_ffi_call(Value namev, Value sigv, Value argsv){
 #endif /* !CLARITY_FREESTANDING */
 
 static void cl_show(Value v){ char* s=cl_display(v); printf("%s\n", s); }
+/* `show a, b` is one line with a space between the values. */
+static void cl_show_all(Value* vs, long n){
+  for(long i=0;i<n;i++){ if(i) printf(" "); printf("%s", cl_display(vs[i])); }
+  printf("\n");
+}
 
 
 /* module-level bindings */
