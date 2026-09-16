@@ -579,6 +579,45 @@ static void cl_index_set(Value c, Value k, Value val){
   else if(c.t==T_MAP){ char* ks=cl_to_cstr(k); cl_map_put(c, ks, val); }
   else if(c.t==T_OBJECT){ Obj* o=(Obj*)c.o; char* ks=cl_to_cstr(k); cl_map_put(o->fields, ks, val); }
 }
+/* Indexing the way a slice does it: Interpreter._slice_range walks the value
+   with a plain `lst[i]`, and _slice_range and its friends are module-level
+   Clarity run by the host runtime rather than by the evaluator -- so inside a
+   slice an index past the end answers null where a bare `xs[9]` raises. A
+   negative index still counts from the end. */
+static Value cl_index_soft(Value c, Value k){
+  if(!cl_is_num(k)) return cl_index(c, k);
+  long want=(long)cl_num(k);
+  if(c.t==T_LIST){
+    List* l=(List*)c.o;
+    long idx = want<0 ? want + l->len : want;
+    if(idx<0||idx>=l->len) return cl_null();
+    return l->items[idx];
+  }
+  if(c.t==T_STR){
+    long n=(long)strlen(c.s);
+    long idx = want<0 ? want + n : want;
+    if(idx<0||idx>=n) return cl_null();
+    char* ch=(char*)cl_alloc(2); ch[0]=c.s[idx]; ch[1]=0; return cl_str(ch);
+  }
+  return cl_index(c, k);
+}
+/* `xs[a..b]`, `xs[..b]`, `xs[a..]`, and a slice of a string or a map: the loop
+   Interpreter._slice_range runs, on the same values, so the answers agree all
+   the way into the corners. A missing *start* is 0 and a missing *end* is no
+   upper bound -- and it is the runtime value that decides, so `xs[null..2]`
+   means `xs[..2]`. The result is always a list: slicing a string gives its
+   characters one at a time, because that is what indexing it gives. */
+static Value cl_slice(Value obj, Value s, Value e){
+  volatile Value out = cl_list_new();
+  Value n = cl_int(cl_length(obj));
+  Value i = (s.t==T_NULL) ? cl_int(0) : s;
+  int bounded = (e.t != T_NULL);
+  while(cl_truthy(cl_lt(i, n)) && (!bounded || cl_truthy(cl_lt(i, e)))){
+    cl_list_add(out, cl_index_soft(obj, i));
+    i = cl_add(i, cl_int(1));
+  }
+  return out;
+}
 /* materialise the thing a for-loop walks: lists as-is, map keys, string chars */
 static Value cl_iter(Value v){
   if(v.t==T_LIST) return v;

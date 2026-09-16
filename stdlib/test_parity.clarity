@@ -320,6 +320,21 @@ same("map comprehension over ragged rows", "show {p: q for p, q in [[1], [2, 3]]
 same("map comprehension whose items are not lists", "show {p: p for p, q in [1, 2]}")
 same("a comprehension reads the enclosing scope", "let scale = 10\nfn f() { return [n * scale for n in [1, 2]] }\nshow f()")
 
+show "-- Parity: slices --"
+same("list slice", "let xs = [10, 20, 30, 40]\nshow xs[1..3]\nshow xs[..2]\nshow xs[0..4]")
+same("a slice past the end", "let xs = [10, 20, 30, 40]\nshow xs[2..99]\nshow xs[9..12]\nshow xs[3..1]")
+same("a slice with a negative bound", "let xs = [10, 20, 30, 40]\nshow xs[-1..2]\nshow xs[0..-1]")
+-- The VM answered a substring here and the interpreter a list of characters.
+-- Which of the two the language should mean is an open question recorded in
+-- GAPS.md; that the engines agree is not.
+same("a string slice", "let s = \"hello\"\nshow s[1..3]\nshow s[..2]\nshow s[-2..1]")
+-- And the VM refused this outright with "Cannot slice map".
+same("slicing a map", "let m = {\"a\": 1, \"b\": 2}\nshow m[0..1]")
+same("a null bound is a missing bound", "let xs = [10, 20, 30, 40]\nshow xs[null..2]")
+same("a slice is a copy", "let xs = [10, 20]\nlet c = xs[0..2]\npush(c, 99)\nshow c\nshow xs")
+same("a slice of a slice", "let xs = [10, 20, 30, 40]\nshow xs[0..3][1..2]")
+same("slice and copy as methods", "let xs = [10, 20, 30, 40]\nshow xs.slice(1, 3)\nshow xs.slice(1)\nshow xs.copy()")
+
 show "-- Parity: nested functions --"
 same("a nested fn", "fn outer(n) {\n    fn inner(x) { return x + 1 }\n    return inner(n)\n}\nshow outer(1)")
 same("a nested fn closes over a local", "fn f(n) {\n    let bump = 10\n    fn add(x) { return x + bump }\n    return add(n)\n}\nshow f(1)")

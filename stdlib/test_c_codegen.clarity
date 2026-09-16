@@ -1014,6 +1014,63 @@ if CC == null {
         "show len(keys(pairs))\n" +
         "show pairs[\"99\"]")
 
+    -- ── slices ────────────────────────────────────────────
+    -- `xs[1..3]` did not compile at all: SliceExpression had no case in the
+    -- C backend. The interpreter walks the value with plain indexing, which
+    -- is why a string comes back as a list of characters and a map comes
+    -- back at all; cl_slice runs that same loop on the same values.
+
+    same("list_slice",
+        "let xs = [10, 20, 30, 40]\n" +
+        "show xs[1..3]\n" +
+        "show xs[..2]\n" +
+        "show xs[0..4]\n" +
+        "show xs[2..99]\n" +
+        "show xs[9..12]\n" +
+        "show xs[3..1]")
+    -- A negative bound *within* the value counts from the end, because the
+    -- slice resolves it by indexing. One outside it is deliberately not
+    -- asserted: `xs[-100..2]` answers 102 mostly-null entries at the top
+    -- level and raises an index error one interpreter layer down, since
+    -- _slice_range leans on whatever `lst[i]` means where it is running.
+    -- See GAPS.md -- the language should say which, and today it does not.
+    same("slice_negative_bounds",
+        "let xs = [10, 20, 30, 40]\n" +
+        "show xs[-1..2]\n" +
+        "show xs[0..-1]")
+    same("string_and_map_slice",
+        "let s = \"hello\"\n" +
+        "let m = {\"a\": 1, \"b\": 2}\n" +
+        "show s[1..3]\n" +
+        "show s[..2]\n" +
+        "show s[-2..1]\n" +
+        "show m[0..1]")
+    same("slice_is_a_copy",
+        "let xs = [10, 20]\n" +
+        "let c = xs[0..2]\n" +
+        "push(c, 99)\n" +
+        "show c\n" +
+        "show xs\n" +
+        "show xs[0..3][1..2]")
+    same("slice_bounds_are_evaluated_in_order",
+        "mut log = []\n" +
+        "fn n(tag, v) { push(log, tag)\n return v }\n" +
+        "let xs = [10, 20, 30, 40]\n" +
+        "show xs[n(\"a\", 1)..n(\"b\", 3)]\n" +
+        "show log")
+    same("slice_inside_a_closure",
+        "fn f() {\n" +
+        "    let xs = [1, 2, 3, 4]\n" +
+        "    let g = fn() { return xs[1..3] }\n" +
+        "    return g()\n" +
+        "}\n" +
+        "show f()")
+    same_gc("slice_gc",
+        "let xs = [x for x in range(300)]\n" +
+        "let parts = [xs[i..(i + 10)] for i in range(50)]\n" +
+        "show len(parts)\n" +
+        "show parts[49]")
+
     same("nested_fn",
         "fn outer(n) {\n" +
         "    fn inner(x) { return x + 1 }\n" +

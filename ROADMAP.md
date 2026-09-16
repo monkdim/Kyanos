@@ -264,11 +264,16 @@ lands with codegen tests that diff native output against the interpreter.
   undefined name differently from the interpreter and without a line, and `o?.a` / `await` /
   `yield` missing from the C backend's free-variable walk so a closure over one produced a C
   compiler error. All fixed; 298 codegen cases and 162 parity cases.
-- **Slices and VM block scoping (next on the trunk).** `clarity cc` still refuses
-  `SliceExpression` (`xs[1..3]`), which is basic enough to keep ordinary programs from compiling.
-  And the VM keeps every binding in one flat per-frame map, so blocks do not scope: a `for` or
-  comprehension variable leaks past its loop, and a loop over a name that already exists silently
-  overwrites it under `--fast` and not under `clarity run`.
+- **Slices (done).** `xs[1..3]` had no case in the C backend at all, and the two engines that
+  did compile it disagreed — a string slice was `["e", "l"]` under `clarity run` and `"el"` under
+  `--fast`, a map slice was `[null]` in one and a refusal in the other, and `xs[null..2]` differed
+  again. All three now run the loop the interpreter runs, on the same values, so they agree into
+  the corners. What a slice *should* mean is a separate, open language question — the subscript
+  gives characters where the language's own `.slice()` gives a substring — and it is written up
+  in GAPS.md rather than decided here.
+- **VM block scoping (next on the trunk).** The VM keeps every binding in one flat per-frame map,
+  so blocks do not scope: a `for` or comprehension variable leaks past its loop, and a loop over a
+  name that already exists silently overwrites it under `--fast` and not under `clarity run`.
 - **Networking.** TLS, then keep-alive and chunked encoding, so the HTTP
   client can talk to real services rather than only to plaintext ones.
 - **Stage 12+ — services stdlib.** Real crypto (not the toy cipher), a real embedded key/value or

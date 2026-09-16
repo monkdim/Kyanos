@@ -1328,7 +1328,10 @@ class VMInstance {
 fn _vm_slice(lst, start, end_i) {
     mut out = []
     let stop = if end_i != null { end_i } else { len(lst) }
-    mut i = start
+    -- A missing start is 0, and it is the runtime *value* that decides, so
+    -- `xs[null..2]` means `xs[..2]` -- which is what the interpreter's
+    -- eval_SliceExpression does with its own null checks.
+    mut i = if start != null { start } else { 0 }
     while i < stop and i < len(lst) {
         push(out, lst[i])
         i += 1
@@ -2354,22 +2357,15 @@ class VM {
                 let end_val = pop(this.stack)
                 let start_val = pop(this.stack)
                 let obj = pop(this.stack)
-                let t = type(obj)
-                if t == "list" {
-                    let actual_end = if end_val == null { len(obj) } else { end_val }
-                    mut sliced = []
-                    mut si = start_val
-                    while si < actual_end and si < len(obj) {
-                        push(sliced, obj[si])
-                        si += 1
-                    }
-                    push(this.stack, sliced)
-                } elif t == "string" {
-                    let actual_end = if end_val == null { len(obj) } else { end_val }
-                    push(this.stack, substring(obj, start_val, actual_end))
-                } else {
-                    throw "RuntimeError: Cannot slice {t}"
-                }
+                -- Interpreter._slice_range walks whatever it is given with
+                -- plain indexing, so a string gives its characters one at a
+                -- time and a map gives what its integer keys give. This used
+                -- to answer a substring for a string and refuse a map
+                -- outright, so `s[1..3]` was "el" here and ["e", "l"] under
+                -- `clarity run`. (Whether a string slice *should* be a
+                -- substring is a language question, recorded in GAPS.md; the
+                -- three engines agreeing is not.)
+                push(this.stack, _vm_slice(obj, start_val, end_val))
             }
 
             -- Print (show)

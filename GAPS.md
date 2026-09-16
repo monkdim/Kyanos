@@ -166,6 +166,47 @@ A name in scope is what a call means now, whatever else the name refers to at
 module level. Calling something that is not a function also raises the
 interpreter's error rather than answering null.
 
+### Slicing meant three different things, and `clarity cc` meant none of them
+Fixed, with one question left open. `xs[1..3]` did not compile at all —
+`SliceExpression` had no case in the C backend — and the two engines that did
+compile it disagreed:
+
+```clarity
+let s = "hello"
+show s[1..3]        -- clarity run ["e", "l"], run --fast "el"
+let m = {"a": 1}
+show m[0..1]        -- clarity run [null], run --fast RuntimeError: Cannot slice map
+let xs = [10, 20, 30, 40]
+show xs[null..2]    -- clarity run [10, 20], run --fast [null, 20]
+```
+
+All three now run the loop the interpreter runs, on the same values, so the
+answers agree into the corners — including a negative start counting from the
+end, a bound that is not a number, and a missing bound decided by the runtime
+*value* rather than by whether the source wrote one.
+
+**Open, and it is a language question rather than an engine one (see the task
+list):** the interpreter implements a slice by walking the value with the
+language's own indexing, and three things fall out of that rather than out of
+a decision.
+
+- **A string slice is a list of characters, but `.slice()` is a substring.**
+  `s[1..3]` is `["e", "l"]` and `s.slice(1, 3)` is `"el"` — the same operation,
+  two spellings, two answers. Every mainstream language gives the substring,
+  and so does the method; the subscript is the odd one out. Slicing is
+  documented nowhere, so there is nothing to appeal to.
+- **Out of range depends on how deep the interpreter is nested.**
+  `len(xs[-100..2])` is 102 run directly and an `Index -100 out of bounds`
+  error one interpreter layer down, because `_slice_range` inherits whatever
+  `lst[i]` means where it is running. Neither answer is a specification. The
+  suites deliberately do not assert this corner.
+- **`m[0..1]` on a map answers `[null]`** rather than refusing, because `m[0]`
+  is null and the loop pushes it.
+
+Matching the interpreter is what the three engines owe each other, and that
+part is done. What a slice *should* mean is the owner's call, and until it is
+made the three at least say the same thing.
+
 ### Comprehensions and nested functions in the three engines
 Fixed. A comprehension did not compile at all — `clarity cc` answered
 `unsupported expression ComprehensionExpression` — and a nested `fn`
