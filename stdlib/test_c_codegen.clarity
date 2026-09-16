@@ -385,6 +385,26 @@ if CC == null {
     -- half-built list living only in a register between two of them is
     -- invisible to a collector that scans the stack.
     same_gc("order_collection_gc", "mut junk = []\nmut i = 0\nwhile i < 20000 {\n    junk = [str(i), str(i + 1)]\n    i += 1\n}\nshow junk\nmut m = {}\nmut k = 0\nwhile k < 20000 {\n    m = { \"a\": str(k), \"b\": str(k + 1) }\n    k += 1\n}\nshow m")
+
+    -- ── equality ──
+    -- `==` compared a list or a map by its pointer, so [1, 2] == [1, 2] was
+    -- false in a native build and true in both other engines: every native
+    -- program that compared collections was silently wrong. And every
+    -- pointer-backed value fell through to a comparison of the Value's
+    -- integer field, which is 0 in all of them, so any two closures were
+    -- equal.
+    same("eq_lists", "show [1, 2] == [1, 2]\nshow [1, 2] == [2, 1]\nshow [1, 2] == [1, 2, 3]\nshow [] == []\nshow [1, 2] != [1, 2]\nshow [1, 2] != [2, 1]")
+    same("eq_nested_lists", "show [1, [2, [3]]] == [1, [2, [3]]]\nshow [1, [2, [3]]] == [1, [2, [4]]]")
+    same("eq_maps", "show {\"a\": 1, \"b\": 2} == {\"b\": 2, \"a\": 1}\nshow {\"a\": 1} == {\"a\": 2}\nshow {\"a\": 1} == {\"a\": 1, \"b\": 2}\nshow {} == {}")
+    same("eq_across_types", "show [1] == 1\nshow [1] == \"1\"\nshow [1] == null\nshow {\"a\": 1} == [1]\nshow [1.0] == [1]\nshow [null] == [null]\nshow [true] == [true]\nshow [\"a\"] == [\"a\"]")
+    -- An instance is still identity, as in every engine.
+    same("eq_instances", "class C {\n    fn init(v) { this.v = v }\n}\nlet c = C(1)\nshow C(1) == C(1)\nshow c == c\nshow [C(1)] == [C(1)]")
+    same("eq_closures", "let f = fn(x) { return x }\nlet g = fn(x) { return x }\nshow f == g\nshow f == f\nfn h() { return 1 }\nfn k() { return 2 }\nshow h == k\nshow h == h\nshow [h] == [h]")
+    same("eq_closure_from_the_same_expression", "fn mk() { return fn(x) { return x } }\nshow mk() == mk()")
+    -- `when` compares with the same equality, so an arm matching a list
+    -- never fired natively.
+    same("eq_in_a_match", "let v = [1, 2]\nmatch v {\n    when [1, 2] { show \"pair\" }\n    else { show \"other\" }\n}")
+    same_gc("eq_gc", "mut junk = []\nmut i = 0\nwhile i < 20000 {\n    junk = [str(i)]\n    i += 1\n}\nshow [\"a\", \"b\"] == [\"a\", \"b\"]\nshow {\"k\": [1, 2]} == {\"k\": [1, 2]}")
     -- The collection is a local holding heap values, so mid-run collection
     -- has to see it through the C stack.
     same_gc("gen_gc", "fn words(n) {\n    mut i = 0\n    while i < n {\n        yield \"item-\" + str(i)\n        i += 1\n    }\n}\nmut junk = []\nmut k = 0\nwhile k < 20000 {\n    junk = [str(k)]\n    k += 1\n}\nshow words(4)")

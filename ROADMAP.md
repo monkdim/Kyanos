@@ -202,6 +202,15 @@ lands with codegen tests that diff native output against the interpreter.
   `and`/`or`, which named their left operand twice in the C ternary and therefore ran it twice:
   `bump() or false` left the counter at two and handed back the second call's value. Thirteen
   codegen cases and five parity cases, each recording the order the operands actually ran in.
+- **Equality in native builds (done).** `==` compared a list or a map by its address, so
+  `[1, 2] == [1, 2]` was `false` in a compiled binary and `true` in both other engines. Every
+  native program that compared collections was wrong about it, silently, and so was every `match`
+  arm whose pattern is a list. The fallthrough underneath it compared the Value's integer field,
+  which is zero in every pointer-backed value, so *any two closures were equal*. Lists and maps
+  compare by contents now — element-wise and in order for a list, by key regardless of insertion
+  order for a map — and instances and closures by identity, which is what the other two engines
+  do. A top-level function named as a value is built once into a global rather than freshly at
+  every mention, so `f == f` is true.
 - **Destructuring and spread in native builds.** With generators done, what stops the last two
   files in `examples/` compiling is `DestructureLetStatement`, `MultiAssignStatement` (`let [a, b]
   = pair`, `a, b = b, a`) and `SpreadExpression` in a call or a list. Fifteen of the seventeen
