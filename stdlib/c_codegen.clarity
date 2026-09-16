@@ -1671,6 +1671,56 @@ fn _block_stmts(b) {
     return b
 }
 
+-- An expression whose evaluation nothing else can observe: a literal, a name,
+-- or something built only out of those. Anything that can call something —
+-- a call, a pipe, a yield, an `ask` — may have a side effect, and an operand
+-- that merely *reads* a variable is affected by one that writes it, so a
+-- single impure operand makes a whole list order-sensitive.
+--
+-- Unknown node types answer false, which is the safe direction: the cost of
+-- being wrong is a temporary that was not needed.
+fn _pure_expr(e) {
+    if e == null { return true }
+    let nt = e.node_type
+    if nt == "NumberLiteral" or nt == "StringLiteral" or nt == "BoolLiteral" or nt == "NullLiteral" { return true }
+    if nt == "Identifier" or nt == "ThisExpression" { return true }
+    -- Making a closure has no effect; calling one does, and that is a
+    -- CallExpression.
+    if nt == "FnExpression" { return true }
+    if nt == "UnaryOp" { return _pure_expr(e.operand) }
+    if nt == "BinaryOp" { return _pure_expr(e.left) and _pure_expr(e.right) }
+    if nt == "MemberExpression" { return _pure_expr(e.object) }
+    if nt == "IndexExpression" { return _pure_expr(e.object) and _pure_expr(e.index) }
+    if nt == "NullCoalesce" { return _pure_expr(e.left) and _pure_expr(e.right) }
+    if nt == "IfExpression" {
+        return _pure_expr(e.condition) and _pure_expr(e.true_expr) and _pure_expr(e.false_expr)
+    }
+    if nt == "RangeExpression" {
+        if not _pure_expr(e.start) { return false }
+        return e.end == null or _pure_expr(e.end)
+    }
+    if nt == "ListLiteral" {
+        for el in e.elements { if not _pure_expr(el) { return false } }
+        return true
+    }
+    if nt == "MapLiteral" {
+        for pair in e.pairs {
+            if pair[0] != null and not _pure_expr(pair[0]) { return false }
+            if not _pure_expr(pair[1]) { return false }
+        }
+        return true
+    }
+    return false
+}
+
+-- Does the order these operands are evaluated in matter? One of them has to
+-- be able to change something the others can see.
+fn _order_matters(nodes) {
+    if len(nodes) < 2 { return false }
+    for n in nodes { if not _pure_expr(n) { return true } }
+    return false
+}
+
 -- Split a string literal's text into the pieces the interpreter would build
 -- it from: literal text, and expressions to evaluate and display. Returns
 -- null when there is nothing to interpolate, so the caller emits a plain C
@@ -2138,12 +2188,15 @@ class CCodegen {
     -- `v |> f(a)` resolves builtins, constructors and named top-level
     -- functions exactly as `f(v, a)` does, instead of through a second call
     -- site that would drift from this one.
-    fn _emit_call(callee, args, line) {
+    -- `recv` is the receiver of a method call, already emitted, when the
+    -- caller bound it to a temporary to fix the order it is evaluated in.
+    fn _emit_call(callee, args, line, recv) {
         -- obj.method(args) → dynamic dispatch on the instance's class
         if callee.node_type == "MemberExpression" {
             let on_enum = this._enum_call(callee, args, line)
             if on_enum != null { return on_enum }
-            return "cl_dispatch(" + this.expr(callee.object) + ", \"" + callee.property + "\", " + this._argv(args) + ")"
+            let obj = if recv != null { recv } else { this.expr(callee.object) }
+            return "cl_dispatch(" + obj + ", \"" + callee.property + "\", " + this._argv(args) + ")"
         }
         if callee.node_type == "Identifier" {
             -- ClassName(args) → construct an instance
@@ -2407,6 +2460,49 @@ class CCodegen {
         return ""
     }
 
+    -- The C expressions for a list of operands, evaluated left to right
+    -- whatever order the C compiler would have chosen.
+    --
+    -- C does not define the order in which a function call's arguments are
+    -- evaluated, and the emitter builds every multi-operand construct as one
+    -- C expression: `cl_add(a, b)`, `cl_list_add(cl_list_add(l, a), b)`,
+    -- `cl_call(f, (Value[]){a, b}, 2)`. GCC evaluates right to left, so
+    -- `[bump(), bump()]` was [2, 1] natively against the interpreter's
+    -- [1, 2], and `{ "x": bump(), "y": bump() }` and `str(bump()) +
+    -- str(bump())` went the same way. Binding each operand to a temporary in
+    -- source order settles it, and it settles the other half of the same
+    -- question too: if the first operand throws, the second must not have
+    -- run.
+    --
+    -- Returns { seq, decls, names }. When nothing can observe the order, seq
+    -- is false, names are the operands emitted in place, and no temporary is
+    -- written — so the generated C stays readable for the overwhelming
+    -- majority of expressions, which are built from literals and names.
+    fn _ordered_parts(nodes) {
+        if not _order_matters(nodes) {
+            mut plain = []
+            for n in nodes { push(plain, this.expr(n)) }
+            return { "seq": false, "decls": "", "names": plain }
+        }
+        mut decls = ""
+        mut names = []
+        for n in nodes {
+            let id = this.tmp_id
+            this.tmp_id += 1
+            let t = "__o" + str(id)
+            decls = decls + "Value " + t + " = (" + this.expr(n) + "); "
+            push(names, t)
+        }
+        return { "seq": true, "decls": decls, "names": names }
+    }
+
+    -- Wrap an expression built from _ordered_parts' names in the statement
+    -- expression that declares them, if there were any.
+    fn _wrap_seq(parts, body) {
+        if not parts["seq"] { return body }
+        return "({ " + parts["decls"] + body + "; })"
+    }
+
     -- A string literal, interpolated if it has anything to interpolate.
     -- Native `+` already renders a value exactly as the interpreter's display
     -- does — a list as [1, 2], a map as {a: 1}, an instance through its
@@ -2498,47 +2594,69 @@ class CCodegen {
             return "cl_null()"
         }
         if nt == "BinaryOp" {
-            if node.operator == "and" {
-                -- short-circuit: (cl_truthy(a) ? b : a)
-                let a = this.expr(node.left)
-                return "(cl_truthy(" + a + ") ? " + this.expr(node.right) + " : " + a + ")"
-            }
-            if node.operator == "or" {
-                let a = this.expr(node.left)
-                return "(cl_truthy(" + a + ") ? " + a + " : " + this.expr(node.right) + ")"
+            -- `a and b` is b when a is truthy, else a; `a or b` is a when a
+            -- is truthy, else b. Both need a twice, and naming it twice in
+            -- the ternary *ran* it twice: after `bump() or false` the counter
+            -- had gone up two, and the value handed back was the second call's.
+            -- So a left operand that can do anything is bound once first.
+            if node.operator == "and" or node.operator == "or" {
+                let left_first = node.operator == "or"
+                if _pure_expr(node.left) {
+                    let a = this.expr(node.left)
+                    if left_first { return "(cl_truthy(" + a + ") ? " + a + " : " + this.expr(node.right) + ")" }
+                    return "(cl_truthy(" + a + ") ? " + this.expr(node.right) + " : " + a + ")"
+                }
+                let id = this.tmp_id
+                this.tmp_id += 1
+                let t = "__sc" + str(id)
+                let head = "({ Value " + t + " = (" + this.expr(node.left) + "); cl_truthy(" + t + ") ? "
+                if left_first { return head + t + " : (" + this.expr(node.right) + "); })" }
+                return head + "(" + this.expr(node.right) + ") : " + t + "; })"
             }
             if has(_BINOPS, node.operator) {
-                return _BINOPS[node.operator] + "(" + this.expr(node.left) + ", " + this.expr(node.right) + ")"
+                let parts = this._ordered_parts([node.left, node.right])
+                let names = parts["names"]
+                return this._wrap_seq(parts, _BINOPS[node.operator] + "(" + names[0] + ", " + names[1] + ")")
             }
             this.unsupported("operator '" + node.operator + "'", node.line)
             return "cl_null()"
         }
         if nt == "ListLiteral" {
-            mut e = "cl_list_new()"
             for el in node.elements {
                 if el.node_type == "SpreadExpression" {
                     this.unsupported("spread in list literal", node.line)
-                } else {
-                    e = "cl_list_add(" + e + ", " + this.expr(el) + ")"
+                    return "cl_null()"
                 }
             }
-            return e
+            let parts = this._ordered_parts(node.elements)
+            mut e = "cl_list_new()"
+            for nm in parts["names"] { e = "cl_list_add(" + e + ", " + nm + ")" }
+            return this._wrap_seq(parts, e)
         }
         if nt == "MapLiteral" {
-            mut e = "cl_map_new()"
+            mut flat = []
             for pair in node.pairs {
-                let k = pair[0]
-                let v = pair[1]
-                if k == null {
+                if pair[0] == null {
                     this.unsupported("spread in map literal", node.line)
-                } else {
-                    e = "cl_map_put(" + e + ", cl_to_cstr(" + this.expr(k) + "), " + this.expr(v) + ")"
+                    return "cl_null()"
                 }
+                push(flat, pair[0])
+                push(flat, pair[1])
             }
-            return e
+            let parts = this._ordered_parts(flat)
+            let names = parts["names"]
+            mut e = "cl_map_new()"
+            mut i = 0
+            while i < len(names) {
+                e = "cl_map_put(" + e + ", cl_to_cstr(" + names[i] + "), " + names[i + 1] + ")"
+                i += 2
+            }
+            return this._wrap_seq(parts, e)
         }
         if nt == "IndexExpression" {
-            return "cl_index(" + this.expr(node.object) + ", " + this.expr(node.index) + ")"
+            let parts = this._ordered_parts([node.object, node.index])
+            let names = parts["names"]
+            return this._wrap_seq(parts, "cl_index(" + names[0] + ", " + names[1] + ")")
         }
         if nt == "YieldExpression" {
             -- Clarity's generators are eager: `yield v` is an expression
@@ -2569,9 +2687,20 @@ class CCodegen {
             return "cl_get_field(" + this.expr(node.object) + ", \"" + node.property + "\")"
         }
         if nt == "CallExpression" {
+            -- The receiver of a method call is evaluated before the
+            -- arguments, so it goes through the same ordering.
+            let is_member = node.callee.node_type == "MemberExpression"
+            mut operands = []
+            if is_member { push(operands, node.callee.object) }
+            for a in node.arguments { push(operands, a) }
+            let parts = this._ordered_parts(operands)
+            let names = parts["names"]
+            mut recv = null
             mut cargs = []
-            for a in node.arguments { push(cargs, this.expr(a)) }
-            return this._emit_call(node.callee, cargs, node.line)
+            mut i = 0
+            if is_member { recv = names[0]; i = 1 }
+            while i < len(names) { push(cargs, names[i]); i += 1 }
+            return this._wrap_seq(parts, this._emit_call(node.callee, cargs, node.line, recv))
         }
         if nt == "NullCoalesce" {
             -- `a ?? b`: evaluate a once, and b only if a is null. A plain
@@ -2600,19 +2729,24 @@ class CCodegen {
                 this.unsupported("open-ended range outside a slice", node.line)
                 return "cl_null()"
             }
-            return "cl_range2(" + this.expr(node.start) + ", " + this.expr(node.end) + ")"
+            let parts = this._ordered_parts([node.start, node.end])
+            let names = parts["names"]
+            return this._wrap_seq(parts, "cl_range2(" + names[0] + ", " + names[1] + ")")
         }
         if nt == "PipeExpression" {
             -- `v |> f` is f(v); `v |> f(a, b)` is f(v, a, b). The piped value
             -- becomes the first argument, and the rest of the call is emitted
             -- through the ordinary call path.
-            mut pargs = [this.expr(node.value)]
+            mut operands = [node.value]
             mut target = node.function
             if target.node_type == "CallExpression" {
-                for a in target.arguments { push(pargs, this.expr(a)) }
+                for a in target.arguments { push(operands, a) }
                 target = target.callee
             }
-            return this._emit_call(target, pargs, node.line)
+            let parts = this._ordered_parts(operands)
+            mut recv = null
+            if target.node_type == "MemberExpression" { recv = this.expr(target.object) }
+            return this._wrap_seq(parts, this._emit_call(target, parts["names"], node.line, recv))
         }
         this.unsupported("expression " + nt, node.line)
         return "cl_null()"

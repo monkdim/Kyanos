@@ -191,6 +191,17 @@ lands with codegen tests that diff native output against the interpreter.
   that *throws* ended a compiled program outright, where both other engines fall back to the
   default rendering — showing a value must not be able to abort the program, so the native display
   path runs it under a handler. Seven parity cases and three codegen cases.
+- **Evaluation order in native builds (done).** The emitter built every multi-operand construct
+  as one C expression, and C does not define the order a call's arguments are evaluated in: GCC
+  picks right to left, so `[bump(), bump()]` was `[2, 1]` in a compiled binary against the
+  interpreter's `[1, 2]`, and so was every list, map, range, call, index, pipe and binary operator
+  whose operands had side effects. Operands are bound to temporaries in source order now, and only
+  where the order can be observed — a construct built from literals and names still emits as one
+  plain expression, so the generated C is unchanged for the overwhelming majority of it. The same
+  change settles what happens when an operand throws (the ones after it must not run), and fixes
+  `and`/`or`, which named their left operand twice in the C ternary and therefore ran it twice:
+  `bump() or false` left the counter at two and handed back the second call's value. Thirteen
+  codegen cases and five parity cases, each recording the order the operands actually ran in.
 - **Destructuring and spread in native builds.** With generators done, what stops the last two
   files in `examples/` compiling is `DestructureLetStatement`, `MultiAssignStatement` (`let [a, b]
   = pair`, `a, b = b, a`) and `SpreadExpression` in a call or a list. Fifteen of the seventeen
