@@ -295,7 +295,11 @@ class Interpreter {
         this.global_env.set("type", fn(v) { return cl_type_name(v) }, true)
 
         -- Collections
-        this.global_env.set("len", fn(v) { return len(v) }, true)
+        -- Through the same unwrapping keys/values/entries/has use. Without
+        -- it `len(instance)` counted the ClarityInstance's own three internal
+        -- properties, so every instance answered 3 whatever it held -- and
+        -- contradicted `len(keys(instance))` in the same engine.
+        this.global_env.set("len", fn(v) { return len(_unwrap_props(v)) }, true)
         this.global_env.set("push", fn(lst, item) { return push(lst, item) }, true)
         this.global_env.set("pop", fn(lst) { return pop(lst) }, true)
         this.global_env.set("sort", fn(lst) { return sort(lst) }, true)

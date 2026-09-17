@@ -1384,6 +1384,16 @@ class VMClass {
     }
 }
 
+-- An instance's own fields, for the builtins that ask a value what it holds.
+-- Without this they were handed the VMInstance itself, so `keys(obj)` came
+-- back ["_clarityType", "klass", "properties"] -- the engine's representation,
+-- not the program's object -- and `for k in keys(obj) { obj[k] }` walked it.
+-- Interpreter._unwrap_props is the same function.
+fn _vm_props(v) {
+    if type(v) == "VMInstance" { return v.properties }
+    return v
+}
+
 class VMInstance {
     fn init(klass) {
         this._clarityType = "VMInstance"
@@ -1583,7 +1593,7 @@ class VM {
     fn _setup_builtins() {
         let vm = this
 
-        this.globals["len"] = fn(x) { return len(x) }
+        this.globals["len"] = fn(x) { return len(_vm_props(x)) }
         this.globals["push"] = fn(lst, item) { push(lst, item); return lst }
         this.globals["pop"] = fn(lst) { return pop(lst) }
         this.globals["str"] = fn(x) { return vm._display(x) }
@@ -1604,10 +1614,10 @@ class VM {
         }
         this.globals["sort"] = fn(lst) { return sort(lst) }
         this.globals["reverse"] = fn(lst) { return reverse(lst) }
-        this.globals["keys"] = fn(m) { return keys(m) }
-        this.globals["values"] = fn(m) { return values(m) }
-        this.globals["entries"] = fn(m) { return entries(m) }
-        this.globals["has"] = fn(col, key) { return has(col, key) }
+        this.globals["keys"] = fn(m) { return keys(_vm_props(m)) }
+        this.globals["values"] = fn(m) { return values(_vm_props(m)) }
+        this.globals["entries"] = fn(m) { return entries(_vm_props(m)) }
+        this.globals["has"] = fn(col, key) { return has(_vm_props(col), key) }
         this.globals["sum"] = fn(lst) { return sum(lst) }
         this.globals["abs"] = fn(n) { return abs(n) }
         this.globals["min"] = fn(...a) {
