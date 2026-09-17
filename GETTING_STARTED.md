@@ -536,7 +536,7 @@ clarity run app.clarity --watch
 
 ### Bytecode compiler
 
-Clarity includes a stack-based bytecode compiler and VM with 56 opcodes:
+Clarity includes a stack-based bytecode compiler and VM with 64 opcodes:
 
 ```bash
 clarity compile program.clarity
@@ -724,7 +724,7 @@ Clarity/
     website_gen.clarity     # KyanOS website generator
     branding.clarity        # Brand tokens (typography, spacing, radius)
 
-    test_*.clarity          # Test suites (50 files, ~2,750 assertions)
+    test_*.clarity          # Test suites (66 files, more than 4,000 assertions)
 
   kernel/                   # Zig micro-kernel (multiboot2, x86_64 long mode)
     boot.zig, kernel.zig, paging.zig, gdt.zig, idt.zig,
@@ -779,7 +779,7 @@ clarity smoke
 clarity bench
 ```
 
-**~2,750 self-hosted assertions across 50 test files**, all written in Clarity.
+**More than 4,000 self-hosted assertions across 66 test files**, all written in Clarity.
 
 ---
 
