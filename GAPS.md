@@ -166,6 +166,32 @@ A name in scope is what a call means now, whatever else the name refers to at
 module level. Calling something that is not a function also raises the
 interpreter's error rather than answering null.
 
+### An enum was not a value in native builds
+Fixed. `clarity cc` compiled an enum as a compile-time table and nothing else,
+so a bare mention of one named a C variable that did not exist:
+
+```clarity
+enum C { A = 1, B = 2 }
+show C      -- clarity run <enum C>, run --fast <enum C>
+            -- clarity cc  error: 'v_C' undeclared (first use in this function)
+```
+
+The same for `str(C)`, `type(C)`, passing an enum to a function, or putting one
+in a list — and a raw C compiler error rather than a Clarity one, so it read as
+a compiler bug rather than as the gap it was.
+
+An enum is a runtime value now (`T_ENUM`, holding its name and its members),
+with the interpreter's four methods (`values`, `names`, `entries`, `has`), its
+`<enum C>` display, its `"enum"` type name, its error for a member that does
+not exist, and its refusal of a subscript — an enum is not a map. A member read
+through a value (`let e = C` then `e.A`) resolves at run time; a member read
+where the enum is *named* still resolves while compiling, which is faster and
+keeps the compile-time error for a member that does not exist.
+
+One divergence stays, and it is not about enums: a compiled binary carries no
+`(line N)` on any runtime error, where the other two engines now do. Filed
+separately, since it is the same for every error kind.
+
 ### Four of the seventeen examples did not run under `--fast`
 Fixed. Running every file in `examples/` under both engines and diffing found
 four that differ — the shop window of the language, on one of its own

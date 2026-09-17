@@ -346,6 +346,8 @@ both_fail_naming("an enum member that does not exist", "enum C { A = 1 }\nshow C
 -- An enum is not a map, and the VM used to let a subscript through because
 -- it compiled one to a map.
 same("an enum is not a map", "enum C { A = 1 }\ntry { show C[\"A\"] } catch e { show str(e) }")
+same("an enum passed around and read dynamically", "enum Color { Red = \"#F00\", Green = \"#0F0\" }\nfn describe(e) { return str(e) + \" has \" + str(len(e.names())) + \" members\" }\nshow describe(Color)\nlet e = Color\nshow e.Red\nshow e.entries()\nshow e.has(\"Red\")\nlet f = e.names\nshow f()\nshow [Color, Color]\nshow Color == Color")
+same("an unknown member read dynamically", "enum Color { Red = \"#F00\" }\nlet e = Color\ntry { show e.Mauve } catch err { show str(err) }")
 
 -- examples/control_flow.clarity lost the line: the VM threw the
 -- interpreter's words for an engine-raised error but never its line, so a

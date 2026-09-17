@@ -278,6 +278,15 @@ lands with codegen tests that diff native output against the interpreter.
   `PUSH_SCOPE`/`POP_SCOPE` bracket every block form, a loop body gets a fresh scope per iteration,
   and a closure captures the chain rather than one map. Assignment follows the same chain, which
   it did not before — writing to a captured variable made a new local instead.
+- **An enum is a value in native builds (done).** `clarity cc` compiled an enum as a compile-time
+  table and nothing else, so `show C` named a C variable that did not exist and the build died
+  inside the C compiler. An enum is a runtime value now, with the interpreter's four methods, its
+  `<enum C>` display and its errors, while a member read where the enum is named still resolves
+  while compiling.
+- **A runtime error's line in native builds (next on the trunk).** A compiled binary carries the
+  interpreter's words on every engine-raised error but never its `(line N)`, where `clarity run`
+  and `run --fast` both do. The line is known while compiling, so the fix is to carry it to the
+  throw sites — the last systematic divergence the three-engine probes have turned up.
 - **Every example runs the same under `--fast` (done).** Four of the seventeen files in
   `examples/` did not: `async_generators` died in the VM's compiler (every decorated function did —
   `compile_DecoratedStatement` read a field the AST does not have), `classes` called null (an enum
