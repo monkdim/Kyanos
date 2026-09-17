@@ -166,6 +166,44 @@ A name in scope is what a call means now, whatever else the name refers to at
 module level. Calling something that is not a function also raises the
 interpreter's error rather than answering null.
 
+### An unknown name in a native build was a C compiler error
+Fixed. A name that resolved to nothing was emitted as `v_name` and left to the
+C compiler:
+
+```clarity
+fn f() { return nope }
+```
+```
+clarity run   NameError: 'nope' is not defined (line 1)
+clarity cc    /tmp/x.c:1812:19: error: 'v_nope' undeclared (first use in this function)
+                1812 |   { Value __rv0 = v_nope; ...
+```
+
+An error about generated code, naming a variable the program never wrote, at a
+line in a file it never saw. The backend now knows what is in scope — the
+current function, the scopes a closure is nested inside, module level, and the
+builtins — and says so itself: `native compile: 'nope' is not defined
+(line 1)`. The same for `x = 5` where nothing declared `x`, and for calling a
+name that resolves to nothing.
+
+And an import that asks for a name its module does not declare is now refused
+where the modules are flattened, naming both:
+
+```
+native compile: 'nosuchthing' not found in '…/stdlib/bits.clarity', imported by <main>
+```
+
+It used to reach the backend as a name nothing declared, and the best it could
+say was that the name is not defined — true, but not that the import was the
+reason.
+
+This check can only *add* refusals, so the risk is refusing a program that
+works. Against that: a case compiling every binding form the language has —
+a parameter, a local, a loop variable, a catch binding, a destructured name, a
+module-level binding, a top-level function, a class, an enum, a real import, a
+rest parameter, a comprehension variable and a name two closures deep — plus
+the 319 codegen cases, which include compiling every file in `examples/`.
+
 ### A compiled binary would not say where an error happened
 Fixed. Every engine-raised error in a native build carried the interpreter's
 words and dropped its line:

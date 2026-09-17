@@ -26,7 +26,7 @@
 from "lexer.clarity" import tokenize
 from "parser.clarity" import parse
 from "ast_nodes.clarity" import Program
-from "c_scope.clarity" import scope_modules
+from "c_scope.clarity" import scope_modules, declared_name
 
 -- Directory part of a path, without shelling out to dirname.
 fn _dir_of(path) {
@@ -115,6 +115,31 @@ fn resolve_native_imports(tree, base_dir, extra_dir, root_path) {
     let root_key = root_path ?? "<main>"
     if root_path != null { seen[root_path] = true }
     _collect(tree, base_dir, extra_dir, "<main>", root_key, seen, mods)
+
+    -- `from "p" import a` where p does not declare a: say so here, naming the
+    -- module, the way `clarity run` does. Left to fall through, the reference
+    -- reached the C backend as a name nothing declared, and the best it could
+    -- say was that the name is not defined -- true, but it would not say the
+    -- import was the reason.
+    mut declares = {}
+    for m in mods {
+        mut names = []
+        for stmt in m["body"] {
+            let dn = declared_name(stmt)
+            if dn != null { push(names, dn) }
+        }
+        declares[m["key"]] = names
+    }
+    for m in mods {
+        for wanted in keys(m["imports"]) {
+            let from_key = m["imports"][wanted]
+            if not has(declares, from_key) { continue }
+            if not contains(declares[from_key], wanted) {
+                throw "native compile: '" + wanted + "' not found in '" + from_key +
+                    "', imported by " + m["label"]
+            }
+        }
+    }
 
     -- Names declared in more than one module are given module-scoped ones,
     -- and every reference that resolves to them follows. This used to be an
