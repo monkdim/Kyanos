@@ -215,7 +215,7 @@ let HOST_ONLY = [
     "lsp", "debugger", "profiler",
     "storage", "network", "audio",
     "build", "install", "transpile",
-    "runtime", "runtime_gen", "runtime_spec",
+    "runtime",
     "app_store", "app_scaffold", "hot_reload"
 ]
 

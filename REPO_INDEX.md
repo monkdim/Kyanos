@@ -151,8 +151,6 @@ Status: `entry point`, `reached from the CLI` (in the shipped binary's import cl
 | repl.clarity | 565 | Clarity Shell REPL - interactive terminal | yes | reached from the CLI | cli.clarity | 1 |
 | run_vm.clarity | 192 | run_vm - QEMU launcher for the KyanOS ISO (Phase 67 task 4). | yes | library | qemu.clarity, qemu_macos.clarity | 1 |
 | runtime.clarity | 71 | Clarity Runtime - self-hosting implementation | yes | nothing imports it | - | 0 |
-| runtime_gen.clarity | 112 | Runtime Generator - produces native/runtime.js from runtime_spec.clarity. | yes | reached from the CLI | cli.clarity | 0 |
-| runtime_spec.clarity | 368 | Runtime Specification - defines all JavaScript runtime builtins. | yes | reached from the CLI | runtime_gen.clarity | 0 |
 | scheduler.clarity | 273 | Process scheduler model - pure-state simulation of the kernel | yes | only tests import it | - | 1 |
 | semver.clarity | 503 | Clarity Semver - semantic versioning parsing, comparison, and range matching. | yes | reached from the CLI | package.clarity | 0 |
 | settings.clarity | 139 | Settings - system preferences panel (Phase 62 task 6). | yes | only tests import it | - | 1 |

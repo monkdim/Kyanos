@@ -678,8 +678,6 @@ Clarity/
     transpile.clarity       # Self-hosted Clarity-to-JS transpiler
     build.clarity           # Self-hosted build pipeline
     install.clarity         # Self-hosted installer
-    runtime_spec.clarity    # Runtime.js spec (single source of truth)
-    runtime_gen.clarity     # JS codegen from runtime spec
 
     -- KyanOS userspace --
     graphics.clarity        # Framebuffer + 2D drawing primitives
