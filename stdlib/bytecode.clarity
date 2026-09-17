@@ -80,6 +80,7 @@ let OP_SPREAD = 59      -- Mark the top of the stack as spread into what follows
 let OP_COMP_BIND = 60   -- Bind one target of a multi-variable map comprehension
 let OP_PUSH_SCOPE = 61  -- Enter a block: names bound after this are its own
 let OP_POP_SCOPE = 62   -- Leave a block, and everything it bound with it
+let OP_MAKE_ENUM = 63   -- Wrap a member map as an enum (operand = const name)
 let OP_HALT = 255
 
 -- Opcode names for disassembly
@@ -97,7 +98,7 @@ let OP_NAMES = {
     51: "SETUP_TRY", 52: "POP_TRY", 53: "SWAP", 54: "ROT3",
     55: "JUMP_TRUE", 56: "IMPORT", 57: "YIELD", 58: "GET_PROP_OPT",
     59: "SPREAD", 60: "COMP_BIND", 61: "PUSH_SCOPE", 62: "POP_SCOPE",
-    255: "HALT"
+    63: "MAKE_ENUM", 255: "HALT"
 }
 
 -- ── Bytecode container ──────────────────────────────────
@@ -718,6 +719,7 @@ class Compiler {
             i += 1
         }
         this.code.emit(OP_MAKE_MAP, len(node.members), line)
+        this.code.emit(OP_MAKE_ENUM, name_idx, line)
         this.code.emit(OP_STORE_NEW, name_idx, line)
     }
 
@@ -805,8 +807,13 @@ class Compiler {
 
     fn compile_DecoratedStatement(node) {
         let line = node.line ?? 0
+        -- The parser calls the decorated thing `target`; this read
+        -- `node.statement`, which no DecoratedStatement has, so every
+        -- decorated function died in the compiler with "undefined is not an
+        -- object (evaluating 'node.node_type')". That is what killed
+        -- examples/async_generators.clarity under --fast.
         -- Compile the inner statement first (defines the function)
-        this.compile_node(node.statement)
+        this.compile_node(node.target)
         -- Apply decorators in reverse order
         mut i = len(node.decorators) - 1
         while i >= 0 {
@@ -815,15 +822,15 @@ class Compiler {
             this.compile_node(decorator)
             -- Load the function we just defined
             -- The function was stored via STORE_NEW, so we load it back
-            if node.statement.node_type == "FnStatement" {
-                let name_idx = this.code.add_const(node.statement.name)
+            if node.target.node_type == "FnStatement" {
+                let name_idx = this.code.add_const(node.target.name)
                 this.code.emit(OP_LOAD, name_idx, line)
             }
             -- Call decorator with the function as argument
             this.code.emit(OP_CALL, 1, line)
             -- Store the result back
-            if node.statement.node_type == "FnStatement" {
-                let name_idx = this.code.add_const(node.statement.name)
+            if node.target.node_type == "FnStatement" {
+                let name_idx = this.code.add_const(node.target.name)
                 this.code.emit(OP_STORE, name_idx, line)
             } else {
                 this.code.emit(OP_POP, 0, line)
@@ -1416,6 +1423,22 @@ fn _vm_slice(lst, start, end_i) {
     return out
 }
 
+-- An enum: its members, and the name it answers to. The VM used to compile
+-- one to a plain map, so `Color.Red` worked by accident and `Color.names()`
+-- called null -- which is what made examples/classes.clarity die under
+-- --fast. Interpreter.ClarityEnum is the same two fields.
+class VMEnum {
+    fn init(name, members) {
+        this._clarityType = "VMEnum"
+        this.name = name
+        this.members = members
+    }
+
+    fn to_string() {
+        return "<enum {this.name}>"
+    }
+}
+
 -- A value marked by `...` — a list opened out into a list or a call's
 -- arguments, a map merged into a map. It exists only between OP_SPREAD and
 -- whatever assembles the values around it, and never reaches a program.
@@ -1887,7 +1910,12 @@ class VM {
         if t == "function" or t == "builtin" {
             return f(...call_args)
         }
-        throw "RuntimeError: Not callable: {this._display(f)}"
+        -- The interpreter names the *type*, not the value:
+        -- "TypeError: 'int' is not callable". This said
+        -- "RuntimeError: Not callable: 5", so a program that caught it and
+        -- showed it read differently under --fast. `clarity cc` already
+        -- agreed with the interpreter here; this engine was the odd one.
+        throw "TypeError: '{type(f)}' is not callable"
     }
 
     fn _instantiate_class(klass, call_args) {
@@ -1902,6 +1930,16 @@ class VM {
     -- Reading `obj.prop`, shared by OP_GET_PROP and its optional form.
     fn _get_prop(obj, prop) {
         let t = type(obj)
+        if t == "VMEnum" {
+            -- The interpreter's set, in its order: a member first, then the
+            -- four an enum answers whatever its members are, then its error.
+            if has(obj.members, prop) { return obj.members[prop] }
+            if prop == "values" { return fn() { return values(obj.members) } }
+            if prop == "names" { return fn() { return keys(obj.members) } }
+            if prop == "entries" { return fn() { return entries(obj.members) } }
+            if prop == "has" { return fn(name) { return has(obj.members, name) } }
+            throw "RuntimeError: Enum {obj.name} has no member '{prop}'"
+        }
         if t == "VMInstance" {
             -- A property explicitly set to null is still present and must
             -- read back as null; a name that is neither a property nor a
@@ -1992,6 +2030,28 @@ class VM {
             this._drop_handlers(try_depth)
             throw err
         }
+    }
+
+    -- An error the engine raises carries the line it happened on under
+    -- `clarity run` -- "RuntimeError: Division by zero (line 46)". This engine
+    -- threw the same words without it, so a program that caught one and showed
+    -- it read differently under --fast. The line is known here and nowhere
+    -- deeper, so it is added on the way out of the instruction that raised it.
+    --
+    -- Only to a string opening with one of the engine's own prefixes: a
+    -- program's `throw "boom"` is its own business and carries no line in
+    -- either engine. Only when it does not already say a line, so an error
+    -- passing out through several frames is not annotated once per frame --
+    -- the frame it was raised in gets there first, and that is the right one.
+    fn _with_line(err, code, at) {
+        if type(err) != "string" { return err }
+        if contains(err, "(line ") { return err }
+        let engine = starts(err, "RuntimeError: ") or starts(err, "TypeError: ") or
+            starts(err, "NameError: ") or starts(err, "ValueError: ")
+        if not engine { return err }
+        let eline = if at >= 0 and at < len(code.lines) { code.lines[at] } else { 0 }
+        if eline == 0 { return err }
+        return err + " (line {eline})"
     }
 
     fn _call_vm_fn(f, call_args) {
@@ -2290,6 +2350,9 @@ class VM {
             elif op == OP_POP_SCOPE {
                 if len(frame.parents) > 0 { frame.locals = pop(frame.parents) }
             }
+            elif op == OP_MAKE_ENUM {
+                push(this.stack, VMEnum(code.constants[operand], pop(this.stack)))
+            }
             elif op == OP_COMP_BIND {
                 -- One target of `{k: v for a, b in xs}`. A list item is taken
                 -- apart element by element, with null past its end; anything
@@ -2439,7 +2502,11 @@ class VM {
                     if has(obj.properties, idx) { push(this.stack, obj.properties[idx]) }
                     else { push(this.stack, null) }
                 }
-                else { throw "RuntimeError: Cannot index into {t}" }
+                -- The interpreter's words and its kind of error, and the
+                -- language's name for the type rather than the VM's internal
+                -- one: "TypeError: Cannot index into enum", not
+                -- "RuntimeError: Cannot index into VMEnum".
+                else { throw "TypeError: Cannot index into {this._type_name(obj)}" }
             }
             elif op == OP_SET_IDX {
                 let value = pop(this.stack)
@@ -2637,7 +2704,8 @@ class VM {
             else {
                 throw "RuntimeError: Unknown opcode: {op}"
             }
-            } catch err {
+            } catch raw_err {
+                let err = this._with_line(raw_err, code, frame.ip - 1)
                 -- An engine-raised error reached us. Hand it to the nearest
                 -- active try handler on THIS frame — the same routing OP_THROW
                 -- does for an explicit `throw` — otherwise let it propagate.
@@ -2708,6 +2776,7 @@ class VM {
         }
         if t == "VMFunction" { return value.to_string() }
         if t == "VMClass" { return value.to_string() }
+        if t == "VMEnum" { return value.to_string() }
         if t == "VMInstance" {
             -- A class that says how it prints says so for every engine. The
             -- interpreter calls the instance's own to_string() and displays
@@ -2735,6 +2804,12 @@ class VM {
         if value == null { return "null" }
         let t = type(value)
         if t == "bool" { return "bool" }
+        -- The host already distinguishes int from float, so `type(42)` is
+        -- "int" and this branch never fires -- which is why the fallthrough
+        -- below must hand back what the host said rather than "unknown".
+        -- It used to say "unknown", so `match type(x) { when "int" ... }`
+        -- took no arm under --fast and examples/patterns.clarity printed
+        -- "42 is a unknown".
         if t == "number" {
             if value == floor(value) { return "int" }
             return "float"
@@ -2745,8 +2820,12 @@ class VM {
         if t == "function" or t == "builtin" { return "function" }
         if t == "VMFunction" { return "function" }
         if t == "VMClass" { return "class" }
+        if t == "VMEnum" { return "enum" }
         if t == "VMInstance" { return value.klass.name }
-        return "unknown"
+        -- Anything the host already names correctly -- "int", "float", and
+        -- whatever else it grows -- passes through, exactly as
+        -- Interpreter.cl_type_name ends.
+        return t
     }
 }
 

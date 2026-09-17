@@ -214,7 +214,14 @@ assert_single("match default", "let x = 99\nmatch x {\n  when 1 { show \"one\" }
 
 show "Section 15: Enums"
 
-assert_single("enum access", "enum Color { Red, Green, Blue }\nshow Color[\"Red\"]", "0")
+-- An enum is a value with members, not a map: `Color.Red` reads a member and
+-- `Color["Red"]` is refused, which is what `clarity run` does. This engine
+-- used to compile an enum to a plain map, so the subscript worked here and
+-- nowhere else, and Color.names() called null.
+assert_single("enum access", "enum Color { Red, Green, Blue }\nshow Color.Red", "0")
+assert_output("enum members and methods", "enum Color { Red = \"r\", Green = \"g\" }\nshow Color.names()\nshow Color.values()", ["[\"Red\", \"Green\"]", "[\"r\", \"g\"]"])
+assert_single("an enum says what it is", "enum Color { Red }\nshow Color", "<enum Color>")
+assert_single("an enum is not a map", "enum Color { Red }\ntry { show Color[\"Red\"] } catch e { show str(e) }", "TypeError: Cannot index into enum (line 2)")
 
 -- ── Section 16: Optimizer ────────────────────────────────
 

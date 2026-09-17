@@ -166,6 +166,43 @@ A name in scope is what a call means now, whatever else the name refers to at
 module level. Calling something that is not a function also raises the
 interpreter's error rather than answering null.
 
+### Four of the seventeen examples did not run under `--fast`
+Fixed. Running every file in `examples/` under both engines and diffing found
+four that differ — the shop window of the language, on one of its own
+engines:
+
+- **`async_generators.clarity` died in the VM's compiler** with
+  `TypeError: undefined is not an object (evaluating 'node.node_type')`.
+  `compile_DecoratedStatement` read `node.statement`; the parser calls the
+  field `target`. So *every* decorated function was a compiler crash under
+  `--fast`.
+- **`patterns.clarity` printed `42 is a unknown`.** The VM's `_type_name`
+  ended in `return "unknown"` where the interpreter's `cl_type_name` ends in
+  `return t`, and the host already distinguishes `int` from `float` — so the
+  `t == "number"` branch above it never fires and every number fell through to
+  `"unknown"`. `match type(x) { when "int" ... }` took no arm.
+- **`classes.clarity` called null.** The VM compiled an enum to a plain map,
+  so `Color.Red` worked by accident and `Color.names()` was `null()`. There is
+  a `VMEnum` now, with the interpreter's four methods (`values`, `names`,
+  `entries`, `has`), its `<enum C>` display, its `"enum"` type name and its
+  error for a member that does not exist. A subscript is refused, as it is
+  under `clarity run` — an enum is not a map.
+- **`control_flow.clarity` lost a line number.** An engine-raised error
+  carried the interpreter's words but never its line, so
+  `RuntimeError: Division by zero` where `clarity run` says
+  `... (line 46)`. The line is added once, on the way out of the instruction
+  that raised it, to a string opening with one of the engine's own prefixes —
+  a program's own `throw "boom"` still carries no line, in either engine.
+
+Also fixed on the way: the VM said `RuntimeError: Not callable: 5` where both
+other engines say `TypeError: 'int' is not callable`, and
+`RuntimeError: Cannot index into VMEnum` where the interpreter names the
+language's type, not the engine's.
+
+All seventeen examples now produce identical output under `clarity run` and
+`run --fast`. `clarity cc` compiles all seventeen, and the one thing it still
+cannot do with an enum — use it as a *value*, as in `show C` — is filed.
+
 ### The bytecode VM had no block scoping
 Fixed. `run --fast` kept every binding of a call in one flat map, so no block
 scoped at all — not an `if` body, a loop body, a `try`, a `catch`, a `finally`,

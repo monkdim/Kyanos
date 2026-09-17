@@ -320,6 +320,42 @@ same("map comprehension over ragged rows", "show {p: q for p, q in [[1], [2, 3]]
 same("map comprehension whose items are not lists", "show {p: p for p, q in [1, 2]}")
 same("a comprehension reads the enclosing scope", "let scale = 10\nfn f() { return [n * scale for n in [1, 2]] }\nshow f()")
 
+show "-- Parity: what examples/ was tripping over --"
+-- Each of these came out of running all seventeen files in examples/ under
+-- both engines. Four did not match; these are the four faults, each reduced
+-- to the smallest program that shows it.
+
+-- examples/async_generators.clarity died in the VM's compiler with
+-- "undefined is not an object": compile_DecoratedStatement read
+-- node.statement, and the parser calls the field target.
+same("a decorated function", "fn twice(wrapped) {\n    return fn(...args) {\n        wrapped(...args)\n        wrapped(...args)\n    }\n}\n\n@twice\nfn say_hello() {\n    show \"Hello!\"\n}\n\nsay_hello()")
+same("a decorator that returns a value", "fn plus_one(f) { return fn(x) { return f(x) + 1 } }\n@plus_one\nfn double(n) { return n * 2 }\nshow double(5)")
+
+-- examples/patterns.clarity printed "42 is a unknown": the VM's _type_name
+-- ended in "unknown" instead of handing back what the host said, and the
+-- host already distinguishes int from float.
+same("type() names a number", "show type(42)\nshow type(4.5)\nshow type(\"s\")\nshow type(true)\nshow type(null)\nshow type([1])\nshow type({\"a\": 1})")
+same("matching on type()", "fn classify(x) {\n    match type(x) {\n        when \"int\" { return \"an integer\" }\n        when \"float\" { return \"a float\" }\n        else { return \"something else\" }\n    }\n}\nshow classify(42)\nshow classify(4.5)\nshow classify(\"s\")")
+
+-- examples/classes.clarity called null: the VM compiled an enum to a plain
+-- map, so Color.Red worked by accident and Color.names() did not exist.
+same("an enum is a value with members", "enum Color { Red = \"#FF0000\", Green = \"#00FF00\", Blue = \"#0000FF\" }\nshow Color.Red\nshow Color.names()\nshow Color.values()\nshow Color.entries()\nshow Color.has(\"Red\")\nshow Color.has(\"Mauve\")")
+same("an enum says what it is", "enum C { A = 1, B = 2 }\nshow C\nshow str(C)\nshow type(C)")
+same("an enum with implicit values", "enum D { X, Y }\nshow D.X\nshow D.Y\nshow D.values()")
+both_fail_naming("an enum member that does not exist", "enum C { A = 1 }\nshow C.nope()", "nope")
+-- An enum is not a map, and the VM used to let a subscript through because
+-- it compiled one to a map.
+same("an enum is not a map", "enum C { A = 1 }\ntry { show C[\"A\"] } catch e { show str(e) }")
+
+-- examples/control_flow.clarity lost the line: the VM threw the
+-- interpreter's words for an engine-raised error but never its line, so a
+-- program that caught one and showed it read differently under --fast.
+same("an engine-raised error carries its line", "try { show 1 / 0 } catch e { show str(e) }\ntry { let xs = [1]\n show xs[9] } catch e2 { show str(e2) }\ntry { show nope } catch e3 { show str(e3) }")
+same("a not-callable error names the type", "fn t(l, f) { try { show l + \": \" + str(f()) } catch e { show l + \": \" + str(e) } }\nt(\"int\", fn() { let v = 5\n return v() })\nt(\"list\", fn() { let v = [1]\n return v() })\nt(\"null\", fn() { let v = null\n return v() })")
+-- A program's own throw carries no line in either engine, and must not
+-- start getting one now that engine errors do.
+same("a thrown value of the program's own is left alone", "try { throw \"boom\" } catch e { show str(e) }\ntry { throw {\"code\": 7} } catch e2 { show str(e2) }")
+
 show "-- Parity: block scoping --"
 -- Every one of these answered a value under --fast where `clarity run`
 -- raises a NameError, because the VM kept a frame's whole contents in one
