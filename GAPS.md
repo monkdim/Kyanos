@@ -561,6 +561,89 @@ and maps disagree: `[10] < [9]` is true under `run` and `--fast` (the host
 compares "10" and "9" as strings) and false under `cc` (both sides number to
 zero), so `sort` on a list of lists reorders in two engines and not the third.
 
+### A number in a native build was a different number, and printed differently
+Fixed, in four connected places.
+
+**The reference documented an exponent the scanner never read.**
+`docs/reference.html` has listed `1.5e10` and `2.0E-3` as float literals for
+as long as there has been a reference. `read_number` scanned digits, one dot
+and `_` separators and stopped, so:
+
+```clarity
+let x = 1.5e10
+```
+```
+NameError: 'e10' is not defined (line 1)
+```
+
+`show 2.0E-3` was worse: it printed `2` and then failed on `E`. The scanner
+takes `e`/`E`, an optional sign and at least one digit now. Anything short of
+that is left alone, so `1e` is still the number 1 followed by the name `e` —
+which the standard library defines as Euler's number — and `1e+1` is 10, as
+it is in every language that has the syntax. One lexer serves all three
+engines, so the parse is fixed once.
+
+**Past 2^53 a native build held a different number.** The backend emitted
+`cl_int(...)` for any whole number however large, and C's long wrapped:
+
+```clarity
+show 100000000000000000000
+show 0xFFFFFFFFFFFFFFFF
+show 4611686018427387904 * 4
+show 9223372036854775807 + 1
+```
+```
+clarity run   100000000000000000000   18446744073709552000   18446744073709552000   9223372036854776000
+clarity cc    7766279631452241920     384                    384                    -9223372036854775615
+```
+
+Every number the other two engines have is a double, so the boundary that
+matches them is 2^53-1 and not LONG_MAX — between the two a long is *more*
+precise than the double they parsed, which is a difference in the other
+direction. A literal outside the range is emitted as a double, and `+`, `-`,
+`*`, `**` and `int()` hand back a double when their result leaves it. The
+bitwise operators keep their own 32-bit rule, which is JavaScript's and was
+already matched.
+
+**And it printed the number differently.** The float path was `%g` at the
+shortest precision that round-trips, which gets the digits right and the rest
+wrong:
+
+| | `clarity run` | `clarity cc` |
+|---|---|---|
+| `1e18` | `1000000000000000000` | `1e+18` |
+| `1e20` | `100000000000000000000` | `1e+20` |
+| `1e-6` | `0.000001` | `1e-06` |
+| `1e-7` | `1e-7` | `1e-07` |
+| `2 ** 62` | `4611686018427388000` | `4611686018427387904` |
+
+JavaScript writes a number in fixed notation while its decimal exponent keeps
+it inside 1e-6 .. 1e21 and in exponential notation outside that; `%g` switches
+at the precision instead, spells the exponent with a leading zero, and a long
+prints all its digits where a double would have been rounded. `cl_num_text`
+takes the shortest round-tripping *scientific* form — which gives the digits
+and the decimal exponent in one call — and places the point by JavaScript's
+four cases.
+
+**And `1.5 & 3` was 0.** A bitwise operand goes through JavaScript's ToInt32
+in both other engines; the native helpers read `a.i`, which is right only for
+a T_INT — a T_FLOAT carries its value in `.f` and leaves `.i` at zero. That
+was already wrong for `1.5 & 3`, and it became wrong for sha256 the moment an
+integer result that leaves the exact range started coming back as a float:
+`test_sha256`'s published digests were the first thing the change broke, which
+is the test doing its job. The operands go through a real ToInt32 now, and a
+left shift is done on the unsigned value so that `1 << 31` is not undefined in
+C.
+
+**Which needed `%e` in the freestanding libc**, where the emitted C is linked
+for KyanOS. `printf.c` had `%g` and not `%e`, so the first build printed the
+format string: `2 %.17 -3 3`. It has `%e`/`%E` now, over the same exact-digits
+`cl_dtoa` its `%g` already used, and `stdlib/test_libc.clarity` — which links
+a compiled program against that libc and diffs it against the interpreter —
+is what caught it. `float_probe`, which diffs this library's float conversions
+against the host's over a fixed sweep and four thousand random bit patterns,
+covers `%e` too now; removing the conversion again fails it at line 1.
+
 ### Mid-run garbage collection kills a program on darwin-arm64
 `CLARITY_GC=1` turns on mid-run collection in a compiled binary. On
 darwin-arm64 a program that holds **two** live allocations across a collection

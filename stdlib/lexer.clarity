@@ -242,8 +242,36 @@ class Lexer {
             }
         }
 
+        -- Exponent. docs/reference.html has documented `1.5e10` and `2.0E-3`
+        -- as float literals for as long as there has been a reference, and
+        -- the scanner stopped at the digits: `let x = 1.5e10` was 1.5
+        -- followed by the identifier `e10`, and failed with "'e10' is not
+        -- defined" — a name the program never wrote. `show 2.0E-3` was worse,
+        -- printing 2 before it failed.
+        --
+        -- `e`/`E`, an optional sign, then at least one digit. Anything short
+        -- of that is not an exponent and is left alone, so `1e` stays the
+        -- number 1 followed by the name `e`, and a method call on a number
+        -- literal is untouched.
+        mut has_exp = false
+        if contains("eE", this.peek()) {
+            let sign_at = contains("+-", this.peek_next())
+            let digit_at = if sign_at { this.peek_at(2) } else { this.peek_next() }
+            if is_digit(digit_at) {
+                has_exp = true
+                push(num, this.advance())
+                if sign_at { push(num, this.advance()) }
+                while this.pos < len(this.source) and is_digit(this.peek()) {
+                    push(num, this.advance())
+                }
+            }
+        }
+
         let raw = join(num, "")
-        let value = if has_dot { float(raw) } else { int(raw) }
+        -- int() of "1e18" is 1: the exponent has to go through float(), and
+        -- a whole-numbered result still answers "int" to type(), which is
+        -- what the other engines see too.
+        let value = if has_dot or has_exp { float(raw) } else { int(raw) }
         return Token(TokenType.NUMBER, value, this.line, start_col, substring(this.source, start_pos, this.pos))
     }
 

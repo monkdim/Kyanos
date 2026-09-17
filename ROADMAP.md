@@ -303,6 +303,17 @@ lands with codegen tests that diff native output against the interpreter.
   when the program binds it: `fn sort(xs)` and `let upper = fn(s)` were compiled as the builtins
   they shadow, because the builtin was tried before the program's own bindings — three files in
   `stdlib/` define their own `fn max(a, b)`, and every call to it was the builtin.
+- **A number is the same number in every engine (done).** Three separate things, one subject.
+  The reference has documented `1.5e10` and `2.0E-3` as float literals since there has been a
+  reference and the scanner never read an exponent, so `let x = 1.5e10` failed with "'e10' is not
+  defined". Past 2^53 a native build held a different number — `100000000000000000000` printed as
+  7766279631452241920 and `4611686018427387904 * 4` as 384 — because a whole number was emitted as
+  a C long however large, where the other two engines have only doubles. And the float path was
+  `%g`, which puts the decimal point by the precision rather than by JavaScript's 1e-6 .. 1e21
+  window and writes `1e-07` for `1e-7`. Literals outside the exact range are doubles now,
+  arithmetic that leaves it hands back a double, and printing follows JavaScript's
+  Number-to-String. The freestanding libc gained `%e` for it, which is what the KyanOS link test
+  caught.
 - **An unknown name is a Clarity error (done).** A name that resolved to nothing was emitted as
   `v_name` and reported by the C compiler as an undeclared identifier — an error about generated
   code, naming a variable the program never wrote. The backend tracks what is in scope now and

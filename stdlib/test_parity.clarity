@@ -429,6 +429,25 @@ same("surplus arguments to a builtin are evaluated and dropped",
      "show sort([3, 1, 2], bump())\nshow n\nshow len(\"ab\", \"cd\")\n" +
      "show upper(\"a\", \"b\")\nshow str(7, 8)")
 
+-- The lexer is one piece of code for both engines, so an exponent either
+-- reads in both or in neither. It read in neither: `1.5e10` was 1.5 followed
+-- by the identifier e10, which the reference has documented as a float
+-- literal for as long as there has been a reference.
+same("float exponent literals",
+     "show 1.5e10\nshow 2.0E-3\nshow 1e3\nshow 1.5e-3\nshow 6.02e23\n" +
+     "show type(1e3)\nshow type(1.5e-3)")
+same("bitwise operands go through ToInt32",
+     "show 1.5 & 3\nshow -1.5 | 0\nshow 2.9 ^ 1\nshow 4294967297 & 0xFF\n" +
+     "show (1 << 31)\nshow -8 >> 1\nshow 1e20 & 0xFF")
+same("a number past the exact integer range",
+     "show 100000000000000000000\nshow 0xFFFFFFFFFFFFFFFF\n" +
+     "show 4611686018427387904 * 4\nshow 2 ** 64\nshow 1e21\nshow 1e-7")
+-- An exponent needs at least one digit, so `1e` is still the number 1
+-- followed by the name `e` — which the standard library defines as Euler's
+-- number. Both engines have to keep reading it that way.
+same("a bare e after a number is not an exponent",
+     "show 1e\nshow e\nshow 2 * e")
+
 -- A name the program binds is the thing that gets called, even when a
 -- builtin answers to it too. Both engines agree; the native backend did not.
 same("a binding wins over the builtin it shadows",
