@@ -436,6 +436,25 @@ same("surplus arguments to a builtin are evaluated and dropped",
 same("float exponent literals",
      "show 1.5e10\nshow 2.0E-3\nshow 1e3\nshow 1.5e-3\nshow 6.02e23\n" +
      "show type(1e3)\nshow type(1.5e-3)")
+-- A value that refers to itself. Both engines used to walk into it until
+-- the stack ran out; a compiled binary segfaulted. The containers between a
+-- rendering and its top are remembered now.
+same("a value that contains itself",
+     "mut a = \{\}\na[\"self\"] = a\nshow a\nshow str(a)\n" +
+     "mut xs = [1]\npush(xs, xs)\nshow xs")
+same("a value shown twice is not a cycle",
+     "let inner = [1, 2]\nshow [inner, inner]\n" +
+     "let m = \{\"a\": 1\}\nshow \{\"x\": m, \"y\": m\}")
+same("identical is reference identity",
+     "let xs = [1, 2]\nshow identical(xs, xs)\nshow identical(xs, [1, 2])\n" +
+     "show xs == [1, 2]\nshow identical(1, 1)\nshow identical(null, null)")
+-- Calling a bound method worked in both; showing one ran the VM out of stack,
+-- because it had no rendering and fell through to walking the VM's own
+-- object graph.
+same("a bound method can be shown",
+     "class C {\n    fn m() { return 1 }\n}\nlet inst = C()\n" +
+     "let f = inst.m\nshow f()\nshow inst.m")
+
 -- Every operator the parser produces, in one program. `is` was in the
 -- grammar, in the reference under Logical operators and in this engine's
 -- interpreter, and the bytecode compiler had never heard of it: the whole

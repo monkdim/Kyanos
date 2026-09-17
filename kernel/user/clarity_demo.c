@@ -412,20 +412,53 @@ static char* cl_to_cstr(Value v){
 }
 
 /* repr quotes strings and recurses into collections (used inside [] and {}) */
+/* The containers between here and the top of a rendering. A value that
+   refers to itself used to walk into itself until the stack ran out, and
+   here that was not an error message but a segmentation fault: `mut a = {}`,
+   `a["self"] = a`, `show a` left exit status 139 and nothing on either
+   stream. One that is already open renders as {...} or [...], the same as
+   both other engines, and comes off again on the way out -- so a value that
+   merely appears twice still prints twice. It is a cycle that is elided,
+   not sharing.
+
+   Static and single-threaded, like the rest of this runtime. Sixty-four is
+   past any nesting a rendering reaches in practice, and overflowing it only
+   costs the elision, never the stack. */
+static const void* cl_open[64];
+static int cl_open_n = 0;
+static int cl_is_open(const void* o){
+  for(int i=0;i<cl_open_n;i++) if(cl_open[i]==o) return 1;
+  return 0;
+}
+static int cl_open_push(const void* o){
+  if(cl_open_n >= 64) return 0;
+  cl_open[cl_open_n++] = o;
+  return 1;
+}
+static void cl_open_pop(int pushed){ if(pushed) cl_open_n--; }
+
 static char* cl_repr(Value v){
   if(v.t==T_STR){
     size_t n=strlen(v.s); char* out=(char*)cl_alloc(n+3);
     out[0]='"'; memcpy(out+1, v.s, n); out[n+1]='"'; out[n+2]=0; return out;
   }
   if(v.t==T_LIST){
+    if(cl_is_open(v.o)){ char* out=(char*)cl_alloc(6); strcpy(out, "[...]"); return out; }
+    int pushed = cl_open_push(v.o);
     List* l=(List*)v.o; char* out=(char*)cl_alloc(2); strcpy(out, "[");
     for(long j=0;j<l->len;j++){ if(j) out=cl_cat(out, ", "); out=cl_cat(out, cl_repr(l->items[j])); }
-    return cl_cat(out, "]");
+    out = cl_cat(out, "]");
+    cl_open_pop(pushed);
+    return out;
   }
   if(v.t==T_MAP){
+    if(cl_is_open(v.o)){ char* out=(char*)cl_alloc(6); strcpy(out, "{...}"); return out; }
+    int pushed = cl_open_push(v.o);
     Map* m=(Map*)v.o; char* out=(char*)cl_alloc(2); strcpy(out, "{");
     for(long j=0;j<m->len;j++){ if(j) out=cl_cat(out, ", "); out=cl_cat(out, m->keys[j]); out=cl_cat(out, ": "); out=cl_cat(out, cl_repr(m->vals[j])); }
-    return cl_cat(out, "}");
+    out = cl_cat(out, "}");
+    cl_open_pop(pushed);
+    return out;
   }
   return cl_to_cstr(v);
 }
@@ -434,6 +467,18 @@ static char* cl_display(Value v){
   if(v.t==T_LIST || v.t==T_MAP) return cl_repr(v);
   if(v.t==T_OBJECT) return cl_obj_display(v);
   return cl_to_cstr(v);
+}
+/* Reference identity: the same object, not merely an equal one. cl_eq on a
+   list or a map is structural, deliberately, so this is the other question.
+   A value with no object behind it compares by what it holds, as == does. */
+static Value cl_same(Value a, Value b){
+  if(a.t != b.t) return cl_bool(0);
+  if(a.t==T_LIST || a.t==T_MAP || a.t==T_OBJECT || a.t==T_CLOSURE || a.t==T_ENUM)
+    return cl_bool(a.o == b.o);
+  if(a.t==T_STR) return cl_bool(strcmp(a.s, b.s)==0);
+  /* cl_equal, not cl_eq: this sits above cl_eq's definition and only the
+     forward declaration of cl_equal is in scope here. */
+  return cl_bool(cl_equal(a, b));
 }
 
 static Value cl_concat(Value a, Value b){
@@ -1183,12 +1228,20 @@ static char* cl_obj_to_string(Value v){
   Obj* o=(Obj*)v.o;
   ClMethod ts = cl_find_method(o->cls, "to_string");
   ClHandler h; h.prev = cl_handlers; cl_handlers = &h;
+  /* This is the one place a longjmp can land in the middle of a rendering,
+     so it is the one place the open-container stack has to be put back:
+     cl_open_pop runs on the way out of cl_repr, and a throw from inside a
+     to_string() skips those returns. Left unrestored, every later rendering
+     in the program would think those containers were still open and elide
+     them. */
+  int open_at_entry = cl_open_n;
   if(setjmp(h.buf) == 0){
     char* out = cl_display(ts(v, 0, 0));
     cl_handlers = h.prev;
     return out;
   }
   cl_handlers = h.prev;
+  cl_open_n = open_at_entry;
   return cl_obj_default_display(o);
 }
 

@@ -323,6 +323,15 @@ lands with codegen tests that diff native output against the interpreter.
   the next one added cannot go missing the same way. The VM's unary compiler also gained the
   `else` its binary neighbour always had: an operator it did not know used to emit nothing and
   leave the operand on the stack.
+- **A value that refers to itself can be shown (done).** A tree with parent links, a graph,
+  anything doubly linked: printing one ran every engine out of stack, and a compiled binary
+  segfaulted with nothing on either stream. The containers between a rendering and its top are
+  remembered now, and one already open prints as `{...}` or `[...]`; a value that merely appears
+  twice still prints twice. It needed the language to be able to ask about reference identity —
+  `==` on a container is structural, and comparing two cyclic values that way is the same
+  infinite walk — so `identical(a, b)` is a new builtin, registered in all six places a builtin
+  has to be. The VM's own bound-method value could not be shown either, for the same reason one
+  level down.
 - **An unknown name is a Clarity error (done).** A name that resolved to nothing was emitted as
   `v_name` and reported by the C compiler as an undeclared identifier — an error about generated
   code, naming a variable the program never wrote. The backend tracks what is in scope now and

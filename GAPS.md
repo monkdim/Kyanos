@@ -703,6 +703,65 @@ parsed.
 had stopped parsing and nothing noticed — now parses every reference block
 too. Restoring either broken example fails it.
 
+### A value that refers to itself took the program down
+Fixed in all three. A structure that points back at itself — a tree with
+parent links, a graph, anything doubly linked — could not be printed:
+
+```clarity
+mut a = {}
+a["self"] = a
+show a
+```
+```
+clarity run   RangeError: Maximum call stack size exceeded.
+--fast        RangeError: Maximum call stack size exceeded.
+clarity cc    Segmentation fault (exit 139, nothing on either stream)
+```
+
+The same for a list. Every rendering path walked in and recursed until the
+stack ran out, and natively that was not a message but a dead process.
+
+The containers between a rendering and its top are remembered now, and one
+that is already open prints as `{...}` or `[...]`, which is what Python does.
+They come off again on the way out, so a value that merely *appears* twice
+still prints twice: it is a cycle that is elided, not sharing. Checked both
+ways, and the compiled binary now exits 0 with `{self: {...}}` where it used
+to exit 139 with nothing.
+
+**Which needed the language to be able to ask about identity.** Membership in
+that set cannot be `contains`: `==` on a list or a map is structural in every
+engine — deliberately, that was a fix of its own — and asking whether one
+cyclic value equals another is the same infinite walk this is here to stop.
+So there is a new builtin:
+
+```clarity
+let xs = [1, 2]
+identical(xs, xs)        -- true
+identical(xs, [1, 2])    -- false
+xs == [1, 2]             -- true
+```
+
+It is registered in all six places a builtin has to be — the runtime, the
+interpreter, the VM, the type checker, both transpiler import headers — and
+in the native backend's table, which `test_runtime_surface.clarity` and the
+codegen suite's own cross-check both enforce. It is a small addition to the
+language's surface and a deliberate one; a program had no way to ask this
+question before, and the fix above needed it answered.
+
+**And one of this engine's own values could not be shown.** A method taken
+off an instance, `let f = inst.m`, called correctly under `--fast` but ran the
+stack out when *displayed*: VMBoundMethod had no rendering, so the VM fell
+through to the host's `str()`, which walked the VM's own object graph —
+instance to class to methods and back. It renders as the interpreter renders
+it now.
+
+That wording, `<builtin>` for a method the program itself wrote, is the
+interpreter's host closure showing through, the same shape as `len(instance)`
+answering 3 — and `clarity cc` says `<closure>`. Saying `<fn m>` in all three
+needs the interpreter to carry the method's name through the closure it binds
+it into; that stays filed rather than half-done here, and the crash is gone
+either way.
+
 ### Mid-run garbage collection kills a program on darwin-arm64
 `CLARITY_GC=1` turns on mid-run collection in a compiled binary. On
 darwin-arm64 a program that holds **two** live allocations across a collection

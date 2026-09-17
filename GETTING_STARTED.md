@@ -438,6 +438,7 @@ let regex = r"^\d{3}-\d{4}$"      -- no escape processing
 | `show` | Print values |
 | `len(x)` | Length of string, list, or map |
 | `type(x)` | Get type name |
+| `identical(a, b)` | Whether two values are the same object, where `==` compares contents |
 | `str(x)`, `int(x)`, `float(x)`, `bool(x)` | Type conversion |
 | `range(n)`, `range(start, end)` | Number sequences |
 | `map(list, fn)`, `filter(list, fn)`, `reduce(list, fn, init)` | Collection transforms |

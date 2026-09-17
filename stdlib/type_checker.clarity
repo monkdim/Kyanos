@@ -22,6 +22,7 @@ let BUILTIN_TYPES = {
     "keys": "list", "values": "list", "entries": "list",
     "merge": "map", "has": "bool",
     "push": "null", "pop": "any", "sort": "list", "reverse": "list",
+    "identical": "bool",
     "map": "list", "filter": "list", "reduce": "any", "find": "any",
     "every": "bool", "some": "bool", "each": "null",
     "flat": "list", "zip": "list", "unique": "list",
