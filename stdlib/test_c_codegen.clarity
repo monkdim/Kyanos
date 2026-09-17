@@ -1014,6 +1014,57 @@ if CC == null {
         "show len(keys(pairs))\n" +
         "show pairs[\"99\"]")
 
+    -- ── an enum as a value ────────────────────────────────
+    -- An enum was a compile-time table and nothing else, so a bare mention of
+    -- one emitted a v_C that nothing declared: `show C` failed inside the C
+    -- compiler. It is a value now (T_ENUM), while member access where the
+    -- enum is *named* still resolves while compiling -- which is faster and
+    -- keeps the compile-time error for a member that does not exist.
+
+    same("enum_as_a_value",
+        "enum C { A = 1, B = 2 }\n" +
+        "show C\n" +
+        "show str(C)\n" +
+        "show type(C)\n" +
+        "show C == C\n" +
+        "show [C, C]")
+    same("enum_passed_and_read_dynamically",
+        "enum Color { Red = \"#F00\", Green = \"#0F0\" }\n" +
+        "fn describe(e) { return str(e) + \" has \" + str(len(e.names())) + \" members\" }\n" +
+        "show describe(Color)\n" +
+        "let e = Color\n" +
+        "show e.Red\n" +
+        "show e.names()\n" +
+        "show e.values()\n" +
+        "show e.entries()\n" +
+        "show e.has(\"Red\")\n" +
+        "show e.has(\"Mauve\")\n" +
+        "let f = e.names\n" +
+        "show f()")
+    -- The wording is asserted rather than the whole string, because a
+    -- compiled binary carries no line number on a runtime error and the
+    -- interpreter does -- a gap of its own, filed, and the same for every
+    -- error kind rather than anything to do with enums.
+    same("enum_errors_dynamically",
+        "enum Color { Red = \"#F00\" }\n" +
+        "let e = Color\n" +
+        "try { show e.Mauve } catch err { show contains(str(err), \"Enum Color has no member 'Mauve'\") }\n" +
+        "try { show e[\"Red\"] } catch err2 { show contains(str(err2), \"Cannot index into enum\") }")
+    same("enum_captured_by_a_closure",
+        "enum C { A = 1 }\n" +
+        "fn f() {\n" +
+        "    let g = fn() { return str(C) + \" \" + str(C.A) }\n" +
+        "    return g()\n" +
+        "}\n" +
+        "show f()")
+    same_gc("enum_value_gc",
+        "enum Color { Red = \"#F00\", Green = \"#0F0\", Blue = \"#00F\" }\n" +
+        "mut acc = []\n" +
+        "for i in range(200) { push(acc, str(Color) + str(len(Color.names()))) }\n" +
+        "show len(acc)\n" +
+        "show acc[199]\n" +
+        "show Color.values()")
+
     -- ── slices ────────────────────────────────────────────
     -- `xs[1..3]` did not compile at all: SliceExpression had no case in the
     -- C backend. The interpreter walks the value with plain indexing, which

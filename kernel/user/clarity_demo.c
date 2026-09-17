@@ -63,12 +63,19 @@ static char** cl_argv = 0;
 #define GC_CAPTURE_STACK_BASE() do { char __b; gc_stack_base = &__b; } while(0)
 #endif
 
-typedef enum { T_NULL, T_BOOL, T_INT, T_FLOAT, T_STR, T_LIST, T_MAP, T_OBJECT, T_CLOSURE } Tag;
+typedef enum { T_NULL, T_BOOL, T_INT, T_FLOAT, T_STR, T_LIST, T_MAP, T_OBJECT, T_CLOSURE, T_ENUM } Tag;
 typedef struct Value Value;
 struct Value { Tag t; long i; double f; const char* s; void* o; };
 typedef struct { Value* items; long len; long cap; } List;
 typedef struct { char** keys; Value* vals; long len; long cap; } Map;
 typedef struct { const char* cls; Value fields; } Obj;
+/* An enum is a value, not only a compile-time table: `show C` prints
+   <enum C>, `type(C)` is "enum", and one can be passed to a function or put
+   in a list, all of which `clarity run` and `run --fast` allow. Member access
+   still resolves at compile time where the enum is named directly -- that is
+   faster and it catches a bad member while compiling -- and this is what a
+   *mention* of the enum itself becomes. */
+typedef struct { const char* name; Value members; } EnumV;
 
 /* closures: a function pointer over (arg-array, capture-array) plus the
    captured values (snapshotted by value at creation) */
@@ -311,6 +318,8 @@ static char* cl_to_cstr(Value v){
   if(v.t==T_LIST || v.t==T_MAP) return cl_repr(v);
   if(v.t==T_OBJECT) return cl_obj_display(v);
   if(v.t==T_CLOSURE){ char* b=(char*)cl_alloc(16); strcpy(b, "<closure>"); return b; }
+  if(v.t==T_ENUM){ EnumV* e=(EnumV*)v.o; long n=(long)strlen(e->name)+10;
+    char* b=(char*)cl_alloc(n); snprintf(b, n, "<enum %s>", e->name); return b; }
   char* buf = (char*)cl_alloc(64);
   switch(v.t){
     case T_NULL: strcpy(buf, "null"); return buf;
@@ -421,6 +430,7 @@ static int cl_truthy(Value v){
     case T_MAP: return ((Map*)v.o)->len!=0;
     case T_OBJECT: return 1;
     case T_CLOSURE: return 1;
+    case T_ENUM: return 1;
   }
   return 0;
 }
@@ -459,7 +469,7 @@ static int cl_equal(Value a, Value b){
     }
     return 1;
   }
-  if(a.t==T_OBJECT || a.t==T_CLOSURE) return a.o==b.o;
+  if(a.t==T_OBJECT || a.t==T_CLOSURE || a.t==T_ENUM) return a.o==b.o;
   return a.i==b.i;
 }
 static Value cl_eq(Value a, Value b){ return cl_bool(cl_equal(a,b)); }
@@ -579,6 +589,12 @@ static void cl_index_set(Value c, Value k, Value val){
   else if(c.t==T_MAP){ char* ks=cl_to_cstr(k); cl_map_put(c, ks, val); }
   else if(c.t==T_OBJECT){ Obj* o=(Obj*)c.o; char* ks=cl_to_cstr(k); cl_map_put(o->fields, ks, val); }
 }
+static Value cl_enum_new(const char* name, Value members){
+  EnumV* e=(EnumV*)cl_alloc(sizeof(EnumV));
+  e->name=name; e->members=members;
+  Value v=cl_null(); v.t=T_ENUM; v.o=e; return v;
+}
+
 /* Indexing the way a slice does it: Interpreter._slice_range walks the value
    with a plain `lst[i]`, and _slice_range and its friends are module-level
    Clarity run by the host runtime rather than by the evaluator -- so inside a
@@ -688,6 +704,15 @@ static Value cl_get_field(Value obj, const char* name){
   Map* m=0;
   if(obj.t==T_OBJECT) m=(Map*)((Obj*)obj.o)->fields.o;   /* instance field map */
   else if(obj.t==T_MAP) m=(Map*)obj.o;                    /* map.key sugar for map["key"] */
+  else if(obj.t==T_ENUM){
+    /* A member is the value itself; the four methods bind to the enum. An
+       unknown name raises the interpreter's error, from cl_builtin_method. */
+    EnumV* e=(EnumV*)obj.o;
+    Map* em=(Map*)e->members.o;
+    for(long j=0;j<em->len;j++) if(!strcmp(em->keys[j], name)) return em->vals[j];
+    if(!cl_bm_known(obj, name)) return cl_builtin_method(obj, name, 0, 0);
+    return cl_bound_builtin_method(obj, name);
+  }
   else if(cl_has_builtin_methods(obj)){
     /* A list, a string or a number has methods rather than fields, and
        naming one without calling it binds it to its receiver. An unknown
@@ -1244,6 +1269,7 @@ static Value cl_type_of(Value v){
   if(v.t==T_LIST) return cl_str("list");
   if(v.t==T_MAP) return cl_str("map");
   if(v.t==T_CLOSURE) return cl_str("function");
+  if(v.t==T_ENUM) return cl_str("enum");
   if(v.t==T_OBJECT) return cl_str(((Obj*)v.o)->cls);
   return cl_str("null");
 }
@@ -1446,6 +1472,18 @@ static Value cl_builtin_method(Value self, const char* m, Value* a, long n){
     snprintf(buf, sizeof buf, "RuntimeError: List has no property '%s'", m);
     cl_throw(cl_str(cl_strdup(buf)));
   }
+  if(self.t==T_ENUM){
+    /* The four an enum answers whatever its members are, exactly as
+       Interpreter._access_member does -- each building a fresh value, so a
+       caller that mutates what it got back does not change the next call. */
+    EnumV* e=(EnumV*)self.o;
+    if(!strcmp(m,"names")) return cl_keys(e->members);
+    if(!strcmp(m,"values")) return cl_values(e->members);
+    if(!strcmp(m,"entries")) return cl_entries(e->members);
+    if(!strcmp(m,"has")) return cl_has(e->members, cl_bm_arg(a,n,0));
+    snprintf(buf, sizeof buf, "RuntimeError: Enum %s has no member '%s'", e->name, m);
+    cl_throw(cl_str(cl_strdup(buf)));
+  }
   if(self.t==T_STR){
     if(!strcmp(m,"length") || !strcmp(m,"count")) return cl_int((long)strlen(self.s));
     if(!strcmp(m,"upper")) return cl_upper(self);
@@ -1478,7 +1516,7 @@ static Value cl_builtin_method(Value self, const char* m, Value* a, long n){
   return cl_null();
 }
 static int cl_has_builtin_methods(Value v){
-  return v.t==T_LIST || v.t==T_STR || cl_is_num(v);
+  return v.t==T_LIST || v.t==T_STR || v.t==T_ENUM || cl_is_num(v);
 }
 /* Is `name` one of them? Asked before binding, so an unknown name raises the
    interpreter's error at the mention rather than at the call. */
@@ -1486,7 +1524,14 @@ static int cl_bm_known(Value v, const char* m){
   static const char* list_m[] = {"length","count","push","pop","first","last","reverse","sort","join","contains","empty","slice","index","copy",0};
   static const char* str_m[]  = {"length","count","upper","lower","trim","split","replace","contains","starts","ends","chars","reverse","empty","slice","find","repeat",0};
   static const char* num_m[]  = {"abs","str",0};
-  const char** t = v.t==T_LIST ? list_m : (v.t==T_STR ? str_m : num_m);
+  static const char* enum_m[] = {"names","values","entries","has",0};
+  const char** t = v.t==T_LIST ? list_m : (v.t==T_STR ? str_m : (v.t==T_ENUM ? enum_m : num_m));
+  /* A member is a property of *this* enum rather than one of the four, so it
+     is looked up first -- cl_get_field asks cl_bm_known before binding. */
+  if(v.t==T_ENUM){
+    Map* em=(Map*)((EnumV*)v.o)->members.o;
+    for(long j=0;j<em->len;j++) if(!strcmp(em->keys[j], m)) return 1;
+  }
   for(int i=0; t[i]; i++) if(!strcmp(t[i], m)) return 1;
   return 0;
 }
