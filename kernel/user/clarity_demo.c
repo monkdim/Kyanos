@@ -86,7 +86,9 @@ typedef struct { const char* name; Value members; } EnumV;
 typedef struct ClassV ClassV;
 
 /* closures: a function pointer over (arg-array, capture-array) plus the
-   captured values (snapshotted by value at creation) */
+   captured values, taken at creation. A name the closure also assigns is
+   captured as the one-slot box that holds it rather than as its value, so the
+   write is visible outside; see cl_box_new. */
 /* Calling conventions carry the argument count.
    Without it a callee cannot tell `f(1)` from `f(1, 2)`, which is what a rest
    parameter needs to know — and what a fixed parameter needs in order to read
@@ -995,6 +997,20 @@ static char* cl_obj_display(Value v){
 }
 
 /* ── closures ── */
+/* A variable that a closure both captures and assigns lives in a one-slot
+   list, so the closure and the scope that made it look at the same slot.
+   Capturing the Value itself snapshots it, and a snapshot is wrong in both
+   directions: a counter never counted (the closure's writes went to its own
+   copy and were lost on return), and a closure made before a later
+   assignment kept reading the old value.
+
+   A one-slot list rather than a new tag because the collector already traces
+   a List, and a box is never handed to a program: only the emitter makes one
+   and only the emitter reads it. */
+static Value cl_box_new(Value v){ return cl_list_add(cl_list_new(), v); }
+static Value cl_box_get(Value b){ return ((List*)b.o)->items[0]; }
+static Value cl_box_set(Value b, Value v){ ((List*)b.o)->items[0] = v; return v; }
+
 static Value cl_closure_new(ClFn fn, Value* cap, int ncap){
   Closure* c=(Closure*)cl_alloc(sizeof(Closure));
   c->fn=fn; c->ncap=ncap;

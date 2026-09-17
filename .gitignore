@@ -39,3 +39,8 @@ editors/vscode/node_modules/
 editors/vscode/out/
 editors/vscode/*.vsix
 editors/vscode/package-lock.json
+
+# examples/fileio.clarity writes these and removes them again; they were
+# committed by accident and reappear as deletions whenever an example runs
+example_output.txt
+people.csv

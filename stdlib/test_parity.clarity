@@ -190,6 +190,21 @@ same("rest parameters", "fn count(...xs) { return len(xs) }\nshow count()\nshow 
 same("rest after fixed", "fn tail(first, ...rest) { return rest }\nshow tail(1, 2, 3)")
 same("closures capture", "fn make(n) { return fn(x) { return x + n } }\nlet add5 = make(5)\nshow add5(3)")
 same("closure over a mutable variable", "mut total = 0\nlet bump = fn() { total += 1 }\nbump()\nbump()\nshow total")
+-- A name a closure both sees and writes is one variable, not a copy per
+-- closure. The native backend had these wrong (it snapshotted the value);
+-- both engines here agree, and these hold them to it, since a regression in
+-- either would be a regression in the specification the native backend is
+-- now written against.
+same("a closure writing a captured local is the same variable", "fn mk() {\n    mut n = 0\n    return fn() { n = n + 1\n        return n }\n}\nlet f = mk()\nshow f(), f(), f()")
+same("two closures over one local share it", "fn counter(start) {\n    mut count = start\n    return { next: fn() { count += 1\n            return count },\n             value: fn() { return count } }\n}\nlet c = counter(0)\nshow c.next()\nshow c.next()\nshow c.value()")
+same("a closure sees an assignment made after it was built", "fn f() {\n    mut n = 0\n    let g = fn() { return n }\n    n = 5\n    return g()\n}\nshow f()")
+same("a closure writing a captured parameter", "fn params(a) {\n    let bump = fn() { a += 1\n        return a }\n    return [bump(), bump(), a]\n}\nshow params(10)")
+same("a closure writing a captured catch binding", "fn catches() {\n    mut e = null\n    try { throw \"boom\" } catch err { e = err }\n    let g = fn() { e = e + \"!\"\n        return e }\n    return g()\n}\nshow catches()")
+same("a closure writing a captured destructured name", "fn destr() {\n    mut [a, b] = [1, 2]\n    let g = fn() { a = a + b\n        return a }\n    return [g(), g(), a]\n}\nshow destr()")
+same("a closure swapping two captured locals", "fn multi() {\n    mut p = 1\n    mut q = 2\n    let g = fn() { p, q = q, p\n        return [p, q] }\n    return [g(), p, q]\n}\nshow multi()")
+same("a closure inside a closure writes the outermost local", "fn deep() {\n    mut n = 0\n    let a = fn() { let b = fn() { n = n + 5 }\n        b()\n        return n }\n    return [a(), n]\n}\nshow deep()")
+same("a comprehension variable shadows a captured local", "fn shadow() {\n    mut x = 1\n    let g = fn() { x = x + 1\n        return x }\n    let ys = [x * 10 for x in [5, 6]]\n    return [g(), ys, x]\n}\nshow shadow()")
+same("a nested fn calls itself", "fn outer(n) {\n    fn fact(k) { if k <= 1 { return 1 }\n        return k * fact(k - 1) }\n    return fact(n)\n}\nshow outer(5)")
 same("lambda shorthand", "show map([1, 2, 3], x => x * 3)")
 same("function as a value", "fn f() { return 1 }\nlet g = f\nshow g()\nshow f")
 same("higher order", "fn apply(f, v) { return f(v) }\nshow apply(x => x + 1, 10)")
