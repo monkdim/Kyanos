@@ -94,6 +94,9 @@ static ClMethodEntry cl_method_table[1024];
 static int cl_method_count = 0;
 
 /* mutually-recursive display + deep-equality forward declarations */
+static char* cl_num_text(double f, char* buf);
+static double cl_trunc(double d);
+static Value cl_intish(double d);
 static char* cl_to_cstr(Value v);
 static char* cl_repr(Value v);
 static char* cl_display(Value v);
@@ -319,6 +322,78 @@ static char* cl_cat(char* a, const char* b){
   return out;
 }
 
+/* JavaScript's Number-to-String, because that is what the other two engines
+   print and matching them is the specification. Three things it gets that
+   printf does not:
+
+     - where the decimal point goes. JS writes a number in fixed notation
+       while its decimal exponent keeps it inside 1e-6 .. 1e21 and in
+       exponential notation outside that, so 1e20 is 100000000000000000000
+       and 1e21 is 1e+21. %g switches at the precision instead, so every
+       number past 1e17 came out as 1e+18.
+     - how many digits. JS prints the shortest digit string that reads back
+       as the same double, so 2 ** 62 is 4611686018427388000 and not the
+       exact 4611686018427387904 that a long holds.
+     - the exponent's spelling. JS writes 1e-7; %g writes 1e-07.
+
+   The shortest round-tripping *scientific* form gives both the digits and
+   the decimal exponent in one go, and the four cases below place the point.
+   strtol rather than atoi so the freestanding profile's <stdlib.h> is
+   enough; %e, which that profile's printf did not have, was added to it for
+   this. Named cl_num_text and not cl_dtoa because the freestanding libc
+   already has a cl_dtoa, with a different job and a different signature. */
+static char* cl_num_text(double f, char* buf){
+  if(f != f){ strcpy(buf, "NaN"); return buf; }
+  if(f > 1.7976931348623157e308){ strcpy(buf, "Infinity"); return buf; }
+  if(f < -1.7976931348623157e308){ strcpy(buf, "-Infinity"); return buf; }
+  if(f == 0.0){ strcpy(buf, "0"); return buf; }
+  int neg = f < 0;
+  double a = neg ? -f : f;
+  char sci[48];
+  int prec = 0;
+  for(; prec < 17; prec++){
+    snprintf(sci, sizeof sci, "%.*e", prec, a);
+    if(strtod(sci, 0) == a) break;
+  }
+  if(prec == 17) snprintf(sci, sizeof sci, "%.17e", a);
+  char digits[32];
+  int k = 0;
+  const char* p = sci;
+  while(*p && *p != 'e'){ if(*p != '.') digits[k++] = *p; p++; }
+  digits[k] = 0;
+  /* n is JS's: the decimal point sits after n digits. */
+  int n = (int)strtol(p + 1, 0, 10) + 1;
+  while(k > 1 && digits[k-1] == '0') digits[--k] = 0;
+  char* o = buf;
+  if(neg) *o++ = '-';
+  if(k <= n && n <= 21){
+    memcpy(o, digits, (size_t)k); o += k;
+    for(int i = 0; i < n - k; i++) *o++ = '0';
+  } else if(0 < n && n <= 21){
+    memcpy(o, digits, (size_t)n); o += n;
+    *o++ = '.';
+    memcpy(o, digits + n, (size_t)(k - n)); o += k - n;
+  } else if(-6 < n && n <= 0){
+    *o++ = '0'; *o++ = '.';
+    for(int i = 0; i < -n; i++) *o++ = '0';
+    memcpy(o, digits, (size_t)k); o += k;
+  } else {
+    *o++ = digits[0];
+    if(k > 1){ *o++ = '.'; memcpy(o, digits + 1, (size_t)(k - 1)); o += k - 1; }
+    *o++ = 'e';
+    int e = n - 1;
+    *o++ = e < 0 ? '-' : '+';
+    if(e < 0) e = -e;
+    char eb[8];
+    int el = 0;
+    if(e == 0) eb[el++] = '0';
+    while(e > 0){ eb[el++] = (char)('0' + e % 10); e /= 10; }
+    while(el > 0) *o++ = eb[--el];
+  }
+  *o = 0;
+  return buf;
+}
+
 static char* cl_to_cstr(Value v){
   if(v.t==T_LIST || v.t==T_MAP) return cl_repr(v);
   if(v.t==T_OBJECT) return cl_obj_display(v);
@@ -330,17 +405,7 @@ static char* cl_to_cstr(Value v){
     case T_NULL: strcpy(buf, "null"); return buf;
     case T_BOOL: strcpy(buf, v.i ? "true" : "false"); return buf;
     case T_INT: snprintf(buf, 64, "%ld", v.i); return buf;
-    case T_FLOAT:
-      /* NaN and the infinities print as JavaScript names them, because that
-         is what the other two engines show — C's own spelling is "-nan". */
-      if(v.f != v.f){ strcpy(buf, "NaN"); return buf; }
-      if(v.f > 1.7976931348623157e308){ strcpy(buf, "Infinity"); return buf; }
-      if(v.f < -1.7976931348623157e308){ strcpy(buf, "-Infinity"); return buf; }
-      if(v.f == (double)(long)v.f && v.f < 1e18 && v.f > -1e18){ snprintf(buf, 64, "%ld", (long)v.f); return buf; }
-      /* shortest %g precision that round-trips — matches JS number formatting
-         (3.14, not 3.1400000000000001) */
-      for(int prec=1; prec<=17; prec++){ snprintf(buf, 64, "%.*g", prec, v.f); if(strtod(buf, 0)==v.f) break; }
-      return buf;
+    case T_FLOAT: return cl_num_text(v.f, buf);
     case T_STR: return (char*)v.s;
     default: return buf;
   }
@@ -378,18 +443,35 @@ static Value cl_concat(Value a, Value b){
   return cl_str(out);
 }
 
+/* A T_INT is only ever a value a double holds exactly. Past 2^53 the other
+   two engines are already rounding — every number they have is a double — so
+   an integer result that leaves the range becomes a float here and prints the
+   way they print it. Without this, `4611686018427387904 * 4` was 384 (a long
+   wrapping) where they say 18446744073709552000, and `9223372036854775807 + 1`
+   was negative. The bitwise operators keep their own 32-bit rule, which is
+   JavaScript's and is already matched. */
+/* Toward zero, like JS's parseInt/Math.trunc, and defined for magnitudes a
+   long cannot hold. */
+static double cl_trunc(double d){
+  if(d != d) return 0.0;
+  return d < 0 ? -floor(-d) : floor(d);
+}
+static Value cl_intish(double d){
+  if(d >= -9007199254740991.0 && d <= 9007199254740991.0) return cl_int((long)d);
+  return cl_float(d);
+}
 static Value cl_add(Value a, Value b){
   if(a.t==T_STR || b.t==T_STR) return cl_concat(a, b);
   if(a.t==T_FLOAT || b.t==T_FLOAT) return cl_float(cl_num(a)+cl_num(b));
-  return cl_int(a.i+b.i);
+  return cl_intish((double)a.i + (double)b.i);
 }
 static Value cl_sub(Value a, Value b){
   if(a.t==T_FLOAT || b.t==T_FLOAT) return cl_float(cl_num(a)-cl_num(b));
-  return cl_int(a.i-b.i);
+  return cl_intish((double)a.i - (double)b.i);
 }
 static Value cl_mul(Value a, Value b){
   if(a.t==T_FLOAT || b.t==T_FLOAT) return cl_float(cl_num(a)*cl_num(b));
-  return cl_int(a.i*b.i);
+  return cl_intish((double)a.i * (double)b.i);
 }
 /* Dividing by zero is an error, as in both other engines; it answered 0 here,
    so a `try` around a division never fired and the wrong number carried on. */
@@ -407,7 +489,7 @@ static Value cl_mod(Value a, Value b){
 }
 static Value cl_pow(Value a, Value b){
   if(a.t==T_INT && b.t==T_INT && b.i>=0){
-    long r=1, base=a.i, e=b.i; while(e-->0) r*=base; return cl_int(r);
+    double r=1, base=(double)a.i; long e=b.i; while(e-->0) r*=base; return cl_intish(r);
   }
   return cl_float(pow(cl_num(a), cl_num(b)));
 }
@@ -415,11 +497,31 @@ static Value cl_pow(Value a, Value b){
    signed 32-bit, shift counts masked to 5 bits, results are signed 32-bit.
    (`int` is 32-bit on every platform we target.) 64-bit/unsigned bitwise is a
    tracked follow-up — it needs the numeric tower to grow past JS doubles. */
-static Value cl_band(Value a, Value b){ return cl_int((long)((int)a.i & (int)b.i)); }
-static Value cl_bor(Value a, Value b){ return cl_int((long)((int)a.i | (int)b.i)); }
-static Value cl_bxor(Value a, Value b){ return cl_int((long)((int)a.i ^ (int)b.i)); }
-static Value cl_shl(Value a, Value b){ return cl_int((long)((int)a.i << ((int)b.i & 31))); }
-static Value cl_shr(Value a, Value b){ return cl_int((long)((int)a.i >> ((int)b.i & 31))); }
+/* JavaScript's ToInt32, which is what the operand of a bitwise operator goes
+   through in both other engines: truncate toward zero, take it modulo 2^32,
+   read the result as signed. Reading `a.i` instead was right only for a
+   T_INT — a T_FLOAT carries its value in `.f` and leaves `.i` at zero, so
+   `1.5 & 3` was 0 where both other engines say 1, and, once an integer result
+   that leaves the exact range became a float, so was every masked value in
+   sha256. */
+static int cl_to_int32(Value v){
+  double d = cl_num(v);
+  if(d != d) return 0;
+  if(d > 1.7976931348623157e308 || d < -1.7976931348623157e308) return 0;
+  d = fmod(cl_trunc(d), 4294967296.0);
+  if(d < 0) d += 4294967296.0;
+  return (int)(unsigned int)d;
+}
+static Value cl_band(Value a, Value b){ return cl_int((long)(cl_to_int32(a) & cl_to_int32(b))); }
+static Value cl_bor(Value a, Value b){ return cl_int((long)(cl_to_int32(a) | cl_to_int32(b))); }
+static Value cl_bxor(Value a, Value b){ return cl_int((long)(cl_to_int32(a) ^ cl_to_int32(b))); }
+/* The shift count is masked to five bits, and a left shift is done on the
+   unsigned value: shifting a 1 into the sign bit of a signed int is undefined
+   in C, and `1 << 31` is a number both other engines are happy to produce. */
+static Value cl_shl(Value a, Value b){
+  return cl_int((long)(int)((unsigned int)cl_to_int32(a) << (cl_to_int32(b) & 31)));
+}
+static Value cl_shr(Value a, Value b){ return cl_int((long)(cl_to_int32(a) >> (cl_to_int32(b) & 31))); }
 static Value cl_neg(Value a){
   if(a.t==T_FLOAT) return cl_float(-a.f);
   return cl_int(-a.i);
@@ -1270,7 +1372,14 @@ static Value cl_is_alnum(Value v){ const char* s=v.s; if(!s[0]) return cl_bool(0
 static Value cl_is_space(Value v){ const char* s=v.s; if(!s[0]) return cl_bool(0); for(size_t i=0;s[i];i++) if(!isspace((unsigned char)s[i])) return cl_bool(0); return cl_bool(1); }
 
 /* ── app stdlib: string/number conversion ── */
-static Value cl_conv_int(Value v){ if(v.t==T_STR) return cl_int(strtol(v.s, 0, 10)); if(v.t==T_FLOAT) return cl_int((long)v.f); if(v.t==T_BOOL) return cl_int(v.i); return cl_int(v.i); }
+/* int() goes through cl_intish for the same reason: strtol clamps at
+   LONG_MAX and (long)v.f is undefined past it, where the other two engines
+   answer with the double. */
+static Value cl_conv_int(Value v){
+  if(v.t==T_STR) return cl_intish(cl_trunc(strtod(v.s, 0)));
+  if(v.t==T_FLOAT) return cl_intish(cl_trunc(v.f));
+  return cl_int(v.i);
+}
 static Value cl_conv_float(Value v){ if(v.t==T_STR) return cl_float(strtod(v.s, 0)); return cl_float(cl_num(v)); }
 
 #ifndef CLARITY_FREESTANDING

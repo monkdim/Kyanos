@@ -132,6 +132,49 @@ static void fmt_g(Sink* s, double x, int prec, int alt) {
     }
 }
 
+/* %e, per ISO C: one digit before the point and `prec` after it, always in
+ * scientific notation, with the exponent in at least two digits. The Clarity
+ * runtime asks for it because the shortest round-tripping scientific form is
+ * what gives it a number's digits and its decimal exponent in one call; %g
+ * cannot serve, because it drops back to fixed notation and strips zeros. */
+static void fmt_e(Sink* s, double x, int prec) {
+    union { double d; unsigned long u; } b;
+    b.d = x;
+    int neg = (int)(b.u >> 63);
+    unsigned long expfield = (b.u >> 52) & 0x7FF;
+    unsigned long frac = b.u & 0x000FFFFFFFFFFFFFUL;
+
+    if (expfield == 0x7FF) {
+        if (frac) { sink_puts(s, "nan", 3); return; }
+        if (neg) sink_putc(s, '-');
+        sink_puts(s, "inf", 3);
+        return;
+    }
+    if (neg) sink_putc(s, '-');
+    if (prec < 0) prec = 6;
+    if (prec > CL_DTOA_MAX_DIGITS - 1) prec = CL_DTOA_MAX_DIGITS - 1;
+
+    int decexp = 0;
+    char digits[CL_DTOA_MAX_DIGITS + 1];
+    if (expfield == 0 && frac == 0) {
+        for (int i = 0; i <= prec; i++) digits[i] = '0';
+        digits[prec + 1] = 0;
+    } else {
+        cl_dtoa(x, prec + 1, digits, &decexp);
+    }
+
+    sink_putc(s, digits[0]);
+    if (prec > 0) { sink_putc(s, '.'); sink_puts(s, digits + 1, (size_t)prec); }
+    sink_putc(s, 'e');
+    int ev = decexp;
+    sink_putc(s, ev < 0 ? '-' : '+');
+    if (ev < 0) ev = -ev;
+    char eb[8];
+    int en = utoa((unsigned long)ev, 10, 0, eb);
+    if (en < 2) sink_putc(s, '0');
+    sink_puts(s, eb, (size_t)en);
+}
+
 static void format(Sink* s, const char* fmt, va_list ap) {
     for (const char* p = fmt; *p; p++) {
         if (*p != '%') { sink_putc(s, *p); continue; }
@@ -209,6 +252,13 @@ static void format(Sink* s, const char* fmt, va_list ap) {
             if (!left) pad(s, ' ', padn);
             sink_puts(s, v, n);
             if (left) pad(s, ' ', padn);
+            continue;
+        }
+        case 'e': case 'E': {
+            double v = va_arg(ap, double);
+            /* Width and zero padding are not applied, for the same reason as
+             * %g below. */
+            fmt_e(s, v, prec);
             continue;
         }
         case 'g': case 'G': {

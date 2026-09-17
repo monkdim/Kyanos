@@ -148,6 +148,56 @@ if CC == null {
     same("arithmetic", "show 2 + 3 * 4\nshow 10 - 6 / 2\nshow 2 ** 10\nshow 17 % 5\nshow -(4 + 1)")
     same("integer_div_float", "show 12 / 4\nshow 7 / 2")
     same("float_math", "show 1.5 + 2.5\nshow 3.0 * 2.0\nshow 10.0 / 4.0")
+
+    -- ── numbers are doubles, and print as doubles ──────────
+    --
+    -- Every number in the other two engines is a double, and what they print
+    -- is JavaScript's Number-to-String. A native build had a long for whole
+    -- numbers and %g for the rest, and disagreed three ways: the literal
+    -- 100000000000000000000 overflowed the long and came out
+    -- 7766279631452241920, 4611686018427387904 * 4 wrapped to 384, and
+    -- everything past 1e17 printed as 1e+18 rather than in full.
+    same("number_literal_past_the_exact_range",
+        "show 100000000000000000000\n" +
+        "show 0xFFFFFFFFFFFFFFFF\n" +
+        "show 123456789012345678\n" +
+        "show 9007199254740991\n" +
+        "show 9007199254740992\n" +
+        "show -9007199254740992")
+    same("number_prints_where_javascript_puts_the_point",
+        "show 1e17\nshow 1e18\nshow 1e20\nshow 1e21\nshow 1e22\n" +
+        "show 1.5e20\nshow 1e-6\nshow 1e-7\nshow 1.5e-7\nshow 1e-300\n" +
+        "show 0.1 + 0.2\nshow 1 / 3\nshow 3.14\nshow 1.0\nshow -0.0")
+    same("integer_arithmetic_that_leaves_the_exact_range",
+        "show 4611686018427387904 * 4\n" +
+        "show 9223372036854775807 + 1\n" +
+        "show -9007199254740992 - 10\n" +
+        "show 9007199254740992 + 9007199254740992\n" +
+        "show 3000000000 * 3000000000\n" +
+        "show 2 ** 53\nshow 2 ** 62\nshow 2 ** 64\n" +
+        "show 3 ** 40\nshow 7 ** 25\nshow 10 ** 22\n" +
+        "show 1e308 * 10")
+    same("int_of_a_number_too_big_for_a_long",
+        "show int(\"100000000000000000000\")\n" +
+        "show int(1e20)\nshow int(42)\nshow int(-3.9)\nshow int(3.9)\n" +
+        "show int(\"42\")")
+    -- A bitwise operand goes through JavaScript's ToInt32 in both other
+    -- engines. Reading `a.i` was right only for a T_INT: a T_FLOAT carries
+    -- its value in `.f` and leaves `.i` at zero, so `1.5 & 3` was 0 where
+    -- they both say 1 — and once an integer result that leaves the exact
+    -- range became a float, every masked value in sha256 went the same way.
+    same("bitwise_operands_go_through_to_int32",
+        "show 1.5 & 3\nshow -1.5 | 0\nshow 2.9 ^ 1\n" +
+        "show 4294967296 & 0xFF\nshow 4294967297 & 0xFF\n" +
+        "show 9007199254740993 & 0xFF\n" +
+        "show (1 << 31)\nshow (1 << 31) >> 1\nshow -8 >> 1\n" +
+        "show 1e20 & 0xFF\nshow 0xFFFFFFFF & 0xFF00")
+
+    -- The exponent the reference has always documented and the scanner never
+    -- read: `let x = 1.5e10` was 1.5 followed by the identifier e10.
+    same("float_exponent_literals",
+        "show 1.5e10\nshow 2.0E-3\nshow 1e3\nshow 1.5e-3\nshow 3e0\n" +
+        "show 6.02e23\nshow type(1e3)\nshow type(1.5e10)\nshow type(1.5e-3)")
     same("booleans", "show true\nshow false\nshow not true\nshow 5 > 3 and 2 < 1")
     same("comparisons", "show 5 > 3\nshow 3 >= 3\nshow 2 == 2\nshow 2 != 3\nshow \"a\" < \"b\"")
     same("variables", "let x = 40\nmut y = 2\ny = y + x\ny += 1\nshow y")

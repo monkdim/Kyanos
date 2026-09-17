@@ -26,7 +26,7 @@ static void emit(double x) {
     snprintf(b17, sizeof(b17), "%.17g", x);
     snprintf(b1, sizeof(b1), "%.1g", x);
 
-    /* The runtime's own loop: the fewest digits that read back identically. */
+    /* The fewest %g digits that read back identically. */
     int prec = 17;
     for (int p = 1; p <= 17; p++) {
         char t[64];
@@ -35,10 +35,30 @@ static void emit(double x) {
     }
     snprintf(shortest, sizeof(shortest), "%.*g", prec, x);
 
+    /* And the same in scientific notation, which is the loop the runtime
+     * actually runs: cl_num_text takes the shortest round-tripping %e form
+     * because that hands it the digits and the decimal exponent together,
+     * and then places the decimal point itself. %e did not exist in this
+     * library until that loop needed it, and a compiled Clarity program
+     * printed the format string where a number should have been. */
+    char e17[64], e0[64], eshort[64];
+    snprintf(e17, sizeof(e17), "%.17e", x);
+    snprintf(e0, sizeof(e0), "%.0e", x);
+    int eprec = 17;
+    for (int p = 0; p <= 17; p++) {
+        char t[64];
+        snprintf(t, sizeof(t), "%.*e", p, x);
+        if (strtod(t, 0) == x) { eprec = p; break; }
+    }
+    snprintf(eshort, sizeof(eshort), "%.*e", eprec, x);
+
     Bits back; back.d = strtod(b17, 0);
+    Bits eback; eback.d = strtod(e17, 0);
     Bits orig; orig.d = x;
-    printf("%s|%s|%s|%d|%s\n", b17, b1, shortest, prec,
-           back.u == orig.u ? "rt" : "BROKEN");
+    printf("%s|%s|%s|%d|%s|%s|%s|%s|%d|%s\n", b17, b1, shortest, prec,
+           back.u == orig.u ? "rt" : "BROKEN",
+           e17, e0, eshort, eprec,
+           eback.u == orig.u ? "ert" : "EBROKEN");
 }
 
 int main(void) {
