@@ -5,14 +5,14 @@ Thanks for your interest in contributing to Clarity! This guide covers how to bu
 ## Prerequisites
 
 - [Bun](https://bun.sh) (latest) — used to compile the native binary
-- A working `clarity` binary (download from [Releases](https://github.com/monkdim/Clarity/releases))
+- A working `clarity` binary (download from [Releases](https://github.com/monkdim/Kyanos/releases))
 
 ## Build from Source
 
 Clone the repo and build:
 
 ```bash
-git clone https://github.com/monkdim/Clarity.git
+git clone https://github.com/monkdim/Kyanos.git
 cd Clarity
 
 # Transpile Clarity -> JavaScript
@@ -80,7 +80,7 @@ registry/        Docker setup for package registry
 
 ## Reporting Issues
 
-Open an issue at [github.com/monkdim/Clarity/issues](https://github.com/monkdim/Clarity/issues) with:
+Open an issue at [github.com/monkdim/Kyanos/issues](https://github.com/monkdim/Kyanos/issues) with:
 - What you expected vs what happened
 - Steps to reproduce
 - Clarity version (`clarity version`)

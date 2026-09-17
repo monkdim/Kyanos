@@ -43,7 +43,7 @@ fn install_self(cli_args) {
         exec("cd " + install_dir + " && git pull --quiet origin main 2>/dev/null || true")
     } else {
         show "  Cloning Clarity..."
-        exec("git clone --quiet https://github.com/monkdim/Clarity.git " + install_dir)
+        exec("git clone --quiet https://github.com/monkdim/Kyanos.git " + install_dir)
     }
 
     -- Build native binary

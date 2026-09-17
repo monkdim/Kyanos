@@ -120,7 +120,7 @@ powershell -c "irm bun.sh/install.ps1 | iex"
 ### Step 3: Download and build Clarity
 
 ```bash
-git clone https://github.com/monkdim/Clarity.git
+git clone https://github.com/monkdim/Kyanos.git
 cd Clarity
 python3 native/transpile.py --bundle
 bun build --compile native/dist/clarity-entry.js --outfile clarity

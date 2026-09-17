@@ -14,7 +14,7 @@ COPY . .
 # release carries a binary the Python bundler does the same job. Either way
 # the bundle is written into an empty native/dist.
 RUN rm -rf native/dist \
-    && if curl -fsSL https://github.com/monkdim/Clarity/releases/latest/download/clarity-linux-x64.tar.gz -o clarity-bootstrap.tar.gz \
+    && if curl -fsSL https://github.com/monkdim/Kyanos/releases/latest/download/clarity-linux-x64.tar.gz -o clarity-bootstrap.tar.gz \
          && tar xzf clarity-bootstrap.tar.gz \
          && chmod +x clarity \
          && mv clarity /usr/local/bin/clarity-bootstrap \

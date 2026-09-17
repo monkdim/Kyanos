@@ -340,7 +340,7 @@ class FakePublisher {
     fn init() { this.published = [] }
     fn publish(opts) {
         push(this.published, opts)
-        return {"ok": true, "url": "https://github.com/monkdim/Clarity/releases/tag/" + opts["tag"]}
+        return {"ok": true, "url": "https://github.com/monkdim/Kyanos/releases/tag/" + opts["tag"]}
     }
 }
 

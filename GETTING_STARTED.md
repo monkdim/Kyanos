@@ -25,17 +25,17 @@ This is the practical reference: how to install, write your first program, learn
 One line on macOS or Linux (x64 or ARM64):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/monkdim/Clarity/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/monkdim/Kyanos/main/install.sh | bash
 ```
 
 With Homebrew, from the formula in this repository:
 
 ```bash
-brew tap monkdim/clarity https://github.com/monkdim/Clarity
+brew tap monkdim/clarity https://github.com/monkdim/Kyanos
 brew install monkdim/clarity/clarity
 ```
 
-Or pick a binary from the [latest release](https://github.com/monkdim/Clarity/releases/latest);
+Or pick a binary from the [latest release](https://github.com/monkdim/Kyanos/releases/latest);
 Windows x64 is there as a zip. Check it with `clarity version` and `clarity smoke`.
 
 ### Build from source
@@ -44,7 +44,7 @@ Requires [Bun](https://bun.sh) (plus Python 3 and `git` for the first bootstrap 
 
 ```bash
 curl -fsSL https://bun.sh/install | bash        # install Bun
-git clone https://github.com/monkdim/Clarity.git
+git clone https://github.com/monkdim/Kyanos.git
 cd Clarity
 python3 native/transpile.py --bundle             # bootstrap the toolchain
 bun build --compile native/dist/clarity-entry.js --outfile clarity
@@ -71,7 +71,7 @@ KyanOS is the operating system written in Clarity. The developer workflow target
 
 ```bash
 brew install qemu zig
-git clone https://github.com/monkdim/Clarity.git
+git clone https://github.com/monkdim/Kyanos.git
 cd Clarity
 clarity os build       # Build the kernel + freestanding runtime + ISO
 clarity os run         # Launch in QEMU with HVF acceleration
@@ -604,7 +604,7 @@ Clarity can compile to a standalone native binary with zero Python dependency.
 curl -fsSL https://bun.sh/install | bash
 
 # Clone and build
-git clone https://github.com/monkdim/Clarity.git
+git clone https://github.com/monkdim/Kyanos.git
 cd Clarity/native
 bash build.sh
 

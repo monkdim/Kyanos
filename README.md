@@ -4,7 +4,7 @@
 
 A modern programming language, and an operating system being written in it. One syntax, one toolchain, one design vocabulary, from the REPL on up. The language builds and runs today from a source checkout; the OS has two kernels that boot and run programs under QEMU, and a desktop that runs hosted and in the browser but not yet on those kernels.
 
-![KyanOS boot splash, Obsidian, the Kyan identity](https://raw.githubusercontent.com/monkdim/Clarity/main/website/screenshots/kyan_splash.png)
+![KyanOS boot splash, Obsidian, the Kyan identity](https://raw.githubusercontent.com/monkdim/Kyanos/main/website/screenshots/kyan_splash.png)
 
 <sub>Rendered by Clarity's own software framebuffer: the faceted-K monogram, the signature violet-to-cyan progress bar, dark glass.</sub>
 
@@ -64,22 +64,22 @@ Every module and kernel file, with who imports it and which bundler ships it, is
 One line on macOS or Linux, x64 or ARM64:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/monkdim/Clarity/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/monkdim/Kyanos/main/install.sh | bash
 ```
 
 Or with Homebrew, from the formula in this repository:
 
 ```bash
-brew tap monkdim/clarity https://github.com/monkdim/Clarity
+brew tap monkdim/clarity https://github.com/monkdim/Kyanos
 brew install monkdim/clarity/clarity
 ```
 
-Or download a binary from the [latest release](https://github.com/monkdim/Clarity/releases/latest). Then `clarity version` prints the version, `clarity smoke` runs 28 checks against the installed binary from any directory, and `clarity run hello.clarity` runs a program.
+Or download a binary from the [latest release](https://github.com/monkdim/Kyanos/releases/latest). Then `clarity version` prints the version, `clarity smoke` runs 28 checks against the installed binary from any directory, and `clarity run hello.clarity` runs a program.
 
 To build from source instead, you need [Bun](https://bun.sh) and Python 3 for the bootstrap.
 
 ```bash
-git clone https://github.com/monkdim/Clarity.git
+git clone https://github.com/monkdim/Kyanos.git
 cd Clarity
 python3 native/transpile.py --bundle
 (cd native/dist && bun build --compile clarity-entry.js --outfile clarity)
@@ -124,19 +124,19 @@ To see the desktop today, run it hosted (`clarity desktop`, needs SDL2) or open 
 
 The desktop, the Obsidian identity composed live: an aurora wallpaper, Compositor windows with Kyan glass chrome (the focused window carries the signature violet-to-cyan rail), soft drop shadows, and the floating glass dock with the Prism game hub pinned first:
 
-![KyanOS desktop, Obsidian](https://raw.githubusercontent.com/monkdim/Clarity/main/website/screenshots/kyan_desktop.png)
+![KyanOS desktop, Obsidian](https://raw.githubusercontent.com/monkdim/Kyanos/main/website/screenshots/kyan_desktop.png)
 
 **Voidrunner**, a playable game built in Clarity, launched from Prism. Dodge the neon debris (arrow keys to move, R to restart); it runs in the composed desktop, hosted or in the browser:
 
-![KyanOS, Voidrunner](https://raw.githubusercontent.com/monkdim/Clarity/main/website/screenshots/kyan_voidrunner.png)
+![KyanOS, Voidrunner](https://raw.githubusercontent.com/monkdim/Kyanos/main/website/screenshots/kyan_voidrunner.png)
 
 Boot splash: the faceted-K monogram on void black, the KyanOS wordmark ("Kyan" in ink, "OS" in signature cyan), and a full-width violet-to-cyan progress bar:
 
-![KyanOS boot splash, Obsidian](https://raw.githubusercontent.com/monkdim/Clarity/main/website/screenshots/kyan_splash.png)
+![KyanOS boot splash, Obsidian](https://raw.githubusercontent.com/monkdim/Kyanos/main/website/screenshots/kyan_splash.png)
 
 Marketing lockup: the gem-cut monogram with its signature-lit edge, and the wordmark:
 
-![KyanOS lockup](https://raw.githubusercontent.com/monkdim/Clarity/main/website/screenshots/kyan_lockup.png)
+![KyanOS lockup](https://raw.githubusercontent.com/monkdim/Kyanos/main/website/screenshots/kyan_lockup.png)
 
 ---
 
