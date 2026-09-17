@@ -290,6 +290,19 @@ lands with codegen tests that diff native output against the interpreter.
   by the same accident, and native said 0 — all three answer the field count now. And a class
   method taken as a value, `let f = d.speak`, raised in a native build where both other engines
   bind it to its receiver.
+- **A builtin's argument count is a Clarity error too (done).** The same undeclared-identifier
+  failure, reached through arity rather than through the name: `_builtin_call` matches a name
+  together with a count, so `sort(xs, cmp)`, `len("ab", "cd")` and `upper("a", "b")` matched no
+  branch and were emitted as `cl_call(v_sort, ...)`. Surplus arguments now take the shape the
+  interpreter gives them — evaluated, then dropped, so `sort(xs, bump())` sorts and still bumps —
+  and too few is refused by name (`upper() takes 1 argument, given 0`), because the interpreter's
+  own answer there is the host's words about a JavaScript property. Of the 101 builtins, 94 could reach the
+  C compiler this way. The arities are read out of the emitter by asking it, so a second
+  hand-written list cannot drift; two whole-table cases hold it, one calling every declared builtin
+  with four arguments and one with none. The same work settled which thing a builtin's name calls
+  when the program binds it: `fn sort(xs)` and `let upper = fn(s)` were compiled as the builtins
+  they shadow, because the builtin was tried before the program's own bindings — three files in
+  `stdlib/` define their own `fn max(a, b)`, and every call to it was the builtin.
 - **An unknown name is a Clarity error (done).** A name that resolved to nothing was emitted as
   `v_name` and reported by the C compiler as an undeclared identifier — an error about generated
   code, naming a variable the program never wrote. The backend tracks what is in scope now and
