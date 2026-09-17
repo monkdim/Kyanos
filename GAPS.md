@@ -166,6 +166,34 @@ A name in scope is what a call means now, whatever else the name refers to at
 module level. Calling something that is not a function also raises the
 interpreter's error rather than answering null.
 
+### A compiled binary would not say where an error happened
+Fixed. Every engine-raised error in a native build carried the interpreter's
+words and dropped its line:
+
+```clarity
+try { show 1 / 0 } catch e { show str(e) }
+-- clarity run  RuntimeError: Division by zero (line 1)
+-- run --fast   RuntimeError: Division by zero (line 1)
+-- clarity cc   RuntimeError: Division by zero
+```
+
+Every statement now records the line it starts on, and `cl_throw` adds it —
+to a string opening with one of the engine's own prefixes, and only when it
+does not already say a line. A program's own `throw "boom"` carries no line in
+any engine, and an error passing out through several frames keeps the line it
+was first given rather than collecting one per frame.
+
+A call puts the caller's line back on the way out, or an error *after* a call
+blamed wherever the callee happened to finish — `C().missing` reported the
+last line of C's constructor.
+
+One more found while checking this, and fixed with it: **calling a method an
+instance does not have answered `null`** in a compiled binary, where both
+other engines raise `RuntimeError: D has no property 'nope'`. Reading a
+missing property already raised it; the call form fell through to null, so a
+compiled program carried the mistake onwards and a `try` written to catch
+exactly this never fired.
+
 ### An enum was not a value in native builds
 Fixed. `clarity cc` compiled an enum as a compile-time table and nothing else,
 so a bare mention of one named a C variable that did not exist:

@@ -764,6 +764,16 @@ static Value cl_dispatch(Value self, const char* m, Value* a, long n){
   const char* cls = (self.t==T_OBJECT) ? ((Obj*)self.o)->cls : "";
   ClMethod fn = cl_find_method(cls, m);
   if(fn) return fn(self, a, n);
+  /* Nothing answers to that name. The interpreter and the VM both stop here,
+     naming the class and the property; this used to answer null, so a
+     compiled program carried the mistake onwards and a `try` written to catch
+     exactly this never fired. cl_get_field already refused the *read* of a
+     missing property -- this is the call form. */
+  if(self.t==T_OBJECT){
+    char buf[160];
+    snprintf(buf, sizeof buf, "RuntimeError: %s has no property '%s'", cls, m);
+    cl_throw(cl_str(cl_strdup(buf)));
+  }
   return cl_null();
 }
 /* instances print via a to_string method if defined, else <Cls instance> */
@@ -1008,7 +1018,26 @@ static Value cl_random2(Value a, Value b){
 typedef struct ClHandler { jmp_buf buf; struct ClHandler* prev; } ClHandler;
 static ClHandler* cl_handlers = 0;
 
+/* The line the statement now running starts on. Each statement records its
+   own, so an error the engine raises can say where -- which is what
+   `clarity run` and `run --fast` both do, and what a compiled binary did not.
+   Added only to a string opening with one of the engine's own prefixes, and
+   only when it does not already say a line: a program's own `throw "boom"`
+   carries no line in any engine, and a rethrow keeps the line it was first
+   given. */
+static long cl_line = 0;
+static Value cl_with_line(Value v){
+  if(v.t != T_STR || !v.s || cl_line <= 0) return v;
+  if(strstr(v.s, "(line ")) return v;
+  if(strncmp(v.s, "RuntimeError: ", 14) && strncmp(v.s, "TypeError: ", 11) &&
+     strncmp(v.s, "NameError: ", 11) && strncmp(v.s, "ValueError: ", 12)) return v;
+  long n = (long)strlen(v.s) + 32;
+  char* b = (char*)cl_alloc(n);
+  snprintf(b, n, "%s (line %ld)", v.s, cl_line);
+  return cl_str(b);
+}
 static void cl_throw(Value v){
+  v = cl_with_line(v);
   cl_thrown = v;
   if(!cl_handlers){
     cl_eprint("clarity: uncaught throw: ", cl_display(v));
@@ -1794,41 +1823,61 @@ Value __closure_1(Value* __a, Value* __cap, long __n);
 Value __closure_0(Value* __a, Value* __cap, long __n) {
   (void)__a; (void)__n;
   Value v_v = cl_arg(__a, __n, 0);
-  return cl_eq(cl_mod(v_v, cl_int(2)), cl_int(0));
+  long __sl = cl_line;
+  cl_line = 42;
+  { Value __rv16 = cl_eq(cl_mod(v_v, cl_int(2)), cl_int(0)); cl_line = __sl; return __rv16; }
+  cl_line = __sl;
   return cl_null();
 }
 
 Value __closure_1(Value* __a, Value* __cap, long __n) {
   (void)__a; (void)__n;
   Value v_v = cl_arg(__a, __n, 0);
-  return cl_mul(v_v, v_v);
+  long __sl = cl_line;
+  cl_line = 42;
+  { Value __rv18 = cl_mul(v_v, v_v); cl_line = __sl; return __rv18; }
+  cl_line = __sl;
   return cl_null();
 }
 
 Value f_risky(Value v_x) {
+  long __sl = cl_line;
+  cl_line = 25;
   if(cl_truthy(cl_lt(v_x, cl_int(0)))) {
+    cl_line = 25;
     cl_throw(({ volatile Value __o0 = (cl_str("negative: ")); volatile Value __o1 = (cl_str(cl_to_cstr(v_x))); cl_add(__o0, __o1); }));
   }
-  return cl_mul(v_x, cl_int(3));
+  cl_line = 26;
+  { Value __rv2 = cl_mul(v_x, cl_int(3)); cl_line = __sl; return __rv2; }
+  cl_line = __sl;
   return cl_null();
 }
 
 
 Value f_Tally_init(Value v_this, Value* __a, long __n) {
   (void)__a; (void)__n;
+  long __sl = cl_line;
+  cl_line = 19;
   cl_set_field(v_this, "n", cl_int(0));
+  cl_line = __sl;
   return cl_null();
 }
 Value f_Tally_add(Value v_this, Value* __a, long __n) {
   (void)__a; (void)__n;
+  long __sl = cl_line;
   Value v_k = cl_arg(__a, __n, 0);
+  cl_line = 20;
   cl_set_field(v_this, "n", cl_add(cl_get_field(v_this, "n"), v_k));
-  return cl_get_field(v_this, "n");
+  cl_line = 21;
+  { Value __rv3 = cl_get_field(v_this, "n"); cl_line = __sl; return __rv3; }
+  cl_line = __sl;
   return cl_null();
 }
 Value cl_ctor_Tally(Value* __a, long __n) {
+  long __sl = cl_line;
   Value self = cl_object_new("Tally");
   f_Tally_init(self, __a, __n);
+  cl_line = __sl;
   return self;
 }
 
@@ -1840,51 +1889,69 @@ int main(int argc, char** argv) {
   cl_register("Tally", "init", &f_Tally_init);
   cl_register("Tally", "add", &f_Tally_add);
   v_t = cl_ctor_Tally(0, 0);
+  cl_line = 30;
   Value __it1 = cl_iter(cl_range2(cl_int(1), cl_int(11)));
   for(long __i1=0; __i1 < cl_length(__it1); __i1++) {
     Value v_i = cl_index(__it1, cl_int(__i1));
+    cl_line = 30;
     (void)(cl_dispatch(v_t, "add", (Value[]){v_i}, 1));
   }
-  cl_show(({ volatile Value __o2 = (cl_str("tally ")); volatile Value __o3 = (cl_str(cl_to_cstr(cl_get_field(v_t, "n")))); cl_add(__o2, __o3); }));
-  { ClHandler __h4; __h4.prev = cl_handlers; cl_handlers = &__h4;
-    if(setjmp(__h4.buf) == 0) {
+  cl_line = 31;
+  cl_show(({ volatile Value __o4 = (cl_str("tally ")); volatile Value __o5 = (cl_str(cl_to_cstr(cl_get_field(v_t, "n")))); cl_add(__o4, __o5); }));
+  cl_line = 33;
+  { ClHandler __h6; __h6.prev = cl_handlers; cl_handlers = &__h6;
+    if(setjmp(__h6.buf) == 0) {
+      cl_line = 33;
       cl_show(cl_str(cl_to_cstr(f_risky(cl_neg(cl_int(4))))));
-      cl_handlers = __h4.prev;
+      cl_handlers = __h6.prev;
     } else {
-      cl_handlers = __h4.prev;
+      cl_handlers = __h6.prev;
       Value v_e = cl_thrown;
-      ClHandler __hc4; __hc4.prev = cl_handlers; cl_handlers = &__hc4;
-      if(setjmp(__hc4.buf) == 0) {
-        cl_show(({ volatile Value __o5 = (cl_str("caught ")); volatile Value __o6 = (cl_str(cl_to_cstr(v_e))); cl_add(__o5, __o6); }));
-        cl_handlers = __hc4.prev;
+      ClHandler __hc6; __hc6.prev = cl_handlers; cl_handlers = &__hc6;
+      if(setjmp(__hc6.buf) == 0) {
+        cl_line = 34;
+        cl_show(({ volatile Value __o7 = (cl_str("caught ")); volatile Value __o8 = (cl_str(cl_to_cstr(v_e))); cl_add(__o7, __o8); }));
+        cl_handlers = __hc6.prev;
       } else {
-        cl_handlers = __hc4.prev;
-        Value __hc4_v = cl_thrown;
+        cl_handlers = __hc6.prev;
+        Value __hc6_v = cl_thrown;
+        cl_line = 35;
         cl_show(cl_str("finally ran"));
-        cl_throw(__hc4_v);
+        cl_throw(__hc6_v);
       }
     }
+    cl_line = 35;
     cl_show(cl_str("finally ran"));
   }
   v_m = cl_map_put(cl_map_put(cl_map_put(cl_map_new(), cl_to_cstr(cl_str("pear")), cl_int(2)), cl_to_cstr(cl_str("apple")), cl_int(1)), cl_to_cstr(cl_str("fig")), cl_int(3));
   v_parts = cl_list_new();
+  cl_line = 39;
   Value __it2 = cl_iter(cl_sort(cl_keys(v_m)));
   for(long __i2=0; __i2 < cl_length(__it2); __i2++) {
     Value v_k = cl_index(__it2, cl_int(__i2));
-    (void)(({ volatile Value __o7 = (v_parts); volatile Value __o8 = (({ volatile Value __o9 = (({ volatile Value __o10 = (cl_upper(v_k)); volatile Value __o11 = (cl_str("=")); cl_add(__o10, __o11); })); volatile Value __o12 = (cl_str(cl_to_cstr(cl_index(v_m, v_k)))); cl_add(__o9, __o12); })); cl_list_add(__o7, __o8); }));
+    cl_line = 39;
+    (void)(({ volatile Value __o9 = (v_parts); volatile Value __o10 = (({ volatile Value __o11 = (({ volatile Value __o12 = (cl_upper(v_k)); volatile Value __o13 = (cl_str("=")); cl_add(__o12, __o13); })); volatile Value __o14 = (cl_str(cl_to_cstr(cl_index(v_m, v_k)))); cl_add(__o11, __o14); })); cl_list_add(__o9, __o10); }));
   }
+  cl_line = 40;
   cl_show(cl_str_join(v_parts, cl_str(" ")));
-  v_squares = ({ volatile Value __o13 = (cl_hof_filter(cl_list_add(cl_list_add(cl_list_add(cl_list_add(cl_list_add(cl_list_add(cl_list_add(cl_list_add(cl_list_new(), cl_int(1)), cl_int(2)), cl_int(3)), cl_int(4)), cl_int(5)), cl_int(6)), cl_int(7)), cl_int(8)), cl_closure_new(&__closure_0, 0, 0))); volatile Value __o14 = (cl_closure_new(&__closure_1, 0, 0)); cl_hof_map(__o13, __o14); });
-  cl_show(({ volatile Value __o15 = (cl_str("evens squared ")); volatile Value __o16 = (cl_str_join(v_squares, cl_str(","))); cl_add(__o15, __o16); }));
-  cl_show(({ volatile Value __o17 = (({ volatile Value __o18 = (({ volatile Value __o19 = (({ volatile Value __o20 = (({ volatile Value __o21 = (cl_str("float ")); volatile Value __o22 = (cl_str(cl_to_cstr(cl_div(cl_int(355), cl_int(113))))); cl_add(__o21, __o22); })); volatile Value __o23 = (cl_str(" ")); cl_add(__o20, __o23); })); volatile Value __o24 = (cl_str(cl_to_cstr(cl_sqrt(cl_int(2))))); cl_add(__o19, __o24); })); volatile Value __o25 = (cl_str(" ")); cl_add(__o18, __o25); })); volatile Value __o26 = (cl_str(cl_to_cstr(cl_pow(cl_float(2.5), cl_int(2))))); cl_add(__o17, __o26); }));
-  cl_show(({ volatile Value __o27 = (({ volatile Value __o28 = (({ volatile Value __o29 = (({ volatile Value __o30 = (({ volatile Value __o31 = (cl_str("text ")); volatile Value __o32 = (cl_trim(cl_str("  spaced  "))); cl_add(__o31, __o32); })); volatile Value __o33 = (cl_str("|")); cl_add(__o30, __o33); })); volatile Value __o34 = (cl_replace(cl_str("a-b-c"), cl_str("-"), cl_str("+"))); cl_add(__o29, __o34); })); volatile Value __o35 = (cl_str("|")); cl_add(__o28, __o35); })); volatile Value __o36 = (cl_str(cl_to_cstr(cl_index_of(cl_str("clarity"), cl_str("rit"))))); cl_add(__o27, __o36); }));
+  v_squares = ({ volatile Value __o15 = (cl_hof_filter(cl_list_add(cl_list_add(cl_list_add(cl_list_add(cl_list_add(cl_list_add(cl_list_add(cl_list_add(cl_list_new(), cl_int(1)), cl_int(2)), cl_int(3)), cl_int(4)), cl_int(5)), cl_int(6)), cl_int(7)), cl_int(8)), cl_closure_new(&__closure_0, 0, 0))); volatile Value __o17 = (cl_closure_new(&__closure_1, 0, 0)); cl_hof_map(__o15, __o17); });
+  cl_line = 43;
+  cl_show(({ volatile Value __o19 = (cl_str("evens squared ")); volatile Value __o20 = (cl_str_join(v_squares, cl_str(","))); cl_add(__o19, __o20); }));
+  cl_line = 45;
+  cl_show(({ volatile Value __o21 = (({ volatile Value __o22 = (({ volatile Value __o23 = (({ volatile Value __o24 = (({ volatile Value __o25 = (cl_str("float ")); volatile Value __o26 = (cl_str(cl_to_cstr(cl_div(cl_int(355), cl_int(113))))); cl_add(__o25, __o26); })); volatile Value __o27 = (cl_str(" ")); cl_add(__o24, __o27); })); volatile Value __o28 = (cl_str(cl_to_cstr(cl_sqrt(cl_int(2))))); cl_add(__o23, __o28); })); volatile Value __o29 = (cl_str(" ")); cl_add(__o22, __o29); })); volatile Value __o30 = (cl_str(cl_to_cstr(cl_pow(cl_float(2.5), cl_int(2))))); cl_add(__o21, __o30); }));
+  cl_line = 46;
+  cl_show(({ volatile Value __o31 = (({ volatile Value __o32 = (({ volatile Value __o33 = (({ volatile Value __o34 = (({ volatile Value __o35 = (cl_str("text ")); volatile Value __o36 = (cl_trim(cl_str("  spaced  "))); cl_add(__o35, __o36); })); volatile Value __o37 = (cl_str("|")); cl_add(__o34, __o37); })); volatile Value __o38 = (cl_replace(cl_str("a-b-c"), cl_str("-"), cl_str("+"))); cl_add(__o33, __o38); })); volatile Value __o39 = (cl_str("|")); cl_add(__o32, __o39); })); volatile Value __o40 = (cl_str(cl_to_cstr(cl_index_of(cl_str("clarity"), cl_str("rit"))))); cl_add(__o31, __o40); }));
   v_big = cl_list_new();
+  cl_line = 49;
   Value __it3 = cl_iter(cl_range2(cl_int(1), cl_int(401)));
   for(long __i3=0; __i3 < cl_length(__it3); __i3++) {
     Value v_i = cl_index(__it3, cl_int(__i3));
-    (void)(({ volatile Value __o37 = (v_big); volatile Value __o38 = (cl_str(cl_to_cstr(cl_mul(v_i, v_i)))); cl_list_add(__o37, __o38); }));
+    cl_line = 49;
+    (void)(({ volatile Value __o41 = (v_big); volatile Value __o42 = (cl_str(cl_to_cstr(cl_mul(v_i, v_i)))); cl_list_add(__o41, __o42); }));
   }
-  cl_show(({ volatile Value __o39 = (({ volatile Value __o40 = (({ volatile Value __o41 = (cl_str("list ")); volatile Value __o42 = (cl_str(cl_to_cstr(cl_int(cl_length(v_big))))); cl_add(__o41, __o42); })); volatile Value __o43 = (cl_str(" last ")); cl_add(__o40, __o43); })); volatile Value __o44 = (cl_index(v_big, cl_int(399))); cl_add(__o39, __o44); }));
+  cl_line = 50;
+  cl_show(({ volatile Value __o43 = (({ volatile Value __o44 = (({ volatile Value __o45 = (cl_str("list ")); volatile Value __o46 = (cl_str(cl_to_cstr(cl_int(cl_length(v_big))))); cl_add(__o45, __o46); })); volatile Value __o47 = (cl_str(" last ")); cl_add(__o44, __o47); })); volatile Value __o48 = (cl_index(v_big, cl_int(399))); cl_add(__o43, __o48); }));
+  cl_line = 52;
   cl_show(cl_str("clarity-demo: all checks passed"));
   cl_arena_free();
   return 0;
