@@ -181,6 +181,43 @@ if CC == null {
         "show int(\"100000000000000000000\")\n" +
         "show int(1e20)\nshow int(42)\nshow int(-3.9)\nshow int(3.9)\n" +
         "show int(\"42\")")
+    -- ── a class is a value ────────────────────────────────
+    --
+    -- Calling a named class goes straight to its constructor, which is where
+    -- it should go. *Mentioning* one fell through to `v_A`, which nothing
+    -- declares, and the failure landed in the C compiler on generated code —
+    -- the last position left after the unknown-name and builtin-arity work.
+    -- A class is a value in both other engines: it prints, it has a type, it
+    -- can be put in a list and handed to map().
+    same("a_class_named_as_a_value",
+        "class A {\n" +
+        "    fn init(n) { this.n = n }\n" +
+        "}\n" +
+        "class B < A { }\n" +
+        "show A\n" +
+        "show str(A)\n" +
+        "show type(A)\n" +
+        "let k = A\n" +
+        "show k(5).n\n" +
+        "show [A, B]\n" +
+        "show map([1, 2], A)\n" +
+        "show len([A])")
+    -- Identity, not structure: two classes are the same value only when they
+    -- are the same class, and one is equal to itself.
+    same("a_class_compares_by_identity",
+        "class A { fn init() { this.x = 1 } }\n" +
+        "class B { fn init() { this.x = 1 } }\n" +
+        "show identical(A, A)\n" +
+        "show identical(A, B)\n" +
+        "show A == A\n" +
+        "show A == B")
+    -- A class answers to no property. The interpreter names it and stops; the
+    -- VM used to hand back null, and this backend could not get that far.
+    same("a_class_has_no_properties",
+        "class A { fn init() { this.x = 1 } }\n" +
+        "try { show A.nope } catch e { show str(e) }\n" +
+        "show \"after\"")
+
     -- ── a value that refers to itself can be shown ────────
     --
     -- It could not: every engine walked into it until the stack ran out, and
