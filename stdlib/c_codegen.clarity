@@ -2387,6 +2387,17 @@ class CCodegen {
     -- builtins. A name that resolves nowhere used to be emitted as `v_name`
     -- and reported by the C compiler as an undeclared identifier -- an error
     -- about generated code, naming a variable the program never wrote.
+    -- A module-level binding or a captured outer local of this name — the
+    -- two scopes _name_known consults that the call site does not check for
+    -- itself. Both are reached as `v_name` in the emitted C.
+    fn _binds_outside(name) {
+        if contains(this.global_names, name) { return true }
+        for scope in this.outer_scopes {
+            if contains(scope, name) { return true }
+        }
+        return false
+    }
+
     fn _name_known(name) {
         if contains(this.local_names, name) { return true }
         for scope in this.outer_scopes {
@@ -2713,8 +2724,14 @@ class CCodegen {
             else { push(out, "cl_rest((Value[]){" + join(extra, ", ") + "}, " + str(len(extra)) + ", 0)") }
         } elif len(args) > declared {
             -- Surplus arguments to a fixed-arity function are dropped, which
-            -- is what the interpreter does; evaluating them anyway would be a
-            -- different program.
+            -- is what the interpreter does with them: it evaluates every
+            -- argument expression and then binds only the declared
+            -- parameters, so `one(1, bump())` still bumps. Dropping the
+            -- operand here does not drop its evaluation — two or more
+            -- operands with anything impure among them go through
+            -- _ordered_parts first, which binds each of them to a temporary
+            -- in source order, and this list then holds the names of those
+            -- temporaries rather than the expressions.
             return out
         }
         return out
@@ -2833,13 +2850,31 @@ class CCodegen {
             if has(this.decorated, callee.name) and not contains(this.local_names, callee.name) {
                 return "cl_call(v_" + callee.name + ", " + this._argv(args) + ")"
             }
-            let builtin = this._builtin_call(callee.name, args)
-            if builtin != "" { return builtin }
+            -- Anything the program binds to this name is the thing being
+            -- called. A builtin is what the name means only when nothing else
+            -- answers to it, and the builtin used to be tried first: both
+            -- `fn sort(xs) { return "mine" }` and `let upper = fn(s) { ... }`
+            -- were compiled as calls to the builtin of that name, where the
+            -- other two engines call what the program wrote. A local, a class
+            -- and a decorated name are handled above; these are the two that
+            -- were not.
+            if this._binds_outside(callee.name) {
+                return "cl_call(v_" + callee.name + ", " + this._argv(args) + ")"
+            }
             -- A known top-level function calls directly; anything else is a
             -- local holding a closure value, called through cl_call.
             if contains(this.fn_names, callee.name) {
                 return "f_" + callee.name + "(" + join(this._direct_args(callee.name, args), ", ") + ")"
             }
+            if this.freestanding and has(_FREESTANDING_EXCLUDED, callee.name) {
+                let why = _FREESTANDING_EXCLUDED[callee.name]
+                push(this.errors, "native compile: {callee.name}() is not available under --freestanding ({why} needs an operating system)")
+                return "cl_null()"
+            }
+            let builtin = this._builtin_call(callee.name, args)
+            if builtin != "" { return builtin }
+            let adjusted = this._builtin_arity_call(callee.name, args, callee.line ?? node.line)
+            if adjusted != "" { return adjusted }
             -- Nothing in scope, at module level, or among the builtins answers
             -- to that name, so there is no value to call. Saying so beats
             -- emitting `cl_call(v_name, ...)` and letting the C compiler
@@ -2961,14 +2996,91 @@ class CCodegen {
         return this.loop_id
     }
 
+    -- The argument counts `_builtin_call` will emit for `name`, discovered by
+    -- asking it. The emitter is the only place that knows which arities it
+    -- handles, and there are 101 of them; a second list written by hand would
+    -- drift out of step with the first one the next time an arity is added.
+    -- Probing costs five passes over that chain, on the only path that needs
+    -- it, which is a call the emitter has already refused.
+    --
+    -- Three is the widest fixed arity in the table (reduce, replace, read_mem,
+    -- ffi_call, substring), so four is past the end. The variadic builtins
+    -- (zip, merge, print) accept every count and never reach here.
+    fn _builtin_arities(name) {
+        mut out = []
+        mut k = 0
+        while k <= 4 {
+            mut probe = []
+            mut i = 0
+            while i < k { push(probe, "cl_null()"); i += 1 }
+            if this._builtin_call(name, probe) != "" { push(out, k) }
+            k += 1
+        }
+        return out
+    }
+
+    -- "1", "1 or 2", "1, 2 or 3" — the arities of a builtin, for a message a
+    -- person reads.
+    fn _arity_phrase(arities) {
+        let n = len(arities)
+        if n == 0 { return "no arguments" }
+        mut parts = []
+        for a in arities { push(parts, str(a)) }
+        mut head = parts[0]
+        mut i = 1
+        while i < n - 1 { head = head + ", " + parts[i]; i += 1 }
+        if n == 1 { return head + (if arities[0] == 1 { " argument" } else { " arguments" }) }
+        return head + " or " + parts[n - 1] + " arguments"
+    }
+
+    -- A builtin called with an argument count `_builtin_call` does not emit.
+    -- Without this the call fell through to `cl_call(v_sort, ...)` and the
+    -- failure surfaced in the C compiler, on generated code, naming a variable
+    -- the program never wrote:
+    --
+    --     error: 'v_sort' undeclared (first use in this function)
+    --
+    -- Surplus arguments take the shape the interpreter gives them. It
+    -- evaluates every argument expression and then binds only the parameters
+    -- the builtin declares, so `sort(xs, bump())` sorts and still bumps. The
+    -- operands are already bound to temporaries here whenever one of them can
+    -- be observed — that is what _ordered_parts is for — so dropping the
+    -- surplus from the call leaves its evaluation in place.
+    --
+    -- Too few arguments is the other half, and there is nothing to emit: the
+    -- interpreter reaches the host function short a value and reports it in
+    -- the host's words ("undefined is not an object (evaluating
+    -- 's.toUpperCase')"), which is its own defect and not a semantics to
+    -- match. Refusing by name, the way an undefined identifier is refused,
+    -- says what is wrong.
+    --
+    -- Returns "" when `name` is not a builtin, so the caller falls through to
+    -- the paths that handle a shadowing binding.
+    fn _builtin_arity_call(name, args, line) {
+        if not has(_NATIVE_BUILTINS, name) { return "" }
+        -- Every binding of the name has been ruled out by the caller before
+        -- this point, so the builtin is what the name means.
+        let arities = this._builtin_arities(name)
+        if len(arities) == 0 { return "" }
+        let n = len(args)
+        mut best = -1
+        for a in arities {
+            if a <= n and a > best { best = a }
+        }
+        if best < 0 {
+            this.reject(name + "() takes " + this._arity_phrase(arities) +
+                        ", given " + str(n), line)
+            return "cl_null()"
+        }
+        mut kept = []
+        mut i = 0
+        while i < best { push(kept, args[i]); i += 1 }
+        return this._builtin_call(name, kept)
+    }
+
     -- A builtin call → runtime C, or "" if `name`/arity isn't a known builtin.
     fn _builtin_call(name, args) {
         let n = len(args)
-        if this.freestanding and has(_FREESTANDING_EXCLUDED, name) {
-            let why = _FREESTANDING_EXCLUDED[name]
-            push(this.errors, "native compile: {name}() is not available under --freestanding ({why} needs an operating system)")
-            return "cl_null()"
-        }
         if name == "len" and n == 1 { return "cl_int(cl_length(" + args[0] + "))" }
         if name == "push" and n == 2 { return "cl_list_add(" + args[0] + ", " + args[1] + ")" }
         if name == "str" and n == 1 { return "cl_str(cl_to_cstr(" + args[0] + "))" }

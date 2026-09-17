@@ -482,6 +482,85 @@ Still open, and filed: the VM has no block scoping at all, so a comprehension
 or `for` variable leaks and can clobber an outer name of the same name under
 `--fast`. And `clarity cc` still refuses `SliceExpression` (`xs[1..3]`).
 
+### A builtin's argument count was a C compiler error, and a name that shadows a builtin was the builtin
+Fixed. `_builtin_call` matches a name *together with a count*, and a call that
+matched no branch fell through to `cl_call(v_<name>, ...)` — the same
+undeclared-identifier failure the unknown-name work above removed, reached
+through arity instead of through the name:
+
+```clarity
+show sort([3, 1, 2], fn(a, b) { return b - a })
+```
+```
+clarity run   [-5, 1, 2, 3, 10]
+clarity cc    /tmp/x.c:1862:19: error: 'v_sort' undeclared (first use in this function)
+                1862 |   cl_show(cl_call(v_sort, (Value[]){v_xs, cl_closure_new(...)}, 2));
+```
+
+The same for `len("ab", "cd")`, `upper("a", "b")` and `str(7, 8)`. There are 101
+builtins, and with the fallback removed 94 of them reach the output as
+`cl_call(v_<name>, ...)` when called with four arguments, and 94 go unrefused
+when called with none. This was not one call; it was every call that did not
+happen to be written at an arity the emitter special-cases.
+
+The two halves get the two answers the interpreter gives:
+
+- **Surplus arguments are dropped, not skipped.** The interpreter evaluates
+  every argument expression and then binds only the parameters the builtin
+  declares, so `sort(xs, bump())` sorts *and* bumps. Two or more operands with
+  anything impure among them already go through `_ordered_parts`, which binds
+  each of them to a temporary in source order; dropping the surplus from the
+  call leaves its evaluation in place. Verified with a counter in all three
+  engines.
+- **Too few is refused by name.** There is nothing to emit, and the
+  interpreter's own answer is not a semantics worth matching — it reaches the
+  host function short a value and reports it in the host's words
+  (`upper()` gives "undefined is not an object (evaluating 's.toUpperCase')",
+  `sort()` gives "Spread syntax requires ...iterable not be null or
+  undefined"). So `clarity cc` says `native compile: upper() takes 1 argument,
+  given 0 (line 1)`, the way it already refuses an undefined identifier.
+
+The arities a builtin takes are read out of `_builtin_call` by asking it — a
+probe per count on the one path that needs it, which is a call it has already
+refused. A second list written by hand would have drifted out of step with the
+first one the next time an arity was added, which is the failure the
+`_NATIVE_BUILTINS` cross-check above exists to catch.
+
+Two whole-table cases hold the line: every declared builtin called with four
+arguments in one program, whose output must not contain `v_<name>` for any of
+them, and every declared builtin called with none, whose refusal must name
+each one that needs an argument. The first also catches the reverse of the
+existing cross-check — a name in the table that `_builtin_call` never emits at
+any count.
+
+Finding it turned up the other half of the same question: which thing a
+builtin's name calls when the program binds it. The builtin was tried before
+the program's own bindings, so it won at any count it happens to take —
+
+```clarity
+fn sort(xs) { return "mine" }
+show sort([3, 1, 2])
+```
+```
+clarity run   mine
+clarity cc    [1, 2, 3]
+```
+
+— and the same for `let upper = fn(s) { ... }` and for a captured outer local.
+It only lost at a count the builtin does not take, which is why the arity work
+above is what exposed it. A local, a class and a decorated name already won;
+the order now runs through every binding the backend knows about before it
+reaches the builtins, which is the order `_name_known` already lists them in.
+The pattern is not hypothetical: three files in `stdlib/` define their own
+`fn max(a, b)`, and every call to it was compiled as the builtin.
+
+Still open, and filed: `sort(xs, cmp)` now compiles, but **the comparator is
+ignored in every engine** — `sort` takes one parameter everywhere, so the
+second argument is evaluated and discarded. And ordering comparisons on lists
+and maps disagree: `[10] < [9]` is true under `run` and `--fast` (the host
+compares "10" and "9" as strings) and false under `cc` (both sides number to
+zero), so `sort` on a list of lists reorders in two engines and not the third.
+
 ### Mid-run garbage collection kills a program on darwin-arm64
 `CLARITY_GC=1` turns on mid-run collection in a compiled binary. On
 darwin-arm64 a program that holds **two** live allocations across a collection

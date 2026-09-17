@@ -414,6 +414,29 @@ same("a nested fn closes over a local", "fn f(n) {\n    let bump = 10\n    fn ad
 same("a nested fn shadows a top-level one", "fn helper(x) { return x * 100 }\nfn f(n) {\n    fn helper(x) { return x + 1 }\n    return helper(n)\n}\nshow f(1)\nshow helper(1)")
 same("a nested fn is a value", "fn f() {\n    fn g(x) { return x * 3 }\n    return map([1, 2], g)\n}\nshow f()")
 
+-- Calling with the wrong number of arguments. Both engines bind the
+-- parameters a function declares and no more: a missing one is null, a
+-- surplus one is evaluated for its effect and its value dropped. That holds
+-- for a builtin as well as for a function the program wrote, and it is what
+-- the native backend had to be taught — it used to emit a call to a variable
+-- nothing declares and fail in the C compiler.
+same("too few arguments bind null", "fn f(a, b) { return [a, b] }\nshow f(1)")
+same("surplus arguments to a function are dropped",
+     "mut n = 0\nfn bump() { n = n + 1; return n }\nfn one(a) { return a }\n" +
+     "show one(bump(), bump())\nshow n")
+same("surplus arguments to a builtin are evaluated and dropped",
+     "mut n = 0\nfn bump() { n = n + 1; return n }\n" +
+     "show sort([3, 1, 2], bump())\nshow n\nshow len(\"ab\", \"cd\")\n" +
+     "show upper(\"a\", \"b\")\nshow str(7, 8)")
+
+-- A name the program binds is the thing that gets called, even when a
+-- builtin answers to it too. Both engines agree; the native backend did not.
+same("a binding wins over the builtin it shadows",
+     "fn sort(xs) { return \"mine\" }\nshow sort([3, 1, 2])\n" +
+     "let upper = fn(s) { return \"mine:\" + s }\nshow upper(\"a\")\n" +
+     "fn outer() {\n    let len = fn(x) { return \"inner\" }\n" +
+     "    return fn() { return len([1, 2]) }\n}\nshow outer()()")
+
 -- Both engines must refuse the same broken programs. The wording is not
 -- required to match (the interpreter names the property, the VM says the
 -- value is not callable), but both must fail, and both must name the thing

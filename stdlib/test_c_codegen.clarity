@@ -61,6 +61,17 @@ fn interp_run(src) {
 -- on. The compiler's own words come back instead, and a binary that dies
 -- without printing says so with its exit status, so a failure names itself.
 fn _compile_native(src, tag) {
+    -- The tag becomes a file name on a shell command line. A tag with a space
+    -- in it split that line, and the case failed as "input file is the same as
+    -- output file" — a message about the harness, reported as if it were the
+    -- compiler's verdict on the program.
+    for ch in chars(tag) {
+        if not (is_alnum(ch) or ch == "_") {
+            FAILED += 1
+            show "  FAIL: tag '" + tag + "' is not a file name (use lower_snake_case)"
+            return "BAD TAG"
+        }
+    }
     let c = compile_to_c(parse(tokenize(src, "<t>"), src))
     let cfile = "/tmp/_clc_" + tag + ".c"
     let bin = "/tmp/_clc_" + tag
@@ -843,8 +854,147 @@ if CC == null {
                 ci += 1
             }
             assert_eq(join(sort(missing), " "), "", "every emitted builtin is declared in _NATIVE_BUILTINS")
+
+            -- ── and no builtin can fall through to `v_<name>` on arity ──
+            --
+            -- Agreeing on the *names* was half of it. _builtin_call matches a
+            -- name together with a count, so `sort(xs, cmp)` matched nothing,
+            -- fell past every branch, and was emitted as `cl_call(v_sort,
+            -- ...)`: the same undeclared-identifier error, from the same
+            -- generated code, reached through arity instead of through the
+            -- table.
+            --
+            -- Every declared builtin, called with four arguments, in one
+            -- program. Four is past the widest fixed arity in the table, so
+            -- each call is one the emitter has to narrow; if any of them
+            -- narrows to nothing the name reaches the output as `v_<name>`.
+            -- That also catches the reverse of the check above — a name
+            -- declared in the table that _builtin_call never emits at any
+            -- count.
+            mut wide_lines = []
+            for bname in sort(keys(declared)) {
+                push(wide_lines, "show " + bname + "(1, 2, 3, 4)")
+            }
+            let WIDE = join(wide_lines, "\n")
+            mut wide_c = ""
+            mut wide_err = ""
+            try { wide_c = compile_to_c(parse(tokenize(WIDE, "<t>"), WIDE)) }
+            catch e { wide_err = str(e) }
+            assert_eq(wide_err, "", "every builtin narrows a surplus count")
+            -- Matched as the whole call, not as the substring `v_<name>`:
+            -- `cl_conv_float` and `cl_conv_int` contain "v_float" and "v_int",
+            -- and every one of these programs is a call, so `cl_call(v_x, `
+            -- is the exact shape a fall-through takes.
+            mut leaked = []
+            for bname in sort(keys(declared)) {
+                if contains(wide_c, "cl_call(v_" + bname + ",") { push(leaked, bname) }
+            }
+            assert_eq(join(leaked, " "), "", "no builtin reaches the output as v_<name>")
+
+            -- And the same list called with none. Those that take no
+            -- arguments compile; every other one has to be refused by name,
+            -- because there is nothing to emit for it. The errors are
+            -- collected and thrown together, so one compile answers for the
+            -- whole table.
+            mut none_lines = []
+            for bname in sort(keys(declared)) {
+                push(none_lines, "show " + bname + "()")
+            }
+            let NONE = join(none_lines, "\n")
+            mut none_err = ""
+            try { compile_to_c(parse(tokenize(NONE, "<t>"), NONE)) } catch e { none_err = str(e) }
+            -- These are the builtins with a zero-argument form; the rest must
+            -- each be named in the message.
+            let TAKES_NONE = ["args", "cwd", "exit", "merge", "print", "random", "time"]
+            mut unrefused = []
+            for bname in sort(keys(declared)) {
+                if contains(TAKES_NONE, bname) {
+                    if contains(none_err, bname + "() takes") { push(unrefused, "spurious:" + bname) }
+                } elif not contains(none_err, bname + "() takes") {
+                    push(unrefused, bname)
+                }
+            }
+            assert_eq(join(unrefused, " "), "", "every builtin short of its count is refused by name")
         }
     }
+
+    -- ── a builtin called with a count it does not take ────
+    --
+    -- Surplus arguments take the shape the interpreter gives them: every
+    -- argument expression is evaluated, and only the parameters the builtin
+    -- declares are bound. So the sort happens, the surplus call still bumps,
+    -- and the count comes out the same in both engines.
+    same("builtin_surplus_args",
+        "mut n = 0\n" +
+        "fn bump() { n = n + 1; return n }\n" +
+        "show sort([3, 1, 2], bump())\n" +
+        "show n\n" +
+        "show len(\"ab\", \"cd\")\n" +
+        "show upper(\"a\", \"b\")\n" +
+        "show str(7, 8)")
+
+    -- Too few is the other half, and there is nothing to emit. It is refused
+    -- by name, the way an undefined identifier is, rather than left to the C
+    -- compiler.
+    let SHORT_CALLS = {
+        "upper()": "upper() takes 1 argument, given 0",
+        "range()": "range() takes 1 or 2 arguments, given 0",
+        "replace(\"a\", \"b\")": "replace() takes 3 arguments, given 2",
+        "min()": "min() takes 1 or 2 arguments, given 0"
+    }
+    for short in sort(keys(SHORT_CALLS)) {
+        let prog = "show " + short
+        mut smsg = ""
+        try { compile_to_c(parse(tokenize(prog, "<t>"), prog)) } catch e { smsg = str(e) }
+        assert_eq(contains(smsg, SHORT_CALLS[short]), true, "too_few_args_refused_" + short)
+        assert_eq(contains(smsg, "line 1"), true, "too_few_args_line_" + short)
+    }
+
+    -- ── a binding of a builtin's name is what gets called ──
+    --
+    -- The builtin used to be tried before the program's own bindings, so it
+    -- won at any count it happens to take: `fn sort(xs) { return "mine" }`
+    -- compiled to `cl_sort`, and `let upper = fn(s) { ... }` to `cl_upper`,
+    -- where both other engines call what the program wrote. It only lost at a
+    -- count the builtin does not take, which is how the arity fallback above
+    -- first showed it. A local, a class and a decorated name already won;
+    -- these are a top-level function, a module-level binding and a captured
+    -- outer local.
+    same("top_level_fn_wins_over_builtin",
+        "fn sort(xs) { return \"mine\" }\n" +
+        "show sort([3, 1, 2])\n" +
+        "fn upper(s) { return \"MINE\" }\n" +
+        "show upper(\"a\")\n" +
+        "fn max(a, b) { return \"neither\" }\n" +
+        "show max(1, 2)")
+    same("module_binding_wins_over_builtin",
+        "let upper = fn(s) { return \"mine:\" + s }\n" +
+        "show upper(\"a\")\n" +
+        "let len = fn(x) { return 99 }\n" +
+        "show len([1, 2, 3])")
+    same("captured_local_wins_over_builtin",
+        "fn outer() {\n" +
+        "    let len = fn(x) { return \"inner\" }\n" +
+        "    return fn() { return len([1, 2]) }\n" +
+        "}\n" +
+        "show outer()()")
+    -- And at a count the builtin does not take, which is where this started.
+    same("builtin_name_shadowed_at_every_arity",
+        "fn sort(a, b) { return [a, b] }\n" +
+        "show sort(1, 2)\n" +
+        "let upper = fn(a, b) { return \"shadowed\" }\n" +
+        "show upper(\"x\", \"y\")\n" +
+        "fn outer() {\n" +
+        "    let len = fn(a, b) { return \"inner\" }\n" +
+        "    return fn() { return len(1, 2) }\n" +
+        "}\n" +
+        "show outer()()")
+    -- A class of a builtin's name already won, and still does.
+    same("class_wins_over_builtin",
+        "class len {\n" +
+        "    fn init() { this.x = 1 }\n" +
+        "}\n" +
+        "show type(len())")
 
     -- And the consequence, end to end: each of these inside a closure.
     same("builtins_inside_a_closure",
