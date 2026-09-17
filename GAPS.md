@@ -802,6 +802,40 @@ All three raise the interpreter's error now, which is the same shape as
 reading a property an *instance* does not have — refused everywhere since the
 instance-fields work.
 
+### A negative bound in a slice was wrong in every engine, three different ways
+Fixed. Counting from the end is this language's own convention — `xs[-1]` is
+the last item and `"abcd"[-1]` is `"d"`, in all three engines — and `slice`
+did not follow it:
+
+```clarity
+let xs = [1, 2, 3, 4]
+show xs.slice(-2)
+show xs.slice(0, -1)
+```
+```
+              slice(-2)              slice(0, -1)
+clarity run   [3, 4, 1, 2, 3, 4]    []
+--fast        [3, 4, 1, 2, 3, 4]    []
+clarity cc    [1, 2, 3, 4]          []
+```
+
+The first answer is not merely different, it is impossible: a slice of a
+four-item list with six items in it. `_slice_from` started its loop at the
+negative index it was given, and `lst[i]` did its *own* counting from the end
+on the way past zero, so `slice(-2)` walked -2, -1, 0, 1, 2, 3 and collected
+the last two items and then the whole list. A negative *end* went the other
+way — `while i < -1` never ran — so `slice(0, -1)` was empty. The native
+backend was wrong differently again, ignoring a negative start entirely.
+
+Both bounds are normalised to `len + i`, clamped at zero, in both paths — the
+`xs[a..b]` expression and the `.slice()` method, on a list and on a string —
+in all three engines. Out of range in either direction clamps rather than
+wrapping, and a start past the end is empty rather than backwards.
+
+This is not the open question in the slicing entry above. That one is what
+`s[1..3]` should *mean* on a string, which is a decision. This one is a bug:
+`[1, 2, 3, 4].slice(-2)` giving six items is not a reading of any semantics.
+
 ### Mid-run garbage collection kills a program on darwin-arm64
 `CLARITY_GC=1` turns on mid-run collection in a compiled binary. On
 darwin-arm64 a program that holds **two** live allocations across a collection

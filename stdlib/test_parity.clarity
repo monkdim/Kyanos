@@ -436,6 +436,17 @@ same("surplus arguments to a builtin are evaluated and dropped",
 same("float exponent literals",
      "show 1.5e10\nshow 2.0E-3\nshow 1e3\nshow 1.5e-3\nshow 6.02e23\n" +
      "show type(1e3)\nshow type(1.5e-3)")
+-- A negative bound in a slice counts from the end, which is what xs[-1]
+-- already means. It did not: a negative start walked past zero and indexed
+-- from the end again, so slice(-2) on four items gave six.
+same("a negative bound in a slice counts from the end",
+     "let xs = [1, 2, 3, 4]\nshow xs.slice(-1)\nshow xs.slice(-2)\n" +
+     "show xs.slice(0, -1)\nshow xs.slice(1, -1)\nshow xs[-2..]\n" +
+     "show xs[..-1]\nlet s = \"abcd\"\nshow s.slice(-2)\nshow s.slice(0, -1)")
+same("a slice bound out of range clamps",
+     "let xs = [1, 2, 3, 4]\nshow xs.slice(10)\nshow xs.slice(-10)\n" +
+     "show xs.slice(0, 10)\nshow xs.slice(2, 1)\nshow \"ab\".slice(-10)")
+
 -- A class is a value: it prints, it has a type, it constructs when called,
 -- and it compares by identity. Reading a property it does not have named it
 -- in one engine and answered null in the other.
