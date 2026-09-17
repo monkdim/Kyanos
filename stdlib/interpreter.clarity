@@ -1554,7 +1554,13 @@ class Interpreter {
             if prop == "count" { return fn() { return len(obj) } }
             if prop == "reverse" { return fn() { return reverse(obj) } }
             if prop == "empty" { return fn() { return len(obj) == 0 } }
-            if prop == "slice" { return fn(s, e) { if e != null { return substring(obj, s, e) } return substring(obj, s) } }
+            if prop == "slice" { return fn(s, e) {
+                let n = len(obj)
+                -- Not `from`: that word opens an import.
+                let begin = _slice_index(s, n)
+                if e != null { return substring(obj, begin, _slice_index(e, n)) }
+                return substring(obj, begin, n)
+            } }
             if prop == "find" { return fn(s) { return index_of(obj, s) } }
             if prop == "repeat" { return fn(n) { return repeat(obj, n) } }
             throw "RuntimeError: String has no property '{prop}' (line {line})"
@@ -1883,10 +1889,29 @@ class Interpreter {
 
 -- ── Slice helpers (parser doesn't support [x:] without end) ──
 
+-- A bound counting from the end, which is the convention this language
+-- already sets: xs[-1] is the last item and "abcd"[-1] is "d", in all three
+-- engines. `slice` did not follow it, and not following it was not merely a
+-- different answer: `_slice_from` started the loop at a negative index and
+-- `lst[i]` did its *own* negative indexing on the way past zero, so
+-- `[1, 2, 3, 4].slice(-2)` walked -2, -1, 0, 1, 2, 3 and handed back six
+-- items — a slice longer than the list it sliced. A negative end fared the
+-- other way: `while i < -1` never ran, so `slice(0, -1)` was empty.
+fn _slice_index(i, n) {
+    if i < 0 {
+        let j = n + i
+        if j < 0 { return 0 }
+        return j
+    }
+    if i > n { return n }
+    return i
+}
+
 fn _slice_from(lst, start) {
+    let n = len(lst)
     let result = []
-    mut i = start
-    while i < len(lst) {
+    mut i = _slice_index(start, n)
+    while i < n {
         push(result, lst[i])
         i += 1
     }
@@ -1894,9 +1919,11 @@ fn _slice_from(lst, start) {
 }
 
 fn _slice_range(lst, start, end_idx) {
+    let n = len(lst)
+    let stop = _slice_index(end_idx, n)
     let result = []
-    mut i = start
-    while i < end_idx and i < len(lst) {
+    mut i = _slice_index(start, n)
+    while i < stop {
         push(result, lst[i])
         i += 1
     }

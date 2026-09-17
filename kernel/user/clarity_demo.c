@@ -796,14 +796,22 @@ static Value cl_index_soft(Value c, Value k){
    upper bound -- and it is the runtime value that decides, so `xs[null..2]`
    means `xs[..2]`. The result is always a list: slicing a string gives its
    characters one at a time, because that is what indexing it gives. */
+/* A bound counting from the end, which is what xs[-1] already means. Without
+   it a negative start walked from a negative index and cl_index_soft did its
+   own counting-from-the-end on the way past zero, so a slice could be longer
+   than the list it sliced; a negative end stopped the loop before it began. */
+static long cl_slice_index(long i, long n){
+  if(i < 0){ long j = n + i; return j < 0 ? 0 : j; }
+  return i > n ? n : i;
+}
 static Value cl_slice(Value obj, Value s, Value e){
   volatile Value out = cl_list_new();
-  Value n = cl_int(cl_length(obj));
-  Value i = (s.t==T_NULL) ? cl_int(0) : s;
-  int bounded = (e.t != T_NULL);
-  while(cl_truthy(cl_lt(i, n)) && (!bounded || cl_truthy(cl_lt(i, e)))){
-    cl_list_add(out, cl_index_soft(obj, i));
-    i = cl_add(i, cl_int(1));
+  long n = cl_length(obj);
+  long i = (s.t==T_NULL) ? 0 : cl_slice_index((long)cl_num(s), n);
+  long stop = (e.t==T_NULL) ? n : cl_slice_index((long)cl_num(e), n);
+  while(i < stop){
+    cl_list_add(out, cl_index_soft(obj, cl_int(i)));
+    i++;
   }
   return out;
 }
@@ -1691,10 +1699,10 @@ static Value cl_bm_index_of(Value c, Value v){
 }
 static Value cl_bm_list_slice(Value c, Value* a, long n){
   List* l=(List*)c.o;
-  long start = n > 0 ? (long)cl_num(a[0]) : 0;
-  long stop  = (n > 1 && a[1].t != T_NULL) ? (long)cl_num(a[1]) : l->len;
+  long start = n > 0 ? cl_slice_index((long)cl_num(a[0]), l->len) : 0;
+  long stop  = (n > 1 && a[1].t != T_NULL) ? cl_slice_index((long)cl_num(a[1]), l->len) : l->len;
   Value out = cl_list_new();
-  for(long j=start; j<stop && j<l->len; j++) if(j>=0) out = cl_list_add(out, l->items[j]);
+  for(long j=start; j<stop; j++) out = cl_list_add(out, l->items[j]);
   return out;
 }
 static Value cl_bm_arg(Value* a, long n, long i){ return i < n ? a[i] : cl_null(); }
@@ -1743,8 +1751,9 @@ static Value cl_builtin_method(Value self, const char* m, Value* a, long n){
     if(!strcmp(m,"reverse")) return cl_reverse(self);
     if(!strcmp(m,"empty")) return cl_bool(strlen(self.s)==0);
     if(!strcmp(m,"slice")){
-      long start = n > 0 ? (long)cl_num(a[0]) : 0;
-      long stop  = (n > 1 && a[1].t != T_NULL) ? (long)cl_num(a[1]) : (long)strlen(self.s);
+      long sn = (long)strlen(self.s);
+      long start = n > 0 ? cl_slice_index((long)cl_num(a[0]), sn) : 0;
+      long stop  = (n > 1 && a[1].t != T_NULL) ? cl_slice_index((long)cl_num(a[1]), sn) : sn;
       return cl_substr(self, start, stop);
     }
     if(!strcmp(m,"find")) return cl_index_of(self, cl_bm_arg(a,n,0));

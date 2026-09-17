@@ -181,6 +181,43 @@ if CC == null {
         "show int(\"100000000000000000000\")\n" +
         "show int(1e20)\nshow int(42)\nshow int(-3.9)\nshow int(3.9)\n" +
         "show int(\"42\")")
+    -- ── a negative bound in a slice ───────────────────────
+    --
+    -- Counting from the end is this language's own convention — xs[-1] is
+    -- the last item, in every engine — and slice did not follow it. Worse
+    -- than not following it: the interpreter's _slice_from started its loop
+    -- at a negative index and lst[i] did its own counting from the end on
+    -- the way past zero, so `[1, 2, 3, 4].slice(-2)` walked -2, -1, 0, 1, 2,
+    -- 3 and handed back SIX items. A negative end went the other way and
+    -- emptied the result. The native backend was wrong differently again,
+    -- ignoring a negative start entirely.
+    same("a_negative_bound_counts_from_the_end",
+        "let xs = [1, 2, 3, 4]\n" +
+        "show xs.slice(-1)\n" +
+        "show xs.slice(-2)\n" +
+        "show xs.slice(0, -1)\n" +
+        "show xs.slice(1, -1)\n" +
+        "show xs.slice(-3, -1)\n" +
+        "show xs[-2..]\n" +
+        "show xs[..-1]\n" +
+        "show xs[-3..-1]\n" +
+        "let s = \"abcd\"\n" +
+        "show s.slice(-2)\n" +
+        "show s.slice(0, -1)\n" +
+        "show s.slice(-3, -1)")
+    -- Out of range in either direction clamps rather than wrapping, and a
+    -- start past the end is empty rather than backwards.
+    same("a_slice_bound_out_of_range_clamps",
+        "let xs = [1, 2, 3, 4]\n" +
+        "show xs.slice(10)\n" +
+        "show xs.slice(-10)\n" +
+        "show xs.slice(0, 10)\n" +
+        "show xs.slice(0, -10)\n" +
+        "show xs.slice(2, 1)\n" +
+        "show xs.slice(-1, -3)\n" +
+        "show \"ab\".slice(-10)\n" +
+        "show \"ab\".slice(5)")
+
     -- ── a class is a value ────────────────────────────────
     --
     -- Calling a named class goes straight to its constructor, which is where

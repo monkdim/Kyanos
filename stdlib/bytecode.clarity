@@ -1430,14 +1430,29 @@ class VMInstance {
 
 -- `xs.slice(a, b)` and `xs.copy()`, without the interpreter module's
 -- helpers: a plain copy of the range, clamped at the end like theirs.
+-- See Interpreter._slice_index: a negative bound counts from the end, which
+-- is what xs[-1] already means here. Without it a negative start walked past
+-- zero and lst[i] indexed from the end again, so slice(-2) on four items
+-- handed back six.
+fn _vm_slice_index(i, n) {
+    if i < 0 {
+        let j = n + i
+        if j < 0 { return 0 }
+        return j
+    }
+    if i > n { return n }
+    return i
+}
+
 fn _vm_slice(lst, start, end_i) {
+    let n = len(lst)
     mut out = []
-    let stop = if end_i != null { end_i } else { len(lst) }
+    let stop = if end_i != null { _vm_slice_index(end_i, n) } else { n }
     -- A missing start is 0, and it is the runtime *value* that decides, so
     -- `xs[null..2]` means `xs[..2]` -- which is what the interpreter's
     -- eval_SliceExpression does with its own null checks.
-    mut i = if start != null { start } else { 0 }
-    while i < stop and i < len(lst) {
+    mut i = if start != null { _vm_slice_index(start, n) } else { 0 }
+    while i < stop {
         push(out, lst[i])
         i += 1
     }
@@ -2025,8 +2040,10 @@ class VM {
             if prop == "empty" { return fn() { return len(obj) == 0 } }
             if prop == "slice" {
                 return fn(start, end_i) {
-                    if end_i != null { return substring(obj, start, end_i) }
-                    return substring(obj, start, len(obj))
+                    let n = len(obj)
+                    let begin = _vm_slice_index(start, n)
+                    if end_i != null { return substring(obj, begin, _vm_slice_index(end_i, n)) }
+                    return substring(obj, begin, n)
                 }
             }
             if prop == "find" { return fn(sub) { return index_of(obj, sub) } }

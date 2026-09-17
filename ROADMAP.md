@@ -339,6 +339,13 @@ lands with codegen tests that diff native output against the interpreter.
   `<class A>`, answers `"class"` to `type()`, constructs when called and compares by identity.
   Reading a property a class does not have raised in one engine, answered null in the second and
   could not compile in the third; all three raise now.
+- **A negative bound in a slice counts from the end (done).** `xs[-1]` has always been the last
+  item; `slice` did not follow the same convention and did not merely disagree with it.
+  `[1, 2, 3, 4].slice(-2)` answered `[3, 4, 1, 2, 3, 4]` under `run` and `--fast` — six items from
+  a four-item list, because the loop started at the negative index and indexing counted from the
+  end again on the way past zero — and `[1, 2, 3, 4]` natively. A negative end emptied the result
+  everywhere. Both bounds normalise now, in the `xs[a..b]` expression and the `.slice()` method,
+  on a list and on a string, in all three engines.
 - **An unknown name is a Clarity error (done).** A name that resolved to nothing was emitted as
   `v_name` and reported by the C compiler as an undeclared identifier — an error about generated
   code, naming a variable the program never wrote. The backend tracks what is in scope now and
