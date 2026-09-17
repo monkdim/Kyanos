@@ -31,7 +31,7 @@ jobs:
       - name: Bootstrap from latest release
         id: bootstrap
         run: |
-          curl -fsSL https://github.com/monkdim/Clarity/releases/latest/download/clarity-${{ matrix.target }}.tar.gz -o clarity-bootstrap.tar.gz
+          curl -fsSL https://github.com/monkdim/Kyanos/releases/latest/download/clarity-${{ matrix.target }}.tar.gz -o clarity-bootstrap.tar.gz
           tar xzf clarity-bootstrap.tar.gz
           chmod +x clarity
           mv clarity clarity-bootstrap

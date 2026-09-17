@@ -74,7 +74,7 @@ jobs:
         id: bootstrap
         run: |
           set -euo pipefail
-          BASE=https://github.com/monkdim/Clarity/releases/latest/download
+          BASE=https://github.com/monkdim/Kyanos/releases/latest/download
           if [ "${{ runner.os }}" = "Windows" ]; then
             curl -fsSL "$BASE/clarity-${{ matrix.bootstrap_target }}.zip" -o clarity-bootstrap.zip
             7z x -y clarity-bootstrap.zip
@@ -166,13 +166,13 @@ jobs:
             echo "## Installation" >> $GITHUB_OUTPUT
             echo "" >> $GITHUB_OUTPUT
             echo '```bash' >> $GITHUB_OUTPUT
-            echo "curl -fsSL https://raw.githubusercontent.com/monkdim/Clarity/main/install.sh | bash" >> $GITHUB_OUTPUT
+            echo "curl -fsSL https://raw.githubusercontent.com/monkdim/Kyanos/main/install.sh | bash" >> $GITHUB_OUTPUT
             echo '```' >> $GITHUB_OUTPUT
             echo "" >> $GITHUB_OUTPUT
             echo "Or with Homebrew:" >> $GITHUB_OUTPUT
             echo "" >> $GITHUB_OUTPUT
             echo '```bash' >> $GITHUB_OUTPUT
-            echo "brew tap monkdim/clarity https://github.com/monkdim/Clarity" >> $GITHUB_OUTPUT
+            echo "brew tap monkdim/clarity https://github.com/monkdim/Kyanos" >> $GITHUB_OUTPUT
             echo "brew install monkdim/clarity/clarity" >> $GITHUB_OUTPUT
             echo '```' >> $GITHUB_OUTPUT
             echo "$EOF" >> $GITHUB_OUTPUT

@@ -27,7 +27,7 @@ class Website {
         this.iso_url = if has(o, "iso_url") { o["iso_url"] } else { "https://" + BRAND_DOMAIN + "/download/kyanos-1.0.0.iso" }
         this.iso_sha256 = if has(o, "iso_sha256") { o["iso_sha256"] } else { "0000000000000000000000000000000000000000000000000000000000000000" }
         this.iso_size_mb = if has(o, "iso_size_mb") { o["iso_size_mb"] } else { 240 }
-        this.github_url = if has(o, "github_url") { o["github_url"] } else { "https://github.com/monkdim/Clarity" }
+        this.github_url = if has(o, "github_url") { o["github_url"] } else { "https://github.com/monkdim/Kyanos" }
         this.discord_url = if has(o, "discord_url") { o["discord_url"] } else { null }
         this.screenshots = if has(o, "screenshots") { o["screenshots"] } else { [] }
     }

@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 #
 # Clarity installer — downloads the right binary for your platform.
-# Usage: curl -fsSL https://raw.githubusercontent.com/monkdim/Clarity/main/install.sh | bash
+# Usage: curl -fsSL https://raw.githubusercontent.com/monkdim/Kyanos/main/install.sh | bash
 #
 
 set -euo pipefail
 
-REPO="monkdim/Clarity"
+REPO="monkdim/Kyanos"
 INSTALL_DIR="${CLARITY_INSTALL_DIR:-/usr/local/bin}"
 
 # ── Detect platform ──────────────────────────────────────
