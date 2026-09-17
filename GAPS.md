@@ -644,6 +644,65 @@ is what caught it. `float_probe`, which diffs this library's float conversions
 against the host's over a fixed sweep and four thousand random bit patterns,
 covers `%e` too now; removing the conversion again fails it at line 1.
 
+### Two operators were in the grammar and no two engines agreed about them
+Fixed. The parser produces twenty-three operators. Two of them ran in one
+engine each:
+
+```clarity
+show 6 is 6
+show ~6
+```
+```
+              is                                          ~
+clarity run   true                                        RuntimeError: Unknown unary operator: ~
+--fast        CompileError: Unknown binary operator: is   -7
+clarity cc    native compile: unsupported operator 'is'   native compile: unsupported unary '~'
+```
+
+`is` is not an obscure corner: `docs/reference.html` lists it under Logical
+operators beside `and`, `or` and `not`, and both the interpreter and
+`stdlib/transpile.clarity` have read it as `==` from the start. Under `--fast`
+it did not merely evaluate wrongly — the whole program failed to compile. The
+bytecode compiler and the native backend emit it as `==` now.
+
+`~` is undocumented but sits in the grammar beside `&`, `|`, `^`, `<<` and
+`>>`, and the VM already answered -7, which is what JavaScript answers and
+what the rest of that set agrees with. The interpreter and the native backend
+give the same answer now, through the same ToInt32 the others use.
+
+A third thing fell out of it: the VM's unary compiler had no `else`. An
+operator it did not know emitted nothing and left its operand on the stack, so
+a program would have run on and printed something wrong rather than said so.
+The binary form beside it had always thrown; this one does now too.
+
+The guard is a case that reads the operator set out of `stdlib/parser.clarity`
+and requires the test's own table to name every one of them — twenty binary
+and three unary today, checked by count so that an extraction finding nothing
+cannot pass. An operator added to the grammar without a case fails it, which
+is exactly what these two needed and did not have.
+
+### Two of the reference's sixteen examples did not parse
+Fixed, in the reference. Extracting every `<pre><code>` block from
+`docs/reference.html` and handing it to the parser: fourteen of sixteen
+parsed.
+
+- The Interfaces section showed a standalone `impl Drawable for Circle { ... }`
+  block. That is not the syntax — a class names its interfaces on its own
+  header, `class Circle < Shape impl Drawable { ... }`, and the methods live
+  in the class body. The example now says so, and a sentence under it says it
+  in words.
+- The Modules section showed `from "collections.clarity" import HashMap as HM`.
+  `import x as y` and `import "path" as y` do take `as`; the `from ... import`
+  form reads bare names and stops. The example now shows the whole-module
+  form, which works. Per-name aliasing in the `from` form is a real feature
+  the reference was promising and the language does not have, and it stays
+  filed: it is the parser, the ImportStatement node, three engines and both
+  bundlers.
+
+`stdlib/test_parses.clarity` — which exists because a file nothing imported
+had stopped parsing and nothing noticed — now parses every reference block
+too. Restoring either broken example fails it.
+
 ### Mid-run garbage collection kills a program on darwin-arm64
 `CLARITY_GC=1` turns on mid-run collection in a compiled binary. On
 darwin-arm64 a program that holds **two** live allocations across a collection

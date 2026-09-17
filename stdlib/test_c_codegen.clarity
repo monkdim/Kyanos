@@ -181,6 +181,72 @@ if CC == null {
         "show int(\"100000000000000000000\")\n" +
         "show int(1e20)\nshow int(42)\nshow int(-3.9)\nshow int(3.9)\n" +
         "show int(\"42\")")
+    -- ── every operator the parser can produce runs here ──
+    --
+    -- `is` was in the grammar, in the reference under Logical operators, and
+    -- in the interpreter (as `==`) — and in neither the bytecode compiler nor
+    -- this one, so a documented operator was "CompileError: Unknown binary
+    -- operator: is" under --fast and "unsupported operator 'is'" here. `~`
+    -- was the mirror image: the parser produced it, the VM ran it, and the
+    -- interpreter and this backend did not.
+    --
+    -- The operators are read out of the parser's source, and the table below
+    -- has to name every one of them. An operator added to the grammar with no
+    -- case here fails this, which is what the two above needed and did not
+    -- have.
+    let OPERAND = {
+        "+": "6 + 3", "-": "6 - 3", "*": "6 * 3", "/": "6 / 3", "%": "7 % 3",
+        "**": "2 ** 10", "==": "6 == 3", "!=": "6 != 3", "<": "6 < 3",
+        ">": "6 > 3", "<=": "6 <= 3", ">=": "6 >= 3",
+        "and": "true and false", "or": "true or false", "is": "6 is 6",
+        "&": "6 & 3", "|": "6 | 3", "^": "6 ^ 3", "<<": "6 << 1", ">>": "6 >> 1",
+        "not": "not true", "~": "~6"
+    }
+    -- Unary minus is written as part of an expression rather than alone so
+    -- that the entry reads like the others.
+    OPERAND["u-"] = "-6"
+
+    let parser_path = _find_file("parser.clarity")
+    if parser_path == null {
+        show "  (parser.clarity not found from here — operator table check skipped)"
+    } else {
+        let psrc = read(parser_path)
+        mut seen = {}
+        -- The first piece of each split is whatever came before the first
+        -- match, which is source rather than an operator, so both loops start
+        -- at one.
+        let bparts = split(psrc, "BinaryOp(expr, \"")
+        mut bi = 1
+        while bi < len(bparts) {
+            let q = index_of(bparts[bi], "\"")
+            if q > 0 { seen[substring(bparts[bi], 0, q)] = true }
+            bi += 1
+        }
+        let uparts = split(psrc, "UnaryOp(\"")
+        mut ui = 1
+        while ui < len(uparts) {
+            let q = index_of(uparts[ui], "\"")
+            if q > 0 {
+                let name = substring(uparts[ui], 0, q)
+                seen[if name == "-" { "u-" } else { name }] = true
+            }
+            ui += 1
+        }
+        -- Twenty binary and three unary today. A count guards against the
+        -- extraction quietly finding nothing, which would make the rest of
+        -- this pass by default.
+        assert_eq(len(keys(seen)) >= 23, true, "the parser's operators were found")
+        mut uncovered = []
+        for op in sort(keys(seen)) {
+            if not has(OPERAND, op) { push(uncovered, op) }
+        }
+        assert_eq(join(uncovered, " "), "", "every operator the parser produces has a case here")
+    }
+
+    mut op_lines = []
+    for op in sort(keys(OPERAND)) { push(op_lines, "show " + OPERAND[op]) }
+    same("every_operator_the_parser_produces", join(op_lines, "\n"))
+
     -- A bitwise operand goes through JavaScript's ToInt32 in both other
     -- engines. Reading `a.i` was right only for a T_INT: a T_FLOAT carries
     -- its value in `.f` and leaves `.i` at zero, so `1.5 & 3` was 0 where

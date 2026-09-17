@@ -1006,6 +1006,12 @@ class Compiler {
         elif op == "^" { this.code.emit(OP_BIT_XOR, 0, line) }
         elif op == "<<" { this.code.emit(OP_LSHIFT, 0, line) }
         elif op == ">>" { this.code.emit(OP_RSHIFT, 0, line) }
+        -- `is` is `==`. docs/reference.html lists it beside and/or/not, and
+        -- the interpreter and the bootstrap transpiler have both read it that
+        -- way from the start; only this compiler had never heard of it, so a
+        -- program using a documented operator died here with
+        -- "CompileError: Unknown binary operator: is".
+        elif op == "is" { this.code.emit(OP_EQ, 0, line) }
         else { throw "CompileError: Unknown binary operator: {op}" }
     }
 
@@ -1015,6 +1021,11 @@ class Compiler {
         if node.operator == "-" { this.code.emit(OP_NEG, 0, line) }
         elif node.operator == "not" { this.code.emit(OP_NOT, 0, line) }
         elif node.operator == "~" { this.code.emit(OP_BIT_NOT, 0, line) }
+        -- Falling through emitted nothing and left the operand on the stack,
+        -- so an operator this compiler does not know became a silently wrong
+        -- program rather than a message. The binary form above has always
+        -- said so; this one now does too.
+        else { throw "CompileError: Unknown unary operator: {node.operator}" }
     }
 
     fn compile_CallExpression(node) {

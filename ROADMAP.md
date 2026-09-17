@@ -314,6 +314,15 @@ lands with codegen tests that diff native output against the interpreter.
   arithmetic that leaves it hands back a double, and printing follows JavaScript's
   Number-to-String. The freestanding libc gained `%e` for it, which is what the KyanOS link test
   caught.
+- **Every operator the parser produces runs in every engine (done).** Two did not. `is` — which
+  the reference lists under Logical operators, and which the interpreter has always read as `==` —
+  was "CompileError: Unknown binary operator: is" under `--fast` and refused by `clarity cc`, so a
+  documented operator failed to compile rather than merely evaluating differently. `~` was the
+  mirror image: the VM answered -7, the interpreter and the native backend had never heard of it.
+  Both run everywhere now, and a case reads the operator set out of the parser's source so that
+  the next one added cannot go missing the same way. The VM's unary compiler also gained the
+  `else` its binary neighbour always had: an operator it did not know used to emit nothing and
+  leave the operand on the stack.
 - **An unknown name is a Clarity error (done).** A name that resolved to nothing was emitted as
   `v_name` and reported by the C compiler as an undeclared identifier — an error about generated
   code, naming a variable the program never wrote. The backend tracks what is in scope now and

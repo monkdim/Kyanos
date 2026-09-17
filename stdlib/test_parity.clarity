@@ -436,6 +436,25 @@ same("surplus arguments to a builtin are evaluated and dropped",
 same("float exponent literals",
      "show 1.5e10\nshow 2.0E-3\nshow 1e3\nshow 1.5e-3\nshow 6.02e23\n" +
      "show type(1e3)\nshow type(1.5e-3)")
+-- Every operator the parser produces, in one program. `is` was in the
+-- grammar, in the reference under Logical operators and in this engine's
+-- interpreter, and the bytecode compiler had never heard of it: the whole
+-- program died with "CompileError: Unknown binary operator: is". `~` was the
+-- mirror image — the VM ran it, the interpreter raised "Unknown unary
+-- operator".
+same("every operator the parser produces",
+     "show 6 + 3\nshow 6 - 3\nshow 6 * 3\nshow 6 / 3\nshow 7 % 3\n" +
+     "show 2 ** 10\nshow 6 == 3\nshow 6 != 3\nshow 6 < 3\nshow 6 > 3\n" +
+     "show 6 <= 3\nshow 6 >= 3\nshow true and false\nshow true or false\n" +
+     "show 6 is 6\nshow 6 & 3\nshow 6 | 3\nshow 6 ^ 3\nshow 6 << 1\n" +
+     "show 6 >> 1\nshow not true\nshow -6\nshow ~6")
+same("is is ==",
+     "show 1 is 1\nshow 1 is 2\nshow \"a\" is \"a\"\nshow [1] is [1]\n" +
+     "show null is null\nshow (1 is 1) == (1 == 1)")
+same("~ is JavaScript's",
+     "show ~0\nshow ~6\nshow ~-1\nshow ~2147483647\nshow ~1.5\n" +
+     "show ~4294967296\nshow ~(1 << 31)")
+
 same("bitwise operands go through ToInt32",
      "show 1.5 & 3\nshow -1.5 | 0\nshow 2.9 ^ 1\nshow 4294967297 & 0xFF\n" +
      "show (1 << 31)\nshow -8 >> 1\nshow 1e20 & 0xFF")
