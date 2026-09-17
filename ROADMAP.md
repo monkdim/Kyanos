@@ -278,11 +278,13 @@ lands with codegen tests that diff native output against the interpreter.
   `PUSH_SCOPE`/`POP_SCOPE` bracket every block form, a loop body gets a fresh scope per iteration,
   and a closure captures the chain rather than one map. Assignment follows the same chain, which
   it did not before — writing to a captured variable made a new local instead.
-- **The examples that still differ under `--fast` (next on the trunk).** Four of the seventeen
-  files in `examples/` do not run the same under the VM: `async_generators` dies in the compiler,
-  `classes` calls null, `patterns` gets `type(42)` wrong, and `control_flow` leaves the line off an
-  engine-raised error. A language whose own examples do not run on one of its engines is not
-  finished.
+- **Every example runs the same under `--fast` (done).** Four of the seventeen files in
+  `examples/` did not: `async_generators` died in the VM's compiler (every decorated function did —
+  `compile_DecoratedStatement` read a field the AST does not have), `classes` called null (an enum
+  compiled to a plain map, so `Color.names()` did not exist), `patterns` got `type(42)` wrong
+  (`"unknown"` instead of `"int"`, so `match type(x)` took no arm), and `control_flow` left the
+  line off an engine-raised error. All four fixed, with a `VMEnum` carrying the interpreter's enum
+  surface, and each fault pinned by a parity case.
 - **Networking.** TLS, then keep-alive and chunked encoding, so the HTTP
   client can talk to real services rather than only to plaintext ones.
 - **Stage 12+ — services stdlib.** Real crypto (not the toy cipher), a real embedded key/value or
