@@ -1014,6 +1014,52 @@ if CC == null {
         "show len(keys(pairs))\n" +
         "show pairs[\"99\"]")
 
+    -- ── an engine-raised error says where ─────────────────
+    -- A compiled binary carried the interpreter's words but never its line,
+    -- so the same caught error read differently. Each statement records the
+    -- line it starts on and cl_throw adds it; a call puts the caller's line
+    -- back on the way out, or an error after one blamed the callee's last
+    -- line.
+
+    same("error_lines",
+        "class C { fn init() { this.x = 1 } }\n" +
+        "class D { fn init() { this.y = 1 } }\n" +
+        "fn t(l, f) { try { show l + \": \" + str(f()) } catch e { show l + \": \" + str(e) } }\n" +
+        "t(\"divide by zero\", fn() { return 1 / 0 })\n" +
+        "t(\"index out of bounds\", fn() { let xs = [1]\n    return xs[9] })\n" +
+        "t(\"string index\", fn() { let s = \"a\"\n    return s[9] })\n" +
+        "t(\"missing property\", fn() { return C().missing })\n" +
+        "t(\"not callable\", fn() { let v = 5\n    return v() })\n" +
+        "t(\"missing method\", fn() { return D().nope() })\n" +
+        "t(\"spread a non-list\", fn() { let m = 5\n    return [...m] })\n" +
+        "t(\"destructure a non-list\", fn() { let m = 5\n    let [a, b] = m\n    return a })")
+    -- The line blamed is the caller's, not wherever the callee happened to
+    -- finish: a constructor that runs to its own last line must not be
+    -- blamed for what the caller does with the instance afterwards.
+    same("error_line_after_a_call",
+        "class P {\n" +
+        "    fn init(n) {\n" +
+        "        this.n = n\n" +
+        "        this.m = n * 2\n" +
+        "    }\n" +
+        "    fn get() { return this.n }\n" +
+        "}\n" +
+        "fn build() { return P(3) }\n" +
+        "try { show build().missing } catch e { show str(e) }\n" +
+        "try { let p = P(1)\n    show p.get()\n    show p.nope } catch e2 { show str(e2) }")
+    -- A program's own throw carries no line in any engine, and a rethrow
+    -- keeps the line it was first given rather than collecting one per frame.
+    same("a_thrown_value_is_left_alone",
+        "try { throw \"boom\" } catch e { show str(e) }\n" +
+        "fn inner() { let xs = [1]\n    return xs[9] }\n" +
+        "fn outer() { return inner() }\n" +
+        "try { show outer() } catch e2 { show str(e2) }")
+    same("missing_method_is_an_error",
+        "class D { fn init() { this.y = 1 } }\n" +
+        "try { show D().nope() } catch e { show str(e) }\n" +
+        "let d = D()\n" +
+        "show d.y")
+
     -- ── an enum as a value ────────────────────────────────
     -- An enum was a compile-time table and nothing else, so a bare mention of
     -- one emitted a v_C that nothing declared: `show C` failed inside the C
@@ -1041,15 +1087,11 @@ if CC == null {
         "show e.has(\"Mauve\")\n" +
         "let f = e.names\n" +
         "show f()")
-    -- The wording is asserted rather than the whole string, because a
-    -- compiled binary carries no line number on a runtime error and the
-    -- interpreter does -- a gap of its own, filed, and the same for every
-    -- error kind rather than anything to do with enums.
     same("enum_errors_dynamically",
         "enum Color { Red = \"#F00\" }\n" +
         "let e = Color\n" +
-        "try { show e.Mauve } catch err { show contains(str(err), \"Enum Color has no member 'Mauve'\") }\n" +
-        "try { show e[\"Red\"] } catch err2 { show contains(str(err2), \"Cannot index into enum\") }")
+        "try { show e.Mauve } catch err { show str(err) }\n" +
+        "try { show e[\"Red\"] } catch err2 { show str(err2) }")
     same("enum_captured_by_a_closure",
         "enum C { A = 1 }\n" +
         "fn f() {\n" +

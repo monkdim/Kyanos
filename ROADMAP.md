@@ -283,10 +283,11 @@ lands with codegen tests that diff native output against the interpreter.
   inside the C compiler. An enum is a runtime value now, with the interpreter's four methods, its
   `<enum C>` display and its errors, while a member read where the enum is named still resolves
   while compiling.
-- **A runtime error's line in native builds (next on the trunk).** A compiled binary carries the
-  interpreter's words on every engine-raised error but never its `(line N)`, where `clarity run`
-  and `run --fast` both do. The line is known while compiling, so the fix is to carry it to the
-  throw sites — the last systematic divergence the three-engine probes have turned up.
+- **A runtime error's line in native builds (done).** A compiled binary carried the interpreter's
+  words on every engine-raised error but never its `(line N)`. Each statement records its own line
+  now and `cl_throw` adds it, with a call putting the caller's line back on the way out — an error
+  after a call used to blame wherever the callee finished. Found and fixed with it: calling a
+  method an instance does not have answered `null` rather than raising the interpreter's error.
 - **Every example runs the same under `--fast` (done).** Four of the seventeen files in
   `examples/` did not: `async_generators` died in the VM's compiler (every decorated function did —
   `compile_DecoratedStatement` read a field the AST does not have), `classes` called null (an enum

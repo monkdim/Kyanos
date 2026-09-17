@@ -898,6 +898,16 @@ static Value cl_dispatch(Value self, const char* m, Value* a, long n){
   const char* cls = (self.t==T_OBJECT) ? ((Obj*)self.o)->cls : "";
   ClMethod fn = cl_find_method(cls, m);
   if(fn) return fn(self, a, n);
+  /* Nothing answers to that name. The interpreter and the VM both stop here,
+     naming the class and the property; this used to answer null, so a
+     compiled program carried the mistake onwards and a `try` written to catch
+     exactly this never fired. cl_get_field already refused the *read* of a
+     missing property -- this is the call form. */
+  if(self.t==T_OBJECT){
+    char buf[160];
+    snprintf(buf, sizeof buf, "RuntimeError: %s has no property '%s'", cls, m);
+    cl_throw(cl_str(cl_strdup(buf)));
+  }
   return cl_null();
 }
 /* instances print via a to_string method if defined, else <Cls instance> */
@@ -1142,7 +1152,26 @@ static Value cl_random2(Value a, Value b){
 typedef struct ClHandler { jmp_buf buf; struct ClHandler* prev; } ClHandler;
 static ClHandler* cl_handlers = 0;
 
+/* The line the statement now running starts on. Each statement records its
+   own, so an error the engine raises can say where -- which is what
+   `clarity run` and `run --fast` both do, and what a compiled binary did not.
+   Added only to a string opening with one of the engine's own prefixes, and
+   only when it does not already say a line: a program's own `throw "boom"`
+   carries no line in any engine, and a rethrow keeps the line it was first
+   given. */
+static long cl_line = 0;
+static Value cl_with_line(Value v){
+  if(v.t != T_STR || !v.s || cl_line <= 0) return v;
+  if(strstr(v.s, "(line ")) return v;
+  if(strncmp(v.s, "RuntimeError: ", 14) && strncmp(v.s, "TypeError: ", 11) &&
+     strncmp(v.s, "NameError: ", 11) && strncmp(v.s, "ValueError: ", 12)) return v;
+  long n = (long)strlen(v.s) + 32;
+  char* b = (char*)cl_alloc(n);
+  snprintf(b, n, "%s (line %ld)", v.s, cl_line);
+  return cl_str(b);
+}
 static void cl_throw(Value v){
+  v = cl_with_line(v);
   cl_thrown = v;
   if(!cl_handlers){
     cl_eprint("clarity: uncaught throw: ", cl_display(v));
@@ -2585,7 +2614,7 @@ class CCodegen {
         -- after a top-level function was ignored in favour of that function.
         let outer_locals = this.local_names
         this.local_names = this._bound_names(node)
-        mut body_lines = []
+        mut body_lines = ["  long __sl = cl_line;"]
         for l in this._generator_prologue() { push(body_lines, l) }
         for s in _block_stmts(node.body) { for l in this.stmt(s, 1) { push(body_lines, l) } }
         for l in this._generator_epilogue() { push(body_lines, l) }
@@ -2593,6 +2622,7 @@ class CCodegen {
         this.volatile_locals = outer_volatile
         this.in_generator = outer_generator
         this.local_names = outer_locals
+        push(lines, "  cl_line = __sl;")
         push(lines, "  return cl_null();")
         push(lines, "}")
         push(this.closure_defs, lines)
@@ -3576,7 +3606,19 @@ class CCodegen {
     }
 
     -- Emit C statement lines (a list of strings) for an AST statement.
+    -- Every statement records the line it starts on, so an error raised
+    -- while it runs can name it. One assignment per statement; the
+    -- interpreter and the VM both carry the line, and a compiled binary used
+    -- to drop it, so the same caught error read differently.
     fn stmt(node, indent) {
+        let line = node.line ?? 0
+        if line <= 0 { return this._stmt(node, indent) }
+        mut out = [repeat("  ", indent) + "cl_line = " + str(line) + ";"]
+        for l in this._stmt(node, indent) { push(out, l) }
+        return out
+    }
+
+    fn _stmt(node, indent) {
         let pad = repeat("  ", indent)
         let nt = node.node_type
         if nt == "LetStatement" {
@@ -3669,10 +3711,20 @@ class CCodegen {
                 this.tmp_id += 1
                 let gt = "__gr" + str(gid)
                 return [pad + "{ Value " + gt + " = " + val + ";",
+                        pad + "  cl_line = __sl;",
                         pad + "  if (cl_length(__yields) > 0) return __yields;",
                         pad + "  return " + gt + "; }"]
             }
-            if len(this.finally_stack) == 0 { return [pad + "return " + val + ";"] }
+            -- Put the caller's line back on the way out: cl_line belongs to
+            -- whichever statement is running, and a call that has returned is
+            -- no longer one of them. Without this a `C().missing` blamed the
+            -- last line of C's constructor.
+            if len(this.finally_stack) == 0 {
+                let rid = this.tmp_id
+                this.tmp_id += 1
+                let rt = "__rv" + str(rid)
+                return [pad + "{ Value " + rt + " = " + val + "; cl_line = __sl; return " + rt + "; }"]
+            }
             -- Returning out of a try has to run the finally blocks it is
             -- leaving, innermost first. The value is computed before they run,
             -- because a finally must not change what is being returned, and
@@ -3696,6 +3748,7 @@ class CCodegen {
             if this.in_generator {
                 push(lines, pad + "  if (cl_length(__yields) > 0) return __yields;")
             }
+            push(lines, pad + "  cl_line = __sl;")
             push(lines, pad + "  return " + t + "; }")
             return lines
         }
@@ -3854,10 +3907,11 @@ class CCodegen {
         -- try therefore gets volatile locals; see the exception runtime.
         this.volatile_locals = _has_try(_block_stmts(node.body))
         this.in_generator = _has_yield(_block_stmts(node.body))
-        mut lines = [this._fn_signature(node) + " {"]
+        mut lines = [this._fn_signature(node) + " {", "  long __sl = cl_line;"]
         for l in this._generator_prologue() { push(lines, l) }
         for s in _block_stmts(node.body) { for l in this.stmt(s, 1) { push(lines, l) } }
         for l in this._generator_epilogue() { push(lines, l) }
+        push(lines, "  cl_line = __sl;")
         push(lines, "  return cl_null();")
         push(lines, "}")
         this.local_names = []
@@ -3972,6 +4026,7 @@ class CCodegen {
                 this.local_names = this._bound_names(m)
                 push(lines, "Value f_" + class_node.name + "_" + m.name + "(Value v_this, Value* __a, long __n) {")
                 push(lines, "  (void)__a; (void)__n;")
+                push(lines, "  long __sl = cl_line;")
                 for l in this._generator_prologue() { push(lines, l) }
                 mut idx = 0
                 for p in m.params {
@@ -3980,6 +4035,7 @@ class CCodegen {
                 }
                 for s in _block_stmts(m.body) { for l in this.stmt(s, 1) { push(lines, l) } }
                 for l in this._generator_epilogue() { push(lines, l) }
+                push(lines, "  cl_line = __sl;")
                 push(lines, "  return cl_null();")
                 push(lines, "}")
                 this.in_generator = false
@@ -3987,11 +4043,13 @@ class CCodegen {
             }
         }
         push(lines, "Value cl_ctor_" + class_node.name + "(Value* __a, long __n) {")
+        push(lines, "  long __sl = cl_line;")
         push(lines, "  Value self = cl_object_new(\"" + class_node.name + "\");")
         let init_owner = this._method_owner(class_node, "init")
         if init_owner != null {
             push(lines, "  f_" + init_owner + "_init(self, __a, __n);")
         }
+        push(lines, "  cl_line = __sl;")
         push(lines, "  return self;")
         push(lines, "}")
         return lines
