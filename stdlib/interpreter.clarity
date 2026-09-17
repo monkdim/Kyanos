@@ -1243,6 +1243,17 @@ class Interpreter {
         let operand = this.evaluate(node.operand, env)
         if node.operator == "-" { return -operand }
         if node.operator == "not" { return not this._is_truthy(operand) }
+        -- `~x` is `-(ToInt32(x) + 1)`, which is what the VM already answers
+        -- and what every other bitwise operator here agrees with: the parser
+        -- has always produced `~`, the VM has always run it, and this engine
+        -- raised "Unknown unary operator" on the one operator of the set it
+        -- was missing. Written through `| 0` because that is the ToInt32 the
+        -- others go through, and because the bootstrap transpiler has no `~`
+        -- of its own to emit.
+        if node.operator == "~" {
+            let bits = operand | 0
+            return 0 - (bits + 1)
+        }
         throw "RuntimeError: Unknown unary operator: {node.operator} (line {node.line})"
     }
 

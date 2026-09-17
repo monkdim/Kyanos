@@ -656,6 +656,7 @@ static Value cl_shl(Value a, Value b){
   return cl_int((long)(int)((unsigned int)cl_to_int32(a) << (cl_to_int32(b) & 31)));
 }
 static Value cl_shr(Value a, Value b){ return cl_int((long)(cl_to_int32(a) >> (cl_to_int32(b) & 31))); }
+static Value cl_bnot(Value a){ return cl_int((long)(~cl_to_int32(a))); }
 static Value cl_neg(Value a){
   if(a.t==T_FLOAT) return cl_float(-a.f);
   return cl_int(-a.i);
@@ -2391,7 +2392,11 @@ let _BINOPS = {
     "+": "cl_add", "-": "cl_sub", "*": "cl_mul", "/": "cl_div", "%": "cl_mod",
     "**": "cl_pow", "==": "cl_eq", "!=": "cl_neq", "<": "cl_lt", ">": "cl_gt",
     "<=": "cl_lte", ">=": "cl_gte",
-    "&": "cl_band", "|": "cl_bor", "^": "cl_bxor", "<<": "cl_shl", ">>": "cl_shr"
+    "&": "cl_band", "|": "cl_bor", "^": "cl_bxor", "<<": "cl_shl", ">>": "cl_shr",
+    -- `is` is `==`, as it is in the interpreter and in the bootstrap
+    -- transpiler. docs/reference.html lists it as an operator of the
+    -- language, and it used to be refused here.
+    "is": "cl_eq"
 }
 
 -- Names that resolve to native runtime helpers rather than a captured
@@ -3503,6 +3508,7 @@ class CCodegen {
         if nt == "UnaryOp" {
             if node.operator == "not" { return "cl_not(" + this.expr(node.operand) + ")" }
             if node.operator == "-" { return "cl_neg(" + this.expr(node.operand) + ")" }
+            if node.operator == "~" { return "cl_bnot(" + this.expr(node.operand) + ")" }
             this.unsupported("unary '" + node.operator + "'", node.line)
             return "cl_null()"
         }

@@ -87,6 +87,88 @@ if len(files) == 0 {
     }
 }
 
+-- ── and the code in the language reference ───────────────
+--
+-- Same reason as the files above: code nothing opens. docs/reference.html is
+-- what a reader is pointed at, and two of its sixteen examples did not parse
+-- — a standalone `impl Drawable for Circle { ... }` block, which is not the
+-- syntax (a class names its interfaces on its own header), and
+-- `from "x.clarity" import Name as Alias`, which the `from` form does not
+-- read. Both are corrected; this is what stops a third from appearing.
+--
+-- Every `<pre><code>` block, unescaped and handed to the parser. An example
+-- is written to be copied, so "it parses" is the least it owes a reader.
+fn _find_reference() {
+    for cand in ["docs/reference.html", "../docs/reference.html"] {
+        if exists(cand) { return cand }
+    }
+    return null
+}
+
+-- The first example in the reference is the two comment forms and nothing
+-- else, and an empty program is the right answer for it. Everywhere else an
+-- empty body from non-empty source is a failure wearing a success, so the
+-- two cases have to be told apart rather than the check dropped.
+fn _only_comments(code) {
+    for line in split(code, "\n") {
+        let t = trim(line)
+        if len(t) == 0 { continue }
+        if not (starts(t, "--") or starts(t, "//")) { return false }
+    }
+    return true
+}
+
+fn _unescape(t) {
+    mut out = t
+    out = replace(out, "&lt;", "<")
+    out = replace(out, "&gt;", ">")
+    out = replace(out, "&quot;", "\"")
+    out = replace(out, "&#39;", "'")
+    -- Last, so that an escaped ampersand in one of the above cannot be
+    -- unescaped twice.
+    return replace(out, "&amp;", "&")
+}
+
+let ref_path = _find_reference()
+if ref_path == null {
+    show "  (docs/reference.html not found from here — reference examples skipped)"
+} else {
+    let ref_src = read(ref_path)
+    let chunks = split(ref_src, "<pre><code>")
+    mut ci = 1
+    mut blocks = 0
+    while ci < len(chunks) {
+        let end = index_of(chunks[ci], "</code></pre>")
+        if end > 0 {
+            blocks += 1
+            let code = _unescape(substring(chunks[ci], 0, end))
+            let tag = "reference.html block " + str(blocks)
+            mut err = null
+            mut n = 0
+            try {
+                let tree = parse(tokenize(code, tag), code)
+                n = len(tree.body)
+            } catch e { err = str(e) }
+            if err != null {
+                FAILED += 1
+                show "  FAIL: " + tag + "\n    " + err
+            } elif n == 0 and not _only_comments(code) {
+                FAILED += 1
+                show "  FAIL: " + tag + " parsed to an empty program"
+            } else {
+                PASSED += 1
+            }
+        }
+        ci += 1
+    }
+    -- A count, so that a reference whose markup changes shape cannot pass
+    -- this by supplying nothing to check.
+    if blocks < 10 {
+        FAILED += 1
+        show "  FAIL: only " + str(blocks) + " code blocks found in " + ref_path
+    }
+}
+
 show ""
 show "parses: " + str(PASSED) + " passed, " + str(FAILED) + " failed"
 if FAILED > 0 { throw str(FAILED) + " file(s) do not parse" }

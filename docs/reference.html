@@ -281,7 +281,12 @@ show str(d)  -- "north"
     fn bounds()
 }
 
-impl Drawable for Circle {
+class Shape {
+    fn init(x, y) { this.x = x; this.y = y }
+}
+
+class Circle &lt; Shape impl Drawable {
+    fn init(x, y, r) { this.x = x; this.y = y; this.r = r }
     fn draw() {
         show "Drawing circle at ({this.x}, {this.y})"
     }
@@ -291,13 +296,16 @@ impl Drawable for Circle {
     }
 }
 </code></pre>
+<p>A class declares the interfaces it implements on its own header, after the
+parent class if it has one, and the methods live in the class body. There is
+no separate <code>impl</code> block.</p>
 
 <h2 id="modules">Modules</h2>
 <pre><code>-- Import specific names
 from "math.clarity" import sqrt, pi
 
--- Import with alias
-from "collections.clarity" import HashMap as HM
+-- Import a whole module under a name of your choosing
+import "collections.clarity" as collections
 
 -- Relative import
 from "../lib/utils.clarity" import helper

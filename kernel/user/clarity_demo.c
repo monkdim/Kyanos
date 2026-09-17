@@ -522,6 +522,7 @@ static Value cl_shl(Value a, Value b){
   return cl_int((long)(int)((unsigned int)cl_to_int32(a) << (cl_to_int32(b) & 31)));
 }
 static Value cl_shr(Value a, Value b){ return cl_int((long)(cl_to_int32(a) >> (cl_to_int32(b) & 31))); }
+static Value cl_bnot(Value a){ return cl_int((long)(~cl_to_int32(a))); }
 static Value cl_neg(Value a){
   if(a.t==T_FLOAT) return cl_float(-a.f);
   return cl_int(-a.i);
