@@ -34,8 +34,33 @@ Cleared during the mid-2026 hardening pass — recorded so the tiers below read 
 
 ## Concrete gaps still open
 
-### `clarity gen-runtime` drift
-`native/runtime.js` is documented as auto-generated from `stdlib/runtime_spec.clarity`, but regenerating produces a large diff against the committed file — and (per AUDIT.md) blindly regenerating would revert behavioral fixes that live only in `runtime.js` (the `_clarityType` branch of `type()`, FFI string/BigInt marshalling, the `_ffi_read_view` GC workaround). Until spec ↔ runtime are reconciled, builtin edits must touch both by hand. Fragile; needs a careful, test-guarded reconciliation, not a blind regen. What *is* checked now is the surface rather than the bodies: `stdlib/test_runtime_surface.clarity` requires every runtime export to be reachable from a Clarity program and the interpreter, the bytecode VM and both transpiler headers to agree on the same 158 builtins, so a builtin added to one place and forgotten in another fails the suite.
+### `clarity gen-runtime` would have destroyed the runtime it claimed to generate
+Fixed, by retiring the generator. `native/runtime.js` said it was
+auto-generated from `stdlib/runtime_spec.clarity` and must not be edited by
+hand. It was not, and running `clarity gen-runtime` would have destroyed it.
+Measured against the committed runtime, regenerating produced 947 lines where
+there are 1132, and:
+
+- **Dropped fourteen exports outright** — the seven `_host_*` framebuffer
+  bridges and the seven `_pty_*` terminal bridges, which is to say the
+  desktop and everything that draws.
+- **Lost `_ffi_read_view`.** The committed `_ffi_read_*` builtins read
+  runtime-owned buffers through a `DataView` so a read observes a write made
+  through the same view; the generated file has no occurrence of it at all.
+- **Broke `type()`.** The committed one checks the `_clarityType` marker and
+  puts the `function` test before the `object → "map"` fallback. The generated
+  one has neither: every interpreter object, and every function, would answer
+  `"map"`.
+
+So the runtime was the source of truth and the spec was a stale copy of it.
+The generator, the spec and the `gen-runtime` command are gone, and the
+runtime's header now says what is true — including the five other places a new
+builtin has to be registered, which `stdlib/test_runtime_surface.clarity`
+already enforces. That check is what makes a generator unnecessary: it fails
+if a builtin is added to one place and forgotten in another.
+
+This is what PR #38 proposed in June, on the same evidence; it was never
+rebased and would no longer merge.
 
 ### `clarity cc` evaluated arguments in the opposite order to the interpreter
 Fixed. The emitter built every multi-operand construct as one C expression —
