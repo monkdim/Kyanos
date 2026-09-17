@@ -28,6 +28,33 @@ fn _find_cc() {
     return null
 }
 let CC = _find_cc()
+-- The binary these tests are running under, for the few checks that need a
+-- whole program run the way a person runs it rather than an Interpreter built
+-- in this process. Under a bare `bun` run the executable is bun itself, which
+-- cannot take `run <file>`; those checks are skipped rather than guessed at.
+fn _find_clarity() {
+    let exe = _host_exe()
+    if ends(exe, "/bun") or ends(exe, "\\bun.exe") { return null }
+    return exe
+}
+let _CLARITY = _find_clarity()
+
+-- `cmd`, given `secs` to finish in, killed if it takes longer. `timeout(1)` is
+-- GNU coreutils and is not on a stock macOS, so this is written in the shell
+-- exec_full already runs everything through: the command in the background, a
+-- watchdog beside it, and whichever finishes first. A killed command comes
+-- back with exit code 137, which is the caller's signal that it ran out of
+-- time rather than failed.
+--
+-- The watchdog's own output goes to /dev/null deliberately. It inherits the
+-- pipe exec_full reads, and a `sleep` still holding that pipe would keep the
+-- read open for the whole limit even after the command finished — every call
+-- would take the full `secs`.
+fn _with_time_limit(cmd, secs) {
+    return cmd + " & __c=$!; ( sleep " + str(secs) +
+        "; kill -9 $__c 2>/dev/null ) >/dev/null 2>&1 & __k=$!; " +
+        "wait $__c; __s=$?; kill -9 $__k 2>/dev/null; exit $__s"
+}
 -- FFI programs pull dlsym, which needs libdl on Linux (a stub on modern glibc);
 -- on macOS dlsym is in libSystem. Non-FFI programs strip the helper at -O2, so
 -- the extra flag is harmless everywhere.
@@ -709,29 +736,84 @@ if CC == null {
     -- same name, and a callee that is any other expression is called too.
     same("calling_a_stored_function", "fn t(label, f) { try { show label + \": \" + str(f()) } catch e { show label + \": THROWS\" } }\nlet m = { \"f\": fn(x) { return x * 2 } }\nt(\"map\", fn() { return m.f(3) })\nt(\"indexed\", fn() { return m[\"f\"](3) })\nclass C {\n    fn init() { this.g = fn(x) { return x + 1 } }\n    fn meth(x) { return x * 10 }\n}\nlet c = C()\nt(\"method\", fn() { return c.meth(2) })\nt(\"field\", fn() { return c.g(2) })")
 
-    -- Every file in examples/ compiles. That was the roadmap item this work
-    -- closes, and it is the kind of claim that goes stale silently, so it is
-    -- checked rather than asserted: the compiler is handed each example and
-    -- has to produce C for it. Running them is a separate matter — the FFI
-    -- examples are native-only and have no interpreter counterpart.
+    -- Every file in examples/ compiles, and every one the interpreter can run
+    -- prints the same thing compiled.
+    --
+    -- Compiling was the whole of this check, and compiling is not enough:
+    -- examples/functions.clarity compiled cleanly and printed a counter stuck
+    -- at 1, because a closed-over `mut` was captured by value. The example had
+    -- the bug written down in it the whole time and the suite said the example
+    -- was fine, because "fine" only ever meant the compiler produced C for it.
+    --
+    -- Each example runs as a separate process, the way a person runs it, and
+    -- not through interp_run: an example may call exit() — examples/elf64info
+    -- does, when it is given no file to read — which in-process takes the test
+    -- runner down with it, and args() in-process would be the runner's own
+    -- arguments rather than the example's.
+    --
+    -- The FFI examples have no interpreter counterpart — ffi_open, ffi_sym and
+    -- ffi_buffer are native-only builtins — so those are compiled and left
+    -- uncompared. Which ones those are is not written down here: an example
+    -- the interpreter refuses is skipped, and the number compared is asserted,
+    -- so the comparison cannot quietly fall to nothing.
     let _ex_dir = if exists("examples") { "examples" } else { "../examples" }
     if exists(_ex_dir) {
         mut _ex_total = 0
         mut _ex_refused = []
+        mut _ex_compared = 0
+        mut _ex_skipped = []
         for _ex_name in split(trim(exec("ls " + _ex_dir + " | grep '\\.clarity$'")), "\n") {
             let _ex_file = _ex_dir + "/" + trim(_ex_name)
             if len(trim(_ex_name)) > 0 and exists(_ex_file) {
                 _ex_total += 1
                 let _ex_src = read(_ex_file)
+                mut _ex_compiles = true
                 try {
                     compile_to_c(parse(tokenize(_ex_src, _ex_file), _ex_src))
                 } catch _ex_err {
+                    _ex_compiles = false
                     push(_ex_refused, trim(_ex_name) + ": " + str(_ex_err))
+                }
+                if _ex_compiles and CC != null and _CLARITY != null {
+                    let _ex_ran = exec_full(_with_time_limit(_CLARITY + " run " + _ex_file, 20))
+                    -- A Clarity error here is the file saying it is
+                    -- native-only: the ffi_* builtins do not exist in the
+                    -- interpreter. It is on stdout, not stderr, which is
+                    -- where `clarity run` puts a program's own failure; an
+                    -- example that merely exits non-zero by design -- as
+                    -- elf64info does when given no file -- is still compared,
+                    -- because the compiled binary should say the same thing.
+                    if contains(_ex_ran.stdout, "Clarity Error") or contains(_ex_ran.stderr, "Clarity Error") {
+                        push(_ex_skipped, trim(_ex_name) + " (native-only)")
+                    } elif _ex_ran.exit_code == 137 {
+                        -- Out of time. Every other example finishes in well
+                        -- under a second, so twenty is a hundredfold margin.
+                        -- examples/memtrainer.clarity is the one that needs it:
+                        -- it searches this process's whole writable heap
+                        -- for a planted signature, a byte at a time, and the
+                        -- interpreter's process is a ~200 MB runtime where the
+                        -- compiled binary is a few tens of kilobytes. The two
+                        -- runs are not comparable work, and the interpreted one
+                        -- takes minutes. read_mem and write_mem have their own
+                        -- cases above, on programs sized for a test.
+                        push(_ex_skipped, trim(_ex_name) + " (over the time limit)")
+                    } else {
+                        let _ex_base = substring(trim(_ex_name), 0, len(trim(_ex_name)) - 8)
+                        _ex_compared += 1
+                        assert_eq(native_run(_ex_src, "ex_" + _ex_base), trim(_ex_ran.stdout),
+                            "examples/" + trim(_ex_name) + " prints the same compiled")
+                    }
                 }
             }
         }
         assert_eq(_ex_total >= 17, true, "every example was found (" + str(_ex_total) + ")")
         assert_eq(len(_ex_refused), 0, "every example compiles: " + join(_ex_refused, "; "))
+        if CC != null and _CLARITY != null {
+            assert_eq(_ex_compared >= 12, true,
+                "at least twelve examples were compared, not just compiled (" +
+                str(_ex_compared) + " compared; skipped: " +
+                join(_ex_skipped, ", ") + ")")
+        }
     }
 
     -- ── a local shadows a global ──
@@ -765,6 +847,42 @@ if CC == null {
     -- mutating through the capture is visible outside — matching the interpreter.
     same("closure_captures_list", "let acc = []\neach([1, 2, 3], fn(x) { push(acc, x * x) })\nshow acc")
     same("closure_captures_object", "class Box { fn init() { this.n = 0 }\nfn add(x) { this.n = this.n + x } }\nlet b = Box()\neach([1, 2, 3, 4], fn(x) { b.add(x) })\nshow b.n")
+
+    -- ── a closed-over variable is one variable ──
+    -- A capture used to be a snapshot, and a snapshot is wrong in both
+    -- directions: a closure's writes went to its own copy and were lost when
+    -- it returned (a counter that never counted past 1), and a closure made
+    -- before a later assignment kept reading the value from before it. A name
+    -- a closure both sees and writes lives in a one-slot list now, so the
+    -- closure and the scope that made it look at the same slot.
+    --
+    -- Only such a name: a captured-but-never-assigned one stays a plain copy,
+    -- which is why the read-only cases above are here too.
+    same("capture_counter", "fn mk() {\n    mut n = 0\n    return fn() { n = n + 1\n        return n }\n}\nlet f = mk()\nshow f(), f(), f()")
+    same("capture_two_closures_share", "fn counter(start) {\n    mut count = start\n    return { next: fn() { count += 1\n            return count },\n             value: fn() { return count } }\n}\nlet c = counter(0)\nshow c.next()\nshow c.next()\nshow c.value()")
+    same("capture_assigned_after", "fn f() {\n    mut n = 0\n    let g = fn() { return n }\n    n = 5\n    return g()\n}\nshow f()")
+    same("capture_read_only_stays_a_copy", "fn k() {\n    let c = 7\n    let g = fn() { return c }\n    return g()\n}\nshow k()")
+    same("capture_parameter", "fn params(a) {\n    let bump = fn() { a += 1\n        return a }\n    return [bump(), bump(), a]\n}\nshow params(10)")
+    same("capture_loop_variable_per_iteration", "fn loops() {\n    mut fns = []\n    for i in [1, 2, 3] {\n        push(fns, fn() { return i })\n    }\n    return [f() for f in fns]\n}\nshow loops()")
+    same("capture_catch_binding", "fn catches() {\n    mut e = null\n    try { throw \"boom\" } catch err { e = err }\n    let g = fn() { e = e + \"!\"\n        return e }\n    return g()\n}\nshow catches()")
+    same("capture_destructured_name", "fn destr() {\n    mut [a, b] = [1, 2]\n    let g = fn() { a = a + b\n        return a }\n    return [g(), g(), a]\n}\nshow destr()")
+    same("capture_destructured_map_name", "fn mdestr() {\n    mut {x, y} = {x: 1, y: 10}\n    let g = fn() { x = x + y\n        return x }\n    return [g(), x]\n}\nshow mdestr()")
+    same("capture_multi_assign", "fn multi() {\n    mut p = 1\n    mut q = 2\n    let g = fn() { p, q = q, p\n        return [p, q] }\n    return [g(), p, q]\n}\nshow multi()")
+    same("capture_in_a_method", "class Box {\n    fn init(v) { this.v = v }\n    fn run() {\n        mut t = this.v\n        let g = fn() { t = t * 2\n            return t }\n        return [g(), g(), t]\n    }\n}\nshow Box(3).run()")
+    same("capture_through_two_closures", "fn deep() {\n    mut n = 0\n    let a = fn() { let b = fn() { n = n + 5 }\n        b()\n        return n }\n    return [a(), n]\n}\nshow deep()")
+    same("capture_in_a_generator", "fn gen() {\n    mut n = 0\n    let bump = fn() { n += 1 }\n    bump()\n    bump()\n    yield n\n    yield n * 10\n}\nshow gen()")
+    same("capture_drives_a_while_loop", "fn whileloop() {\n    mut i = 0\n    mut acc = []\n    let g = fn() { i += 1\n        return i }\n    while i < 3 { push(acc, g()) }\n    return acc\n}\nshow whileloop()")
+    -- A comprehension variable is scoped to the comprehension and is never
+    -- boxed, whatever it shadows. Reading it out of the outer name's box
+    -- would be reading a different variable altogether.
+    same("capture_shadowed_by_a_comprehension", "fn shadow() {\n    mut x = 1\n    let g = fn() { x = x + 1\n        return x }\n    let ys = [x * 10 for x in [5, 6]]\n    return [g(), ys, x]\n}\nshow shadow()")
+    -- A nested fn that calls itself was refused outright, with a message
+    -- saying native builds have no by-reference capture. They do now: the box
+    -- is declared empty, the closure captures it, and the closure goes into
+    -- the slot — so the capture can be taken before there is anything in it.
+    same("capture_nested_recursion", "fn outer(n) {\n    fn fact(k) { if k <= 1 { return 1 }\n        return k * fact(k - 1) }\n    return fact(n)\n}\nshow outer(5)")
+    same("capture_nested_recursion_accumulates", "fn outer() {\n    fn walk(xs, i, acc) {\n        if i >= len(xs) { return acc }\n        push(acc, xs[i] * 2)\n        return walk(xs, i + 1, acc)\n    }\n    return walk([1, 2, 3], 0, [])\n}\nshow outer()")
+    same("capture_two_recursive_nested_fns", "fn two() {\n    fn a(n) { if n <= 0 { return 0 }\n        return 1 + a(n - 1) }\n    fn b(n) { if n <= 0 { return 100 }\n        return b(n - 1) }\n    return [a(3), b(3)]\n}\nshow two()")
 
     -- ── stage 5/6: allocation, then the mark-sweep GC ──
     -- Heavy allocation crosses the GC threshold and exercises list-growth-by-
@@ -1694,10 +1812,14 @@ if CC == null {
         "}\n" +
         "show f()")
 
-    -- A nested fn that calls itself needs by-reference capture: the closure
-    -- is built from the values in scope, and its own name is not one of them
-    -- yet. Refusing it by name beats emitting a call to a variable the
-    -- closure never captured, which is what a C compiler would report.
+    -- A nested fn that calls itself was refused by name here, because the
+    -- closure was built from the values in scope and its own name was not one
+    -- of them yet. Boxing gives it one: the box is declared empty, the closure
+    -- captures the box, and the closure goes into the slot afterwards. What was
+    -- a refusal is a program that compiles and answers, and this case is the
+    -- record of that -- the refusal is still in the backend as a backstop, so
+    -- if a change ever stopped boxing such a name this would say so rather
+    -- than let the name be captured before it holds anything.
     let SELF_REC = "fn f(n) {\n" +
         "    fn fact(k) { if k <= 1 { return 1 }\n return k * fact(k - 1) }\n" +
         "    return fact(n)\n" +
@@ -1705,8 +1827,7 @@ if CC == null {
         "show f(5)"
     mut rec_msg = ""
     try { compile_to_c(parse(tokenize(SELF_REC, "<t>"), SELF_REC)) } catch e { rec_msg = str(e) }
-    assert_eq(contains(rec_msg, "calls itself"), true, "self_recursive_nested_fn_refused")
-    assert_eq(contains(rec_msg, "fact"), true, "self_recursive_nested_fn_named")
+    assert_eq(rec_msg, "", "self_recursive_nested_fn_compiles")
 
     -- `o?.a`, `await x` and `yield x` were missing from the closure's
     -- free-variable walk, so a closure over one of them named a C variable

@@ -22,9 +22,10 @@
 -- Instances print via a `to_string` method if present, else `<Cls instance>`.
 --
 -- Stage 4 adds closures: `fn(...) {...}` expressions are hoisted to top-level
--- C functions and their free variables snapshotted by value into a capture
--- array (T_CLOSURE). A free-variable analysis walks the body to find what to
--- capture; closures are called through `cl_call`, and `map`/`filter`/`reduce`/
+-- C functions and their free variables put into a capture array (T_CLOSURE).
+-- A free-variable analysis walks the body to find what to capture, and a name
+-- the closure both reads and writes is captured by reference, through a
+-- one-slot box; every other name is a copy taken at creation; closures are called through `cl_call`, and `map`/`filter`/`reduce`/
 -- `each` are native builtins that drive a closure over a collection. Captured
 -- lists/objects share their pointer, so mutation through a capture is visible
 -- outside — matching the interpreter. (Reassigning a captured *scalar* only
@@ -220,7 +221,9 @@ typedef struct { const char* name; Value members; } EnumV;
 typedef struct ClassV ClassV;
 
 /* closures: a function pointer over (arg-array, capture-array) plus the
-   captured values (snapshotted by value at creation) */
+   captured values, taken at creation. A name the closure also assigns is
+   captured as the one-slot box that holds it rather than as its value, so the
+   write is visible outside; see cl_box_new. */
 /* Calling conventions carry the argument count.
    Without it a callee cannot tell `f(1)` from `f(1, 2)`, which is what a rest
    parameter needs to know — and what a fixed parameter needs in order to read
@@ -1129,6 +1132,20 @@ static char* cl_obj_display(Value v){
 }
 
 /* ── closures ── */
+/* A variable that a closure both captures and assigns lives in a one-slot
+   list, so the closure and the scope that made it look at the same slot.
+   Capturing the Value itself snapshots it, and a snapshot is wrong in both
+   directions: a counter never counted (the closure's writes went to its own
+   copy and were lost on return), and a closure made before a later
+   assignment kept reading the old value.
+
+   A one-slot list rather than a new tag because the collector already traces
+   a List, and a box is never handed to a program: only the emitter makes one
+   and only the emitter reads it. */
+static Value cl_box_new(Value v){ return cl_list_add(cl_list_new(), v); }
+static Value cl_box_get(Value b){ return ((List*)b.o)->items[0]; }
+static Value cl_box_set(Value b, Value v){ ((List*)b.o)->items[0] = v; return v; }
+
 static Value cl_closure_new(ClFn fn, Value* cap, int ncap){
   Closure* c=(Closure*)cl_alloc(sizeof(Closure));
   c->fn=fn; c->ncap=ncap;
@@ -2581,6 +2598,12 @@ class CCodegen {
         this.fn_rest = {}       -- those whose last parameter is a rest one
         this.fn_values = {}     -- functions referenced as values (need a thunk)
         this.class_values = {}  -- classes referenced as values (need a thunk too)
+        -- Set only while _boxed_names is running its one walk; see there.
+        this.capture_sink = null
+        this.assign_sink = null
+        -- Names in the scope being emitted that live in a one-slot list
+        -- because a closure both sees and writes them.
+        this.boxed = {}
         this.local_names = []   -- names bound inside the function being emitted
         this.global_names = []  -- module-level let/mut/destructure/decorated names
         this.outer_scopes = []  -- the scopes around the closure being emitted
@@ -2601,7 +2624,8 @@ class CCodegen {
 
     -- A name that needs no capture: a native builtin, a top-level function,
     -- or a class (constructor). Everything else referenced inside a closure
-    -- but not bound there is a free variable captured by value.
+    -- but not bound there is a free variable, captured as its value or -- if
+    -- something assigns it -- as the box that holds it; see _boxed_names.
     --
     -- Unless the enclosing function shadows it. `let lines = [...]` in a
     -- function makes `lines` that function's variable, whatever the builtin
@@ -2745,6 +2769,7 @@ class CCodegen {
                 inner = this._set_add(inner, pn)
             }
             this._free_stmts(_block_stmts(node.body), inner, acc)
+            this._record_captures(node)
             return
         }
         -- literals and anything else: no free variables
@@ -2755,6 +2780,11 @@ class CCodegen {
         if nt == "LetStatement" { this._free_expr(node.value, bound, acc); return }
         if nt == "AssignStatement" {
             if node.target.node_type == "Identifier" {
+                -- Every name this program assigns, wherever it sits, for
+                -- _boxed_names. Recorded whether or not it is free here,
+                -- because a name assigned in the function that declares it
+                -- still has to be boxed once a closure reads it.
+                if this.assign_sink != null { this.assign_sink[node.target.name] = true }
                 if not has(bound, node.target.name) and not this._is_global(node.target.name) { acc[node.target.name] = true }
             } else {
                 this._free_expr(node.target, bound, acc)
@@ -2768,6 +2798,16 @@ class CCodegen {
             mut inner = this._set_add(bound, node.name)
             for p in node.params { inner = this._set_add(inner, _param_name(p)) }
             this._free_stmts(_block_stmts(node.body), inner, acc)
+            -- A `fn` that calls itself captures its own name, and nothing has
+            -- put a value in that name yet when the capture is taken. The name
+            -- is free on the closure's own terms, so _record_captures finds it;
+            -- recording it as assigned too is what makes _boxed_names box it,
+            -- and the box is what a self-call needs — it exists before the
+            -- closure that captures it does.
+            this._record_captures(node)
+            if this.assign_sink != null and this._fn_refers_to_itself(node) {
+                this.assign_sink[node.name] = true
+            }
             return
         }
         if nt == "DestructureLetStatement" { this._free_expr(node.value, bound, acc); return }
@@ -2775,6 +2815,7 @@ class CCodegen {
             for v in node.values { this._free_expr(v, bound, acc) }
             for target in node.targets {
                 if target.node_type == "Identifier" {
+                    if this.assign_sink != null { this.assign_sink[target.name] = true }
                     if not has(bound, target.name) and not this._is_global(target.name) { acc[target.name] = true }
                 } else {
                     this._free_expr(target, bound, acc)
@@ -2851,8 +2892,9 @@ class CCodegen {
 
     -- Does a nested function call itself? Its body's free variables are what
     -- a closure would capture, and its own name among them means recursion —
-    -- which by-value capture cannot express, because the capture is taken
-    -- before there is anything to capture.
+    -- which a copy cannot express, because the capture is taken before there
+    -- is anything to copy. _boxed_names uses this to box the name instead:
+    -- an empty box can be captured, and filled afterwards.
     fn _fn_refers_to_itself(node) {
         mut bound = {}
         for p in node.params { bound = this._set_add(bound, _param_name(p)) }
@@ -2861,8 +2903,113 @@ class CCodegen {
         return has(acc, node.name)
     }
 
+    -- What a closure captures, for _boxed_names: the names free in its body
+    -- on *its* terms. The walks above deliberately leave out anything the
+    -- enclosing scope binds, because those are not free variables of that
+    -- scope — but they are exactly the ones a box is for, so they are
+    -- collected here instead, the same way _closure works out its capture
+    -- array. Filtering to the scope's own names happens in _boxed_names.
+    fn _record_captures(node) {
+        if this.capture_sink == null { return }
+        mut own = {}
+        for p in node.params { own = this._set_add(own, _param_name(p)) }
+        mut caps = {}
+        this._free_stmts(_block_stmts(node.body), own, caps)
+        for k in keys(caps) { this.capture_sink[k] = true }
+    }
+
+    -- Which of the names a scope binds have to live in a one-slot box.
+    --
+    -- A name is boxed when a closure written inside the scope captures it and
+    -- something assigns it. Either on its own is harmless: a snapshot of a
+    -- value that never changes is that value, and a variable nothing else is
+    -- looking at can be written where it stands. Together they are the counter
+    -- that never counted — the closure incremented its own copy of `n`, and
+    -- the copy died with the call.
+    --
+    -- Only names this scope itself binds. What a closure captures from further
+    -- out is already boxed out there (and the box is what gets captured), or
+    -- is a module-level binding, which is a C global and needs no box at all.
+    fn _boxed_names(node) {
+        mut captured = {}
+        mut assigned = {}
+        let saved_capture = this.capture_sink
+        let saved_assign = this.assign_sink
+        this.capture_sink = captured
+        this.assign_sink = assigned
+        mut bound = {}
+        for p in node.params { bound = this._set_add(bound, _param_name(p)) }
+        mut acc = {}
+        this._free_stmts(_block_stmts(node.body), bound, acc)
+        this.capture_sink = saved_capture
+        this.assign_sink = saved_assign
+
+        let mine = this._bound_names(node)
+        mut out = {}
+        for n in keys(captured) {
+            if has(assigned, n) and contains(mine, n) { out[n] = true }
+        }
+        return out
+    }
+
+    -- The boxed set for a closure: what it captures that is boxed where it was
+    -- written — the capture array carries the box itself — plus whatever its
+    -- own body boxes.
+    fn _boxed_for_closure(node, caps) {
+        mut out = {}
+        for cn in caps {
+            if has(this.boxed, cn) { out[cn] = true }
+        }
+        for n in keys(this._boxed_names(node)) { out[n] = true }
+        return out
+    }
+
+    -- Reading a local by name. A boxed one is a one-slot list, so the read
+    -- goes through the slot; every other name is the variable itself.
+    fn _read(name) {
+        if has(this.boxed, name) { return "cl_box_get(v_" + name + ")" }
+        return "v_" + name
+    }
+
+    -- Declaring a local: `Value v_x = <init>;`, with the box put around the
+    -- initial value when the name is one of the boxed ones.
+    fn _decl(name, init) {
+        let qual = if this.volatile_locals { "volatile Value v_" } else { "Value v_" }
+        if has(this.boxed, name) { return qual + name + " = cl_box_new(" + init + ");" }
+        return qual + name + " = " + init + ";"
+    }
+
+    -- The same for a declaration whose C qualifier the caller fixes (a loop
+    -- variable and a catch binding are always plain, being scoped to a block
+    -- the emitter writes rather than to the function).
+    fn _decl_plain(name, init) {
+        if has(this.boxed, name) { return "Value v_" + name + " = cl_box_new(" + init + ");" }
+        return "Value v_" + name + " = " + init + ";"
+    }
+
+    -- Writing a local: `v_x = <val>;`, or into the slot when the name is boxed.
+    fn _write(name, val) {
+        if has(this.boxed, name) { return "cl_box_set(v_" + name + ", " + val + ");" }
+        return "v_" + name + " = " + val + ";"
+    }
+
+    -- `this.boxed` with `names` taken out of it, for a binding form that
+    -- declares a plain C local the boxed set does not know about — a
+    -- comprehension variable, which is scoped to the comprehension and is not
+    -- among the function's bound names. Without this, a comprehension over `x`
+    -- inside a function whose own `x` is boxed read the comprehension's `x`
+    -- through cl_box_get, which it is not.
+    fn _boxed_without(names) {
+        mut out = {}
+        for k in keys(this.boxed) {
+            if not contains(names, k) { out[k] = true }
+        }
+        return out
+    }
+
     -- Compile a `fn(...) {...}` expression: hoist it to a top-level C function
-    -- and snapshot its free variables by value into a capture array. Returns
+    -- and put its free variables into a capture array — each one's value, or
+    -- the box holding it where this closure or another also writes it. Returns
     -- the `cl_closure_new(...)` expression that builds the closure Value.
     fn _closure(node) {
         let cid = this._next_closure()
@@ -2874,6 +3021,10 @@ class CCodegen {
         mut acc = {}
         this._free_stmts(_block_stmts(node.body), bound, acc)
         let caps = keys(acc)
+        -- Set before a line is emitted: _bind_param's own boxing below, the
+        -- body, and every read in it all go through this.
+        let outer_boxed = this.boxed
+        this.boxed = this._boxed_for_closure(node, caps)
 
         mut lines = ["Value __closure_" + str(cid) + "(Value* __a, Value* __cap, long __n) {",
                      "  (void)__a; (void)__n;"]
@@ -2881,6 +3032,12 @@ class CCodegen {
         for p in node.params {
             push(lines, this._bind_param(_raw_param(p), pi))
             pi += 1
+        }
+        -- A parameter a closure inside this one captures and writes goes into
+        -- a box right after it is bound, so both see the one slot.
+        for p in node.params {
+            let bpn = _param_name(p)
+            if has(this.boxed, bpn) { push(lines, "  v_" + bpn + " = cl_box_new(v_" + bpn + ");") }
         }
         mut ci = 0
         for cn in caps {
@@ -2918,6 +3075,9 @@ class CCodegen {
         this.in_generator = outer_generator
         this.local_names = outer_locals
         this.outer_scopes = saved_scopes
+        -- Restored before the capture expressions below, which pass an outer
+        -- box along as it stands rather than reading out of it.
+        this.boxed = outer_boxed
         push(lines, "  cl_line = __sl;")
         push(lines, "  return cl_null();")
         push(lines, "}")
@@ -3044,7 +3204,7 @@ class CCodegen {
                     this.reject("'" + callee.name + "' is not defined", node.line)
                     return "cl_null()"
                 }
-                call = "cl_call(v_" + callee.name + ", " + argv + ")"
+                call = "cl_call(" + this._read(callee.name) + ", " + argv + ")"
             }
         } else {
             this.unsupported("spread into an indirect call", node.line)
@@ -3072,7 +3232,7 @@ class CCodegen {
             -- global thing was called instead: `fn outer(helper) {
             -- return helper(7) }` called the top-level helper.
             if contains(this.local_names, callee.name) {
-                return "cl_call(v_" + callee.name + ", " + this._argv(args) + ")"
+                return "cl_call(" + this._read(callee.name) + ", " + this._argv(args) + ")"
             }
             -- ClassName(args) → construct an instance
             if contains(this.classes, callee.name) {
@@ -3082,7 +3242,7 @@ class CCodegen {
             -- returned, so the call is through that value and not the C
             -- function underneath it.
             if has(this.decorated, callee.name) and not contains(this.local_names, callee.name) {
-                return "cl_call(v_" + callee.name + ", " + this._argv(args) + ")"
+                return "cl_call(" + this._read(callee.name) + ", " + this._argv(args) + ")"
             }
             -- Anything the program binds to this name is the thing being
             -- called. A builtin is what the name means only when nothing else
@@ -3093,7 +3253,7 @@ class CCodegen {
             -- and a decorated name are handled above; these are the two that
             -- were not.
             if this._binds_outside(callee.name) {
-                return "cl_call(v_" + callee.name + ", " + this._argv(args) + ")"
+                return "cl_call(" + this._read(callee.name) + ", " + this._argv(args) + ")"
             }
             -- A known top-level function calls directly; anything else is a
             -- local holding a closure value, called through cl_call.
@@ -3117,7 +3277,7 @@ class CCodegen {
                 this.reject("'" + callee.name + "' is not defined", callee.line ?? node.line)
                 return "cl_null()"
             }
-            return "cl_call(v_" + callee.name + ", " + this._argv(args) + ")"
+            return "cl_call(" + this._read(callee.name) + ", " + this._argv(args) + ")"
         }
         -- Anything else in callee position is a value that should be callable:
         -- `m["f"](3)`, `(fns[i])(x)`. It used to be refused outright.
@@ -3603,7 +3763,7 @@ class CCodegen {
                 this.reject("'" + node.name + "' is not defined", node.line)
                 return "cl_null()"
             }
-            return "v_" + node.name
+            return this._read(node.name)
         }
         if nt == "ThisExpression" { return "v_this" }
         if nt == "FnExpression" { return this._closure(node) }
@@ -3869,10 +4029,17 @@ class CCodegen {
             let ix = "__cx" + str(cid)
             let src = this.expr(node.iterable)
             let outer_locals = this.local_names
+            let outer_boxed = this.boxed
             this.local_names = _names_with(outer_locals, [node.variable])
+            -- The loop variable is a plain C local scoped to the comprehension,
+            -- not one of the function's bound names, so it is never boxed. An
+            -- outer name it shadows may be, and reading this one out of that
+            -- box would be reading the wrong variable.
+            this.boxed = this._boxed_without([node.variable])
             let item_expr = this.expr(node.expr)
             let cond = if node.condition == null { "" } else { this.expr(node.condition) }
             this.local_names = outer_locals
+            this.boxed = outer_boxed
             mut body = "cl_list_add(" + acc + ", " + item_expr + ");"
             if node.condition != null { body = "if(cl_truthy(" + cond + ")) { " + body + " }" }
             return "({ volatile Value " + acc + " = cl_list_new(); volatile Value " + it +
@@ -3893,11 +4060,16 @@ class CCodegen {
             let cur = "__mv" + str(cid)
             let src = this.expr(node.iterable)
             let outer_locals = this.local_names
+            let outer_boxed = this.boxed
             this.local_names = _names_with(outer_locals, node.variables)
+            -- As in the list form: the variables are plain C locals scoped to
+            -- the comprehension and never boxed, whatever they shadow.
+            this.boxed = this._boxed_without(node.variables)
             let key_expr = this.expr(node.key_expr)
             let val_expr = this.expr(node.value_expr)
             let cond = if node.condition == null { "" } else { this.expr(node.condition) }
             this.local_names = outer_locals
+            this.boxed = outer_boxed
             -- Which targets the body reads. An unread one needs no binding at
             -- all, and -- more to the point -- must not raise the NameError
             -- that reading an unbound target does.
@@ -3966,11 +4138,24 @@ class CCodegen {
     -- names are read out of it, and a name past the end of a list binds null
     -- rather than failing — the interpreter's rules. `declare` is false at
     -- module level, where the names are C globals already.
+    -- One name out of a pattern. At module level the names are C globals, so
+    -- `declare` is false and nothing here is ever boxed; inside a function a
+    -- destructured name is a local like any other and goes in a box on the
+    -- same terms as a `let`.
+    fn _destructure_bind(qual, declare, name, init) {
+        if has(this.boxed, name) {
+            if declare { return qual + "v_" + name + " = cl_box_new(" + init + ");" }
+            return "cl_box_set(v_" + name + ", " + init + ");"
+        }
+        return qual + "v_" + name + " = " + init + ";"
+    }
+
     fn _destructure(node, pad, declare) {
         mut qual = ""
         if declare {
             qual = if this.volatile_locals { "volatile Value " } else { "Value " }
         }
+
         let id = this.tmp_id
         this.tmp_id += 1
         let t = "__dv" + str(id)
@@ -3978,7 +4163,7 @@ class CCodegen {
         if node.kind == "map" {
             push(lines, pad + "cl_require_map(" + t + ");")
             for target in node.targets {
-                push(lines, pad + qual + "v_" + target + " = cl_index(" + t + ", cl_str(\"" + _c_escape(target) + "\"));")
+                push(lines, pad + this._destructure_bind(qual, declare, target, "cl_index(" + t + ", cl_str(\"" + _c_escape(target) + "\"))"))
             }
             return lines
         }
@@ -3987,10 +4172,10 @@ class CCodegen {
         for target in node.targets {
             if starts(target, "...") {
                 let rest_name = substring(target, 3, len(target))
-                push(lines, pad + qual + "v_" + rest_name + " = cl_destructure_rest(" + t + ", " + str(i) + ");")
+                push(lines, pad + this._destructure_bind(qual, declare, rest_name, "cl_destructure_rest(" + t + ", " + str(i) + ")"))
                 return lines
             }
-            push(lines, pad + qual + "v_" + target + " = cl_destructure_at(" + t + ", " + str(i) + ");")
+            push(lines, pad + this._destructure_bind(qual, declare, target, "cl_destructure_at(" + t + ", " + str(i) + ")"))
             i += 1
         }
         return lines
@@ -4017,7 +4202,7 @@ class CCodegen {
         for target in node.targets {
             let tn = target.node_type
             if tn == "Identifier" {
-                push(lines, pad + "v_" + target.name + " = " + temps[i] + ";")
+                push(lines, pad + this._write(target.name, temps[i]))
             } elif tn == "MemberExpression" {
                 push(lines, pad + "cl_set_field(" + this.expr(target.object) + ", \"" + target.property + "\", " + temps[i] + ");")
             } elif tn == "IndexExpression" {
@@ -4047,17 +4232,31 @@ class CCodegen {
         let pad = repeat("  ", indent)
         let nt = node.node_type
         if nt == "LetStatement" {
-            let qual = if this.volatile_locals { "volatile Value v_" } else { "Value v_" }
-            return [pad + qual + node.name + " = " + this.expr(node.value) + ";"]
+            return [pad + this._decl(node.name, this.expr(node.value))]
         }
         if nt == "FnStatement" {
             -- A `fn` written inside another function binds a function value
             -- in that scope, which is what a closure is here. Nothing emitted
             -- it at all before, so the call below it named a C variable that
             -- did not exist and the failure landed in the C compiler.
+            if has(this.boxed, node.name) {
+                -- The box first, empty, then the closure into its slot. A
+                -- nested fn that calls itself captures the box before there is
+                -- anything to capture, which is exactly what the box is for;
+                -- `let v = closure` could not express that, because the
+                -- closure has to be built before the name it needs exists.
+                let qual = if this.volatile_locals { "volatile Value v_" } else { "Value v_" }
+                return [pad + qual + node.name + " = cl_box_new(cl_null());",
+                        pad + "cl_box_set(v_" + node.name + ", " + this._closure(node) + ");"]
+            }
+            -- A backstop, not a limitation: _boxed_names boxes a self-calling
+            -- nested fn, and the branch above is where such a one is emitted,
+            -- so this should never fire. If some future change stopped boxing
+            -- the name, saying so beats capturing a variable before anything
+            -- has been put in it and letting the answer be null.
             if this._fn_refers_to_itself(node) {
                 this.reject("a nested function that calls itself needs by-reference capture, " +
-                    "which native builds do not have yet; move '" + node.name + "' to the top level",
+                    "which this build did not give it; move '" + node.name + "' to the top level",
                     node.line)
                 return []
             }
@@ -4074,12 +4273,13 @@ class CCodegen {
             if node.target.node_type == "Identifier" {
                 let op = node.operator
                 if op == "=" {
-                    return [pad + "v_" + node.target.name + " = " + this.expr(node.value) + ";"]
+                    return [pad + this._write(node.target.name, this.expr(node.value))]
                 }
                 -- compound assignment (+=, -=, ...): map to the binop
                 let base = substring(op, 0, len(op) - 1)
                 if has(_BINOPS, base) {
-                    return [pad + "v_" + node.target.name + " = " + _BINOPS[base] + "(v_" + node.target.name + ", " + this.expr(node.value) + ");"]
+                    return [pad + this._write(node.target.name,
+                        _BINOPS[base] + "(" + this._read(node.target.name) + ", " + this.expr(node.value) + ")")]
                 }
             }
             if node.target.node_type == "IndexExpression" {
@@ -4205,7 +4405,7 @@ class CCodegen {
             let ix = "__i" + str(lid)
             mut lines = [pad + "Value " + it + " = cl_iter(" + this.expr(node.iterable) + ");"]
             push(lines, pad + "for(long " + ix + "=0; " + ix + " < cl_length(" + it + "); " + ix + "++) {")
-            push(lines, pad + "  Value v_" + node.variable + " = cl_index(" + it + ", cl_int(" + ix + "));")
+            push(lines, pad + "  " + this._decl_plain(node.variable, "cl_index(" + it + ", cl_int(" + ix + ")"+")"))
             for s in _block_stmts(node.body) { for l in this.stmt(s, indent + 1) { push(lines, l) } }
             push(lines, pad + "}")
             return lines
@@ -4278,7 +4478,7 @@ class CCodegen {
             push(lines, pad + "  } else {")
             push(lines, pad + "    cl_handlers = " + h + ".prev;")
             if node.catch_var != null {
-                push(lines, pad + "    Value v_" + node.catch_var + " = cl_thrown;")
+                push(lines, pad + "    " + this._decl_plain(node.catch_var, "cl_thrown"))
             }
             if node.finally_body == null {
                 if node.catch_body != null {
@@ -4332,7 +4532,14 @@ class CCodegen {
         -- try therefore gets volatile locals; see the exception runtime.
         this.volatile_locals = _has_try(_block_stmts(node.body))
         this.in_generator = _has_yield(_block_stmts(node.body))
+        this.boxed = this._boxed_names(node)
         mut lines = [this._fn_signature(node) + " {", "  long __sl = cl_line;"]
+        -- A parameter a closure captures and writes becomes a box before
+        -- anything reads it. The C parameter itself is what holds the box.
+        for p in node.params {
+            let bpn = _param_name(p)
+            if has(this.boxed, bpn) { push(lines, "  v_" + bpn + " = cl_box_new(v_" + bpn + ");") }
+        }
         for l in this._generator_prologue() { push(lines, l) }
         for s in _block_stmts(node.body) { for l in this.stmt(s, 1) { push(lines, l) } }
         for l in this._generator_epilogue() { push(lines, l) }
@@ -4342,6 +4549,7 @@ class CCodegen {
         this.local_names = []
         this.volatile_locals = false
         this.in_generator = false
+        this.boxed = {}
         return lines
     }
 
@@ -4449,6 +4657,7 @@ class CCodegen {
                 -- A method's parameters and locals shadow a global inside it,
                 -- exactly as a function's do.
                 this.local_names = this._bound_names(m)
+                this.boxed = this._boxed_names(m)
                 push(lines, "Value f_" + class_node.name + "_" + m.name + "(Value v_this, Value* __a, long __n) {")
                 push(lines, "  (void)__a; (void)__n;")
                 push(lines, "  long __sl = cl_line;")
@@ -4458,6 +4667,10 @@ class CCodegen {
                     push(lines, this._bind_param(_raw_param(p), idx))
                     idx += 1
                 }
+                for p in m.params {
+                    let bpn = _param_name(p)
+                    if has(this.boxed, bpn) { push(lines, "  v_" + bpn + " = cl_box_new(v_" + bpn + ");") }
+                }
                 for s in _block_stmts(m.body) { for l in this.stmt(s, 1) { push(lines, l) } }
                 for l in this._generator_epilogue() { push(lines, l) }
                 push(lines, "  cl_line = __sl;")
@@ -4465,6 +4678,7 @@ class CCodegen {
                 push(lines, "}")
                 this.in_generator = false
                 this.local_names = []
+                this.boxed = {}
             }
         }
         push(lines, "Value cl_ctor_" + class_node.name + "(Value* __a, long __n) {")

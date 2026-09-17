@@ -234,8 +234,9 @@ lands with codegen tests that diff native output against the interpreter.
   one line with a space; dividing by zero answered 0 instead of raising the error both other
   engines raise (and `%` by zero answers NaN, as they do); and NaN printed as C's `-nan`. A new
   codegen case compiles every file in `examples/` so the claim cannot go stale quietly. What still
-  differs when the examples *run* is the builtin pseudo-methods (`text.upper()`), which is its own
-  item, and by-value closure capture, which is already on this list.
+  differed when the examples *ran* was the builtin pseudo-methods (`text.upper()`) and closure
+  capture by copy; both have their own entries and both are now fixed, and the examples check
+  runs them rather than only compiling them.
 - **A list's, a string's and a number's methods (done).** `xs.sort()`, `text.split(" ")`,
   `n.abs()` — thirty of them, and they meant three different things. The interpreter binds a
   builtin *method*, so `xs.length` is callable and `xs.length()` calls it. The bytecode VM had
@@ -258,8 +259,8 @@ lands with codegen tests that diff native output against the interpreter.
   top-level function, so it could not see the enclosing scope. A comprehension is now a loop
   inside a statement expression over the sequence a `for` walks, with its loop variable scoped to
   the comprehension so an outer name it shadows survives; a nested `fn` is a local closure. One
-  case is refused by name rather than miscompiled: a nested `fn` that calls itself needs
-  by-reference capture, the same v2.0 item as by-reference scalar capture. The work also found
+  case was refused by name rather than miscompiled at the time: a nested `fn` that calls itself
+  needs by-reference capture, which the closed-over-`mut` work below went on to add. The work also found
   `{k: v for k, v in entries(m)}` refused outright by the bytecode VM, the VM wording an
   undefined name differently from the interpreter and without a line, and `o?.a` / `await` /
   `yield` missing from the C backend's free-variable walk so a closure over one produced a C
@@ -346,6 +347,17 @@ lands with codegen tests that diff native output against the interpreter.
   end again on the way past zero — and `[1, 2, 3, 4]` natively. A negative end emptied the result
   everywhere. Both bounds normalise now, in the `xs[a..b]` expression and the `.slice()` method,
   on a list and on a string, in all three engines.
+- **A closed-over `mut` is one variable (done).** A closure in a native build snapshotted every
+  free variable when it was made, and a snapshot is wrong in both directions: a counter never
+  counted (`fn mk() { mut n = 0\n return fn() { n = n + 1\n return n } }` gave `1 1 1` rather than
+  `1 2 3`, because the closure incremented its own copy and the copy died with the call), and a
+  closure built before a later assignment kept reading the value from before it. A name a closure
+  both sees and writes lives in a one-slot list now, and the closure captures that list rather
+  than the value in it — the collector already traces a `List`, and a box never reaches a program.
+  A nested `fn` that calls itself falls out of the same mechanism and is no longer refused. Found
+  by running the examples: `examples/functions.clarity` had printed a stuck counter for as long as
+  `clarity cc` had compiled it, because the examples check only ever compiled them. It runs them
+  now and diffs the output.
 - **An unknown name is a Clarity error (done).** A name that resolved to nothing was emitted as
   `v_name` and reported by the C compiler as an undeclared identifier — an error about generated
   code, naming a variable the program never wrote. The backend tracks what is in scope now and
