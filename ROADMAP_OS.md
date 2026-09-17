@@ -288,12 +288,24 @@ What is left, in rough order:
   would leave its frame on a stack nothing returns to until that thread runs
   again, and there is no scheduler that could say what happens when it does.
   A program in a long system call cannot be preempted.
-- **The PL011 is polled, not interrupt-driven.** The keyboard got its
-  interrupt; the serial line did not. Its receive INTID is in the device tree
-  and nothing reads it. It has not bitten yet — the UART holds sixteen bytes
-  in its own FIFO and a person types slower than that — so this is a known
-  asymmetry rather than a known bug, which is exactly the kind of thing that
-  stops being true without warning.
+- **The PL011 has its receive interrupt now.** ✅ The keyboard got one and the
+  serial line did not; its INTID was in the device tree and nothing read it.
+  It is read now — SPI 1, INTID 33, the same on a GICv2 and a GICv3 — and the
+  handler drains the FIFO into a 256-byte ring, with RXIM *and* RTIM unmasked
+  because RX alone fires only at the FIFO trigger level and a person typing one
+  character would sit below it. `poll_in` drains the FIFO too, with interrupts
+  masked, so the port still works on a machine whose interrupt never arrives.
+  **What could not be shown is that this fixes anything.** The case it exists
+  for is a burst arriving while the kernel is busy, with only sixteen bytes of
+  FIFO to sit in. Two attempts to produce it failed: a forty-three byte line
+  typed in one write at the kernel's prompt, and sixty-five bytes spanning six
+  shell commands with a command executing between each, both arrived complete
+  on a build with the interrupt not routed at all. QEMU's chardev backend does
+  not hand the model more bytes than the guest has taken, so the emulated FIFO
+  does not overrun however fast the writer goes. The asymmetry with the
+  keyboard is closed and the device is driven the way the manual says; the
+  benefit on hardware without that courtesy is an argument from the device
+  rather than a measurement, and is written down here as one.
 - **Real blocking.** `read(2)` cannot block: there is no scheduler to block a
   thread on, so it spins and gives up after a while. How long is now the
   kernel command line's business — `clarity.idle=<seconds>`, two minutes by

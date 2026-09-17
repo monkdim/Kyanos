@@ -927,8 +927,40 @@ fn poll_input() ?u8 {
 /// tools/serial_check.py types down the serial socket. Either alone would
 /// leave the other able to break silently.
 fn input_selftest(tree: ?fdt.Fdt) void {
+    serial_setup(tree);
     keyboard_setup(tree);
     read_some_lines();
+}
+
+/// Give the serial line its interrupt.
+///
+/// The console has been printing since before the device tree was read — it
+/// has to, or a machine with no tree could not say so — so its own address is
+/// a constant. Its *interrupt* is not: the INTID is in the tree, and until now
+/// nothing read it, so the port was polled and nothing emptied its FIFO while
+/// the kernel was busy. See `console.poll_in` for what that is worth in
+/// practice, which is less than it sounds under QEMU and was measured.
+fn serial_setup(tree: ?fdt.Fdt) void {
+    const t = tree orelse {
+        console.println("  [--] no device tree; the serial line stays polled");
+        return;
+    };
+
+    var slots: [2]fdt.Slot = undefined;
+    const n = fdt.node_slots(&t, "pl011@", &slots);
+    if (n == 0) {
+        console.println("  [--] no pl011 in the device tree; the serial line stays polled");
+        return;
+    }
+    const id = slots[0].intid orelse {
+        console.println("  [--] pl011 has no usable interrupts property; the serial line stays polled");
+        return;
+    };
+
+    console.route(id);
+    console.print("  [ok] serial: receive interrupt ");
+    console.print_dec(id);
+    console.println(" routed to this core");
 }
 
 fn keyboard_setup(tree: ?fdt.Fdt) void {
@@ -1267,11 +1299,11 @@ export fn aarch64_irq() callconv(.C) void {
 
     const tick = timer.handle_irq(which);
     if (!tick) {
-        // Not the timer. The keyboard is the only other source, and an
-        // interrupt that belongs to nothing is still ended below: leaving it
-        // active would keep its priority on this core and stop everything
-        // quieter than it, the timer included.
-        _ = virtio_input.handle_irq(which);
+        // Not the timer. The keyboard and the serial line are the others,
+        // and an interrupt that belongs to nothing is still ended below:
+        // leaving it active would keep its priority on this core and stop
+        // everything quieter than it, the timer included.
+        if (!virtio_input.handle_irq(which)) _ = console.handle_irq(which);
     }
 
     gic.end(which);

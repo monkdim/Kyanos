@@ -46,6 +46,19 @@ KERNEL_LINES = [
     ("helxo\x7f\x7flo", "hello"),
 ]
 
+# Typed all at once — forty-three characters, nearly three times what the
+# PL011's FIFO holds — rather than a byte at a time.
+#
+# This passes with the receive interrupt and it passed without it: a build
+# with the interrupt not routed at all reads the line whole. QEMU's chardev
+# backend does not hand the model more than the guest has taken, so the
+# emulated FIFO does not overrun however fast this writes. It is kept
+# because it is worth knowing that a burst arrives complete and in order
+# through the ring the interrupt fills, and because it is the shape that
+# would catch a real overrun if one ever became reachable — not because it
+# demonstrates one now. It does not, and it was tried.
+BURST_LINE = "the quick brown fox jumps over the lazy dog"
+
 INIT_WORDS = ["alpha", "beta"]
 
 SHELL_SESSION = [
@@ -102,16 +115,26 @@ def wait_for(log, marker, deadline, proc, count=1):
 def send(sock, text):
     """Type a string, then Enter.
 
-    Byte at a time with a pause, which is not politeness: the kernel polls,
-    and a burst arriving faster than the PL011's sixteen-byte FIFO can hold
-    would be measuring the FIFO rather than anything this test is about. The
-    keyboard path is where input under load is checked, in key_check.
+    Byte at a time with a pause, the way a person types. `send_burst` below
+    is the same thing without the pauses, for the cases that care.
     """
     for ch in text.encode():
         sock.sendall(bytes([ch]))
         time.sleep(0.01)
     sock.sendall(b"\r")
     time.sleep(0.05)
+
+
+def send_burst(sock, text):
+    """Type a string and Enter in one write, with no pauses at all.
+
+    Hands the PL011 more bytes than its FIFO holds, in one go. What that
+    proves is narrower than it looks — see BURST_LINE — but a burst that
+    arrived reordered or short would fail here and nothing else would catch
+    it.
+    """
+    sock.sendall(text.encode() + b"\r")
+    time.sleep(0.1)
 
 
 def connect(path, deadline):
@@ -212,6 +235,7 @@ def main():
             return 1
         for typed, _ in KERNEL_LINES:
             send(s, typed)
+        send_burst(s, BURST_LINE)
 
         if not wait_for(log, DONE_MARKER, time.time() + STEP_DEADLINE, qemu):
             why_not("the kernel never reported what it read")
@@ -258,10 +282,15 @@ def main():
     text = read_log(log).decode("utf-8", "replace")
 
     got = reported_lines(text)
-    want = [expected for _, expected in KERNEL_LINES]
+    want = [expected for _, expected in KERNEL_LINES] + [BURST_LINE]
     if got != want:
         print("FAIL: typed %r over the serial line, the kernel read %r"
-              % ([t for t, _ in KERNEL_LINES], got))
+              % ([t for t, _ in KERNEL_LINES] + [BURST_LINE], got))
+        if got and got[-1] != BURST_LINE and BURST_LINE.startswith(got[-1]):
+            print("  the burst arrived truncated at %d of %d characters, so"
+                  % (len(got[-1]), len(BURST_LINE)))
+            print("  something between the socket and the line editor is"
+                  " dropping bytes under load")
         return 1
 
     from_program = program_lines(text)

@@ -8,6 +8,7 @@
 //! kernel code can print identically on both architectures.
 
 const vm = @import("vm.zig");
+const gic = @import("gic.zig");
 const text = @import("../../graphics/console.zig");
 
 /// Where else everything printed should go.
@@ -38,8 +39,20 @@ const UART0_PHYS: usize = 0x0900_0000;
 const UART0_BASE: usize = UART0_PHYS + vm.KERNEL_VA_BASE;
 const UARTDR: usize = 0x00; // data register
 const UARTFR: usize = 0x18; // flag register
+const UARTIFLS: usize = 0x34; // FIFO level select
+const UARTIMSC: usize = 0x38; // interrupt mask set/clear
+const UARTMIS: usize = 0x40; // masked interrupt status
+const UARTICR: usize = 0x44; // interrupt clear
 const FR_RXFE: u32 = 1 << 4; // receive FIFO empty
 const FR_TXFF: u32 = 1 << 5; // transmit FIFO full
+
+/// Receive, and receive-timeout. Both are needed and the second is the one
+/// that is easy to leave out: RX fires when the FIFO reaches its trigger
+/// level, so a person typing one character and waiting would sit below the
+/// level forever. RT fires when the FIFO is non-empty and the line has been
+/// idle for thirty-two bit periods, which is that case exactly.
+const INT_RX: u32 = 1 << 4;
+const INT_RT: u32 = 1 << 6;
 
 inline fn mmio_write(offset: usize, value: u32) void {
     @as(*volatile u32, @ptrFromInt(UART0_BASE + offset)).* = value;
@@ -67,14 +80,135 @@ pub fn init() void {
 /// how every other kernel is driven headlessly, and with `-serial stdio` it
 /// means typing into the same terminal that started QEMU.
 ///
-/// Polled, like the keyboard, and for now that is enough: the PL011's receive
-/// interrupt is a separate INTID in the device tree and wiring it is the same
-/// job that was just done for virtio-input. Unlike the keyboard, nothing here
-/// is lost while a program is busy — the UART holds sixteen bytes in its own
-/// FIFO and a person types slower than that.
+/// Interrupt-driven, with the FIFO drained here as well.
+///
+/// This was polled, and the argument for leaving it that way was that the
+/// UART holds sixteen bytes in its own FIFO and a person types slower than
+/// that. The architectural answer is that nothing empties the FIFO while the
+/// kernel is doing something else, so a burst arriving then has only those
+/// sixteen bytes to sit in — the same asymmetry the keyboard's interrupt
+/// closed.
+///
+/// **Under QEMU that does not happen, and it was tried.** Sixty-five bytes in
+/// one write, spanning six shell commands with a command executing between
+/// each, arrived complete on a build with this interrupt not routed at all;
+/// so did a forty-three byte line typed in one go at the kernel's own prompt.
+/// QEMU's chardev backend does not hand the model more than the guest has
+/// taken, so the emulated FIFO does not overrun however fast the writer goes.
+/// What this buys on hardware without that courtesy is therefore an argument
+/// from the device, not a measurement — said plainly rather than left to look
+/// like a bug that was fixed.
+///
+/// The drain happens in both places on purpose — here and in the handler. The
+/// handler is what empties the FIFO without waiting to be asked; draining here
+/// as well is what keeps this working on a machine whose interrupt never
+/// arrives, which is the same reasoning the virtio-input driver's ring is
+/// written with. Interrupts are masked across it because the handler is the
+/// other producer, and two of them sharing `head` would each overwrite what
+/// the other had just written.
 pub fn poll_in() ?u8 {
-    if (mmio_read(UARTFR) & FR_RXFE != 0) return null;
-    return @truncate(mmio_read(UARTDR) & 0xFF);
+    const daif = mask_irqs();
+    drain_fifo();
+    restore_irqs(daif);
+
+    const t = rx_tail;
+    if (t == rx_head) return null;
+    const c = rx[t % RX_RING];
+    rx_tail = t +% 1;
+    return c;
+}
+
+/// Everything the FIFO is holding, into the ring.
+///
+/// Called with interrupts masked, from the handler or from `poll_in`.
+fn drain_fifo() void {
+    while (mmio_read(UARTFR) & FR_RXFE == 0) {
+        const c: u8 = @truncate(mmio_read(UARTDR) & 0xFF);
+        if (rx_head -% rx_tail >= RX_RING) {
+            // The reader is further behind than the ring is deep. Dropping
+            // the new byte rather than the oldest keeps what was typed first,
+            // which is what a line editor needs; and it is counted, so a boot
+            // that lost input says so instead of looking like one where less
+            // was typed.
+            rx_dropped +%= 1;
+            return;
+        }
+        rx[rx_head % RX_RING] = c;
+        rx_head +%= 1;
+    }
+}
+
+/// Deeper than the FIFO by a wide margin, because the FIFO is what this is
+/// for: sixteen bytes is what the hardware holds between one service and the
+/// next, and the ring is what holds them while nothing is reading.
+const RX_RING: u32 = 256;
+var rx: [RX_RING]u8 = undefined;
+var rx_head: u32 = 0;
+var rx_tail: u32 = 0;
+var rx_dropped: u64 = 0;
+var rx_intid: ?u32 = null;
+var rx_interrupts: u64 = 0;
+
+/// Ask the GIC to deliver this port's receive interrupt.
+///
+/// Called after the device tree has been read, with the INTID from it — the
+/// same shape as the keyboard's `route`, and for the same reason: the console
+/// is brought up before anything has parsed a tree, so it cannot learn its
+/// own interrupt at `init` time.
+pub fn route(id: u32) void {
+    // Trigger at one eighth — two bytes of sixteen. Low on purpose: the
+    // point of the interrupt is to empty the FIFO long before it fills, and
+    // a high trigger level trades the latency this exists to remove for
+    // fewer interrupts nobody was counting.
+    mmio_write(UARTIFLS, 0);
+    mmio_write(UARTICR, INT_RX | INT_RT);
+    mmio_write(UARTIMSC, mmio_read(UARTIMSC) | INT_RX | INT_RT);
+    gic.enable(id);
+    rx_intid = id;
+}
+
+/// Service the port's interrupt. Returns false if it was not ours.
+///
+/// Cleared before the FIFO is drained rather than after. Either order empties
+/// it; this one cannot lose a byte, because one arriving in the window
+/// between the two is still in the FIFO for this pass to read, and would
+/// raise the interrupt again if it were not.
+pub fn handle_irq(which: u32) bool {
+    const mine = rx_intid orelse return false;
+    if (which != mine) return false;
+    rx_interrupts +%= 1;
+    mmio_write(UARTICR, INT_RX | INT_RT);
+    drain_fifo();
+    return true;
+}
+
+/// Whether the receive interrupt was wired, and what it has done — for the
+/// boot report. A port that is being polled and one whose interrupt never
+/// fires look the same from the outside, which is the asymmetry this closes.
+pub fn rx_routed() ?u32 {
+    return rx_intid;
+}
+pub fn rx_serviced() u64 {
+    return rx_interrupts;
+}
+pub fn rx_lost() u64 {
+    return rx_dropped;
+}
+
+fn mask_irqs() u64 {
+    const daif = asm volatile ("mrs %[out], daif"
+        : [out] "=r" (-> u64),
+    );
+    asm volatile ("msr daifset, #2" ::: "memory");
+    return daif;
+}
+
+fn restore_irqs(daif: u64) void {
+    asm volatile ("msr daif, %[v]"
+        :
+        : [v] "r" (daif),
+        : "memory"
+    );
 }
 
 pub fn print(s: []const u8) void {
