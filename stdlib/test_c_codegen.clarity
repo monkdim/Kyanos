@@ -1014,6 +1014,60 @@ if CC == null {
         "show len(keys(pairs))\n" +
         "show pairs[\"99\"]")
 
+    -- ── a name that resolves nowhere ──────────────────────
+    -- It used to be emitted as `v_name` and reported by the C compiler as an
+    -- undeclared identifier -- an error about generated code, naming a
+    -- variable the program never wrote, at a line in a file it never saw.
+
+    mut unk_msg = ""
+    let UNK = "fn f() { return nope }\nshow f()"
+    try { compile_to_c(parse(tokenize(UNK, "<t>"), UNK)) } catch e { unk_msg = str(e) }
+    assert_eq(contains(unk_msg, "'nope' is not defined"), true, "unknown_name_refused")
+    assert_eq(contains(unk_msg, "line 1"), true, "unknown_name_line")
+
+    mut unkc_msg = ""
+    let UNKC = "show nope(1)"
+    try { compile_to_c(parse(tokenize(UNKC, "<t>"), UNKC)) } catch e { unkc_msg = str(e) }
+    assert_eq(contains(unkc_msg, "'nope' is not defined"), true, "unknown_call_refused")
+
+    mut unka_msg = ""
+    let UNKA = "x = 5\nshow x"
+    try { compile_to_c(parse(tokenize(UNKA, "<t>"), UNKA)) } catch e { unka_msg = str(e) }
+    assert_eq(contains(unka_msg, "'x' is not defined"), true, "assign_to_undeclared_refused")
+
+    -- And everything that *is* in scope still compiles: a parameter, a local,
+    -- a loop variable, a catch binding, a destructured name, a module-level
+    -- binding, a top-level function, a class, an enum, an import, a rest
+    -- parameter, a comprehension variable, and a name two closures deep.
+    same("every_binding_form_resolves",
+        "class Box {\n" +
+        "    fn init(v) { this.v = v }\n" +
+        "    fn get() { return this.v }\n" +
+        "    fn with(f) { return f(this.v) }\n" +
+        "}\n" +
+        "enum E { A = 1 }\n" +
+        "fn top(x) { return x * 2 }\n" +
+        "let modlevel = 7\n" +
+        "mut counter = 0\n" +
+        "let [p, q] = [1, 2]\n" +
+        "fn rest(a, ...more) { return [a, more] }\n" +
+        "fn uses_all(n) {\n" +
+        "    let local = n + modlevel + p + q\n" +
+        "    mut acc = 0\n" +
+        "    for i in range(3) { acc += i + local }\n" +
+        "    try { throw \"x\" } catch err { acc += len(str(err)) }\n" +
+        "    let inner = fn(k) { return k + local + acc + modlevel }\n" +
+        "    let deeper = fn(k) { return inner(k) + local }\n" +
+        "    return [acc, inner(1), deeper(1), top(2), E.A, Box(3).get(),\n" +
+        "            Box(4).with(fn(v) { return v + local })]\n" +
+        "}\n" +
+        "show uses_all(1)\n" +
+        "show rest(1, 2, 3)\n" +
+        "counter += 1\n" +
+        "show counter\n" +
+        "show [y * 2 for y in [1, 2]]\n" +
+        "show {k: v for k, v in entries({\"a\": 1})}")
+
     -- ── an engine-raised error says where ─────────────────
     -- A compiled binary carried the interpreter's words but never its line,
     -- so the same caught error read differently. Each statement records the

@@ -2322,6 +2322,8 @@ class CCodegen {
         this.fn_rest = {}       -- those whose last parameter is a rest one
         this.fn_values = {}     -- functions referenced as values (need a thunk)
         this.local_names = []   -- names bound inside the function being emitted
+        this.global_names = []  -- module-level let/mut/destructure/decorated names
+        this.outer_scopes = []  -- the scopes around the closure being emitted
         this.closure_defs = []  -- emitted closure function bodies (line lists)
         this.volatile_locals = false  -- true while emitting a function with a try
         this.in_generator = false     -- true while emitting a function whose body yields
@@ -2352,6 +2354,24 @@ class CCodegen {
         if contains(this.local_names, name) { return false }
         return has(_NATIVE_BUILTINS, name) or contains(this.fn_names, name) or
             contains(this.classes, name) or has(this.enums, name)
+    }
+
+    -- Does this name resolve to anything at all? Everything in scope here,
+    -- then the scopes a closure is nested inside, then module level, then the
+    -- builtins. A name that resolves nowhere used to be emitted as `v_name`
+    -- and reported by the C compiler as an undeclared identifier -- an error
+    -- about generated code, naming a variable the program never wrote.
+    fn _name_known(name) {
+        if contains(this.local_names, name) { return true }
+        for scope in this.outer_scopes {
+            if contains(scope, name) { return true }
+        }
+        if contains(this.global_names, name) { return true }
+        if contains(this.fn_names, name) { return true }
+        if contains(this.classes, name) { return true }
+        if has(this.enums, name) { return true }
+        if has(this.decorated, name) { return true }
+        return has(_NATIVE_BUILTINS, name)
     }
 
     -- Return a copy of set `s` with `name` added (sets are maps used as sets).
@@ -2613,6 +2633,10 @@ class CCodegen {
         -- Only `function()` used to set this, so a closure's parameter named
         -- after a top-level function was ignored in favour of that function.
         let outer_locals = this.local_names
+        let saved_scopes = this.outer_scopes
+        mut nested = [outer_locals]
+        for sc in saved_scopes { push(nested, sc) }
+        this.outer_scopes = nested
         this.local_names = this._bound_names(node)
         mut body_lines = ["  long __sl = cl_line;"]
         for l in this._generator_prologue() { push(body_lines, l) }
@@ -2622,6 +2646,7 @@ class CCodegen {
         this.volatile_locals = outer_volatile
         this.in_generator = outer_generator
         this.local_names = outer_locals
+        this.outer_scopes = saved_scopes
         push(lines, "  cl_line = __sl;")
         push(lines, "  return cl_null();")
         push(lines, "}")
@@ -2738,6 +2763,10 @@ class CCodegen {
                 this.unsupported("spread into the builtin '" + callee.name + "'", node.line)
                 return "cl_null()"
             } else {
+                if not this._name_known(callee.name) {
+                    this.reject("'" + callee.name + "' is not defined", node.line)
+                    return "cl_null()"
+                }
                 call = "cl_call(v_" + callee.name + ", " + argv + ")"
             }
         } else {
@@ -2784,6 +2813,14 @@ class CCodegen {
             -- local holding a closure value, called through cl_call.
             if contains(this.fn_names, callee.name) {
                 return "f_" + callee.name + "(" + join(this._direct_args(callee.name, args), ", ") + ")"
+            }
+            -- Nothing in scope, at module level, or among the builtins answers
+            -- to that name, so there is no value to call. Saying so beats
+            -- emitting `cl_call(v_name, ...)` and letting the C compiler
+            -- report an undeclared identifier in code the program never wrote.
+            if not this._name_known(callee.name) {
+                this.reject("'" + callee.name + "' is not defined", callee.line ?? node.line)
+                return "cl_null()"
             }
             return "cl_call(v_" + callee.name + ", " + this._argv(args) + ")"
         }
@@ -3178,6 +3215,12 @@ class CCodegen {
                 -- fresh one at every mention: `f == f` has to be true, and a
                 -- closure compares by identity.
                 return "__fnv_" + node.name
+            }
+            if not this._name_known(node.name) {
+                -- The interpreter's words, at compile time because that is
+                -- when a native build can tell.
+                this.reject("'" + node.name + "' is not defined", node.line)
+                return "cl_null()"
             }
             return "v_" + node.name
         }
@@ -4100,6 +4143,25 @@ class CCodegen {
             }
             else { push(top, stmt) }
         }
+
+        -- Every name module level binds, gathered before a single body is
+        -- emitted: a function anywhere in the file may refer to one, and the
+        -- name check below has to know they exist. The three kinds are the
+        -- same three that become C globals further down.
+        for stmt in top {
+            let snt = stmt.node_type
+            if snt == "LetStatement" { push(this.global_names, stmt.name) }
+            elif snt == "DecoratedStatement" { push(this.global_names, stmt.target.name) }
+            elif snt == "DestructureLetStatement" {
+                for target in stmt.targets {
+                    if starts(target, "...") { push(this.global_names, substring(target, 3, len(target))) }
+                    else { push(this.global_names, target) }
+                }
+            }
+        }
+        -- Anything else at module level is emitted into main(), so what it
+        -- binds is a local of main and in scope for the statements after it.
+        this._collect_bound(top, this.global_names)
 
         -- Emit bodies first: this drives expr()/stmt(), which hoist any
         -- closures into this.closure_defs and bump this.closure_id.

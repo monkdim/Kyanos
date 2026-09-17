@@ -283,6 +283,11 @@ lands with codegen tests that diff native output against the interpreter.
   inside the C compiler. An enum is a runtime value now, with the interpreter's four methods, its
   `<enum C>` display and its errors, while a member read where the enum is named still resolves
   while compiling.
+- **An unknown name is a Clarity error (done).** A name that resolved to nothing was emitted as
+  `v_name` and reported by the C compiler as an undeclared identifier — an error about generated
+  code, naming a variable the program never wrote. The backend tracks what is in scope now and
+  says so itself, and an import asking for a name its module does not declare is refused where the
+  modules are flattened, naming both.
 - **A runtime error's line in native builds (done).** A compiled binary carried the interpreter's
   words on every engine-raised error but never its `(line N)`. Each statement records its own line
   now and `cl_throw` adds it, with a call putting the caller's line back on the way out — an error
