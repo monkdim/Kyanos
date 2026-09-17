@@ -762,6 +762,46 @@ needs the interpreter to carry the method's name through the closure it binds
 it into; that stays filed rather than half-done here, and the crash is gone
 either way.
 
+### A class was not a value in a native build
+Fixed. Calling a named class goes straight to its constructor, which is where
+it should go. *Mentioning* one fell through to `v_A`, which nothing declares,
+and the failure landed in the C compiler on generated code — the last position
+left after the unknown-name and builtin-arity work above:
+
+```clarity
+class A { fn init(n) { this.n = n } }
+let k = A
+show map([1, 2], A)
+```
+```
+clarity run   class / [<A instance>, <A instance>]
+clarity cc    error: 'v_A' undeclared (first use in this function)
+```
+
+A class is a value in both other engines, with a surface of its own: `show A`
+is `<class A>`, `type(A)` is `"class"`, calling it constructs, and it compares
+by identity — `A == A` is true and `A == B` is false for two classes with the
+same shape. The native backend has a `T_CLASS` now, built the same way
+`T_ENUM` was: a tag, a two-field struct holding the name and the constructor,
+and one global per class that is named as a value, in the collector's root
+table beside the enum globals. The constructor already takes the array
+convention, so the thunk between them only drops the capture pointer a closure
+would have.
+
+**And reading a property a class does not have split three ways.** The
+interpreter names it and stops; the VM answered `null`, so a typo travelled
+and failed somewhere else later; the native build could not get that far:
+
+```
+clarity run   TypeError: Cannot access property on class (line 2)
+--fast        null
+clarity cc    error: 'v_A' undeclared
+```
+
+All three raise the interpreter's error now, which is the same shape as
+reading a property an *instance* does not have — refused everywhere since the
+instance-fields work.
+
 ### Mid-run garbage collection kills a program on darwin-arm64
 `CLARITY_GC=1` turns on mid-run collection in a compiled binary. On
 darwin-arm64 a program that holds **two** live allocations across a collection

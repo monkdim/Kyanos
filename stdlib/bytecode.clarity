@@ -2041,7 +2041,12 @@ class VM {
         if t == "VMClass" {
             -- Static access / enum-like access
             if has(obj.methods, prop) { return obj.methods[prop] }
-            return null
+            -- A name the class does not answer to used to be null here, so a
+            -- typo went on quietly and failed later somewhere else. The
+            -- interpreter names it and stops, which is the specification --
+            -- and the same shape as reading a property an *instance* does not
+            -- have, which this engine already refuses.
+            throw "TypeError: Cannot access property on class"
         }
         throw "RuntimeError: Cannot access property '{prop}' on {t}"
     }

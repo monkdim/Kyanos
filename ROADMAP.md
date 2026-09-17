@@ -332,6 +332,13 @@ lands with codegen tests that diff native output against the interpreter.
   infinite walk — so `identical(a, b)` is a new builtin, registered in all six places a builtin
   has to be. The VM's own bound-method value could not be shown either, for the same reason one
   level down.
+- **A class is a value in every engine (done).** `let k = A`, `map(xs, A)`, `show A` — calling a
+  named class went to its constructor, but mentioning one emitted a `v_A` nothing declares and
+  failed inside the C compiler, the last position left after the unknown-name and builtin-arity
+  work. The native backend has a `T_CLASS` now, built the way `T_ENUM` was, so a class prints as
+  `<class A>`, answers `"class"` to `type()`, constructs when called and compares by identity.
+  Reading a property a class does not have raised in one engine, answered null in the second and
+  could not compile in the third; all three raise now.
 - **An unknown name is a Clarity error (done).** A name that resolved to nothing was emitted as
   `v_name` and reported by the C compiler as an undeclared identifier — an error about generated
   code, naming a variable the program never wrote. The backend tracks what is in scope now and

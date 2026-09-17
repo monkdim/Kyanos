@@ -197,7 +197,7 @@ static char** cl_argv = 0;
 #define GC_CAPTURE_STACK_BASE() do { char __b; gc_stack_base = &__b; } while(0)
 #endif
 
-typedef enum { T_NULL, T_BOOL, T_INT, T_FLOAT, T_STR, T_LIST, T_MAP, T_OBJECT, T_CLOSURE, T_ENUM } Tag;
+typedef enum { T_NULL, T_BOOL, T_INT, T_FLOAT, T_STR, T_LIST, T_MAP, T_OBJECT, T_CLOSURE, T_ENUM, T_CLASS } Tag;
 typedef struct Value Value;
 struct Value { Tag t; long i; double f; const char* s; void* o; };
 typedef struct { Value* items; long len; long cap; } List;
@@ -210,6 +210,14 @@ typedef struct { const char* cls; Value fields; } Obj;
    faster and it catches a bad member while compiling -- and this is what a
    *mention* of the enum itself becomes. */
 typedef struct { const char* name; Value members; } EnumV;
+/* A class is a value too: `show A` is <class A>, `type(A)` is "class", and it
+   can be put in a list or handed to map(), all of which `clarity run` and
+   `run --fast` allow. A *call* of a named class still goes straight to its
+   constructor -- that is faster and it resolves the name while compiling --
+   and this is what a bare mention becomes. Only a name and the constructor,
+   which takes the array convention already, so there is nothing here for the
+   collector to trace. */
+typedef struct ClassV ClassV;
 
 /* closures: a function pointer over (arg-array, capture-array) plus the
    captured values (snapshotted by value at creation) */
@@ -219,6 +227,7 @@ typedef struct { const char* name; Value members; } EnumV;
    as null rather than off the end of the array when the caller supplied fewer
    arguments than the function declares. */
 typedef Value (*ClFn)(Value*, Value*, long);
+struct ClassV { const char* name; ClFn call; };
 typedef struct { ClFn fn; Value* cap; int ncap; } Closure;
 
 /* uniform method calling convention: (self, arg-array) -> Value */
@@ -534,6 +543,8 @@ static char* cl_to_cstr(Value v){
   if(v.t==T_CLOSURE){ char* b=(char*)cl_alloc(16); strcpy(b, "<closure>"); return b; }
   if(v.t==T_ENUM){ EnumV* e=(EnumV*)v.o; long n=(long)strlen(e->name)+10;
     char* b=(char*)cl_alloc(n); snprintf(b, n, "<enum %s>", e->name); return b; }
+  if(v.t==T_CLASS){ ClassV* c=(ClassV*)v.o; long n=(long)strlen(c->name)+11;
+    char* b=(char*)cl_alloc(n); snprintf(b, n, "<class %s>", c->name); return b; }
   char* buf = (char*)cl_alloc(64);
   switch(v.t){
     case T_NULL: strcpy(buf, "null"); return buf;
@@ -607,7 +618,7 @@ static char* cl_display(Value v){
    A value with no object behind it compares by what it holds, as == does. */
 static Value cl_same(Value a, Value b){
   if(a.t != b.t) return cl_bool(0);
-  if(a.t==T_LIST || a.t==T_MAP || a.t==T_OBJECT || a.t==T_CLOSURE || a.t==T_ENUM)
+  if(a.t==T_LIST || a.t==T_MAP || a.t==T_OBJECT || a.t==T_CLOSURE || a.t==T_ENUM || a.t==T_CLASS)
     return cl_bool(a.o == b.o);
   if(a.t==T_STR) return cl_bool(strcmp(a.s, b.s)==0);
   /* cl_equal, not cl_eq: this sits above cl_eq's definition and only the
@@ -718,6 +729,7 @@ static int cl_truthy(Value v){
     case T_OBJECT: return 1;
     case T_CLOSURE: return 1;
     case T_ENUM: return 1;
+    case T_CLASS: return 1;
   }
   return 0;
 }
@@ -756,7 +768,7 @@ static int cl_equal(Value a, Value b){
     }
     return 1;
   }
-  if(a.t==T_OBJECT || a.t==T_CLOSURE || a.t==T_ENUM) return a.o==b.o;
+  if(a.t==T_OBJECT || a.t==T_CLOSURE || a.t==T_ENUM || a.t==T_CLASS) return a.o==b.o;
   return a.i==b.i;
 }
 static Value cl_eq(Value a, Value b){ return cl_bool(cl_equal(a,b)); }
@@ -879,6 +891,11 @@ static void cl_index_set(Value c, Value k, Value val){
   else if(c.t==T_MAP){ char* ks=cl_to_cstr(k); cl_map_put(c, ks, val); }
   else if(c.t==T_OBJECT){ Obj* o=(Obj*)c.o; char* ks=cl_to_cstr(k); cl_map_put(o->fields, ks, val); }
 }
+static Value cl_class_new(const char* name, ClFn call){
+  ClassV* c=(ClassV*)cl_alloc(sizeof(ClassV));
+  c->name=name; c->call=call;
+  Value v=cl_null(); v.t=T_CLASS; v.o=c; return v;
+}
 static Value cl_enum_new(const char* name, Value members){
   EnumV* e=(EnumV*)cl_alloc(sizeof(EnumV));
   e->name=name; e->members=members;
@@ -994,6 +1011,12 @@ static Value cl_get_field(Value obj, const char* name){
   Map* m=0;
   if(obj.t==T_OBJECT) m=(Map*)((Obj*)obj.o)->fields.o;   /* instance field map */
   else if(obj.t==T_MAP) m=(Map*)obj.o;                    /* map.key sugar for map["key"] */
+  else if(obj.t==T_CLASS){
+    /* A class answers to no property: the interpreter names it and stops,
+       and the VM used to hand back null, which let a typo travel. */
+    cl_throw(cl_str("TypeError: Cannot access property on class"));
+    return cl_null();
+  }
   else if(obj.t==T_ENUM){
     /* A member is the value itself; the four methods bind to the enum. An
        unknown name raises the interpreter's error, from cl_builtin_method. */
@@ -1107,6 +1130,9 @@ static Value cl_closure_new(ClFn fn, Value* cap, int ncap){
 }
 static Value cl_call(Value f, Value* args, long n){
   if(f.t==T_CLOSURE){ Closure* c=(Closure*)f.o; return c->fn(args, c->cap, n); }
+  /* A class held as a value constructs when it is called, which is what
+     `map([1, 2], A)` means in both other engines. */
+  if(f.t==T_CLASS){ ClassV* c=(ClassV*)f.o; return c->call(args, 0, n); }
   /* Calling something that is not a function is an error, as in both other
      engines; it answered null here, so the mistake travelled. */
   {
@@ -1622,6 +1648,7 @@ static Value cl_type_of(Value v){
   if(v.t==T_MAP) return cl_str("map");
   if(v.t==T_CLOSURE) return cl_str("function");
   if(v.t==T_ENUM) return cl_str("enum");
+  if(v.t==T_CLASS) return cl_str("class");
   if(v.t==T_OBJECT) return cl_str(((Obj*)v.o)->cls);
   return cl_str("null");
 }
@@ -2544,6 +2571,7 @@ class CCodegen {
         this.fn_arity = {}      -- top-level function name → parameter count
         this.fn_rest = {}       -- those whose last parameter is a rest one
         this.fn_values = {}     -- functions referenced as values (need a thunk)
+        this.class_values = {}  -- classes referenced as values (need a thunk too)
         this.local_names = []   -- names bound inside the function being emitted
         this.global_names = []  -- module-level let/mut/destructure/decorated names
         this.outer_scopes = []  -- the scopes around the closure being emitted
@@ -3541,6 +3569,16 @@ class CCodegen {
             -- time -- so this is only the value form, which used to emit a
             -- v_C nothing declared and fail inside the C compiler.
             if has(this.enums, node.name) and not contains(this.local_names, node.name) {
+                return "v_" + node.name
+            }
+            -- A bare `A` where A names a class is the class itself, the same
+            -- way a bare enum name is the enum. Calling it, `A(1)`, never
+            -- reaches here -- CallExpression sends that straight to the
+            -- constructor -- so this is only the value form, which used to
+            -- emit a v_A nothing declares and fail inside the C compiler:
+            -- `let k = A`, `map(xs, A)`, `show A`.
+            if contains(this.classes, node.name) and not contains(this.local_names, node.name) {
+                this.class_values[node.name] = true
                 return "v_" + node.name
             }
             if has(this.fn_arity, node.name) and not contains(this.local_names, node.name) {
@@ -4600,7 +4638,8 @@ class CCodegen {
         -- identity, and a fresh closure per mention would compare unequal to
         -- itself.
         let fn_value_names = keys(this.fn_values)
-        if len(globals) > 0 or len(enum_globals) > 0 or len(fn_value_names) > 0 {
+        let class_value_names = keys(this.class_values)
+        if len(globals) > 0 or len(enum_globals) > 0 or len(fn_value_names) > 0 or len(class_value_names) > 0 {
             push(out, "/* module-level bindings */")
             mut roots = []
             for g in globals {
@@ -4616,6 +4655,10 @@ class CCodegen {
             for fname in fn_value_names {
                 push(out, "Value __fnv_" + fname + ";")
                 push(roots, "&__fnv_" + fname)
+            }
+            for cname in class_value_names {
+                push(out, "Value v_" + cname + ";")
+                push(roots, "&v_" + cname)
             }
             push(out, "static Value* cl_global_roots[] = {" + join(roots, ", ") + "};")
             push(out, "")
@@ -4647,6 +4690,12 @@ class CCodegen {
         for fname in keys(this.fn_values) {
             push(out, "Value __fnval_" + fname + "(Value* __a, Value* __cap, long __n);")
         }
+        -- A class used as a value needs the same shape: its constructor
+        -- already takes the array convention, so the thunk only drops the
+        -- capture pointer a closure would have.
+        for cname in keys(this.class_values) {
+            push(out, "Value __clsval_" + cname + "(Value* __a, Value* __cap, long __n);")
+        }
         push(out, "")
         for cdef in this.closure_defs { for l in cdef { push(out, l) } push(out, "") }
         for l in fn_body { push(out, l) }
@@ -4659,6 +4708,10 @@ class CCodegen {
             push(out, "Value __fnval_" + fname + "(Value* __a, Value* __cap, long __n) { (void)__cap; (void)__a; (void)__n; return f_" +
                 fname + "(" + join(argv, ", ") + "); }")
         }
+        for cname in keys(this.class_values) {
+            push(out, "Value __clsval_" + cname + "(Value* __a, Value* __cap, long __n) { (void)__cap; return cl_ctor_" +
+                cname + "(__a, __n); }")
+        }
         push(out, "")
         for l in class_body { push(out, l) }
         push(out, "int main(int argc, char** argv) {")
@@ -4667,12 +4720,15 @@ class CCodegen {
         push(out, "  if(getenv(\"CLARITY_GC\")) gc_enabled = 1;")
         if len(globals) > 0 or len(enum_globals) > 0 or len(fn_value_names) > 0 {
             push(out, "  cl_globals = cl_global_roots; cl_globals_n = " +
-                str(len(globals) + len(enum_globals) + len(fn_value_names)) + ";")
+                str(len(globals) + len(enum_globals) + len(fn_value_names) + len(class_value_names)) + ";")
         }
         -- Before anything else in main: a module-level `let` may name a
         -- function as a value, and so may a function it calls.
         for fname in fn_value_names {
             push(out, "  __fnv_" + fname + " = cl_closure_new(&__fnval_" + fname + ", 0, 0);")
+        }
+        for cname in class_value_names {
+            push(out, "  v_" + cname + " = cl_class_new(\"" + _c_escape(cname) + "\", &__clsval_" + cname + ");")
         }
         for l in main_body { push(out, l) }
         push(out, "  cl_arena_free();")

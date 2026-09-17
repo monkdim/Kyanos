@@ -63,7 +63,7 @@ static char** cl_argv = 0;
 #define GC_CAPTURE_STACK_BASE() do { char __b; gc_stack_base = &__b; } while(0)
 #endif
 
-typedef enum { T_NULL, T_BOOL, T_INT, T_FLOAT, T_STR, T_LIST, T_MAP, T_OBJECT, T_CLOSURE, T_ENUM } Tag;
+typedef enum { T_NULL, T_BOOL, T_INT, T_FLOAT, T_STR, T_LIST, T_MAP, T_OBJECT, T_CLOSURE, T_ENUM, T_CLASS } Tag;
 typedef struct Value Value;
 struct Value { Tag t; long i; double f; const char* s; void* o; };
 typedef struct { Value* items; long len; long cap; } List;
@@ -76,6 +76,14 @@ typedef struct { const char* cls; Value fields; } Obj;
    faster and it catches a bad member while compiling -- and this is what a
    *mention* of the enum itself becomes. */
 typedef struct { const char* name; Value members; } EnumV;
+/* A class is a value too: `show A` is <class A>, `type(A)` is "class", and it
+   can be put in a list or handed to map(), all of which `clarity run` and
+   `run --fast` allow. A *call* of a named class still goes straight to its
+   constructor -- that is faster and it resolves the name while compiling --
+   and this is what a bare mention becomes. Only a name and the constructor,
+   which takes the array convention already, so there is nothing here for the
+   collector to trace. */
+typedef struct ClassV ClassV;
 
 /* closures: a function pointer over (arg-array, capture-array) plus the
    captured values (snapshotted by value at creation) */
@@ -85,6 +93,7 @@ typedef struct { const char* name; Value members; } EnumV;
    as null rather than off the end of the array when the caller supplied fewer
    arguments than the function declares. */
 typedef Value (*ClFn)(Value*, Value*, long);
+struct ClassV { const char* name; ClFn call; };
 typedef struct { ClFn fn; Value* cap; int ncap; } Closure;
 
 /* uniform method calling convention: (self, arg-array) -> Value */
@@ -400,6 +409,8 @@ static char* cl_to_cstr(Value v){
   if(v.t==T_CLOSURE){ char* b=(char*)cl_alloc(16); strcpy(b, "<closure>"); return b; }
   if(v.t==T_ENUM){ EnumV* e=(EnumV*)v.o; long n=(long)strlen(e->name)+10;
     char* b=(char*)cl_alloc(n); snprintf(b, n, "<enum %s>", e->name); return b; }
+  if(v.t==T_CLASS){ ClassV* c=(ClassV*)v.o; long n=(long)strlen(c->name)+11;
+    char* b=(char*)cl_alloc(n); snprintf(b, n, "<class %s>", c->name); return b; }
   char* buf = (char*)cl_alloc(64);
   switch(v.t){
     case T_NULL: strcpy(buf, "null"); return buf;
@@ -473,7 +484,7 @@ static char* cl_display(Value v){
    A value with no object behind it compares by what it holds, as == does. */
 static Value cl_same(Value a, Value b){
   if(a.t != b.t) return cl_bool(0);
-  if(a.t==T_LIST || a.t==T_MAP || a.t==T_OBJECT || a.t==T_CLOSURE || a.t==T_ENUM)
+  if(a.t==T_LIST || a.t==T_MAP || a.t==T_OBJECT || a.t==T_CLOSURE || a.t==T_ENUM || a.t==T_CLASS)
     return cl_bool(a.o == b.o);
   if(a.t==T_STR) return cl_bool(strcmp(a.s, b.s)==0);
   /* cl_equal, not cl_eq: this sits above cl_eq's definition and only the
@@ -584,6 +595,7 @@ static int cl_truthy(Value v){
     case T_OBJECT: return 1;
     case T_CLOSURE: return 1;
     case T_ENUM: return 1;
+    case T_CLASS: return 1;
   }
   return 0;
 }
@@ -622,7 +634,7 @@ static int cl_equal(Value a, Value b){
     }
     return 1;
   }
-  if(a.t==T_OBJECT || a.t==T_CLOSURE || a.t==T_ENUM) return a.o==b.o;
+  if(a.t==T_OBJECT || a.t==T_CLOSURE || a.t==T_ENUM || a.t==T_CLASS) return a.o==b.o;
   return a.i==b.i;
 }
 static Value cl_eq(Value a, Value b){ return cl_bool(cl_equal(a,b)); }
@@ -745,6 +757,11 @@ static void cl_index_set(Value c, Value k, Value val){
   else if(c.t==T_MAP){ char* ks=cl_to_cstr(k); cl_map_put(c, ks, val); }
   else if(c.t==T_OBJECT){ Obj* o=(Obj*)c.o; char* ks=cl_to_cstr(k); cl_map_put(o->fields, ks, val); }
 }
+static Value cl_class_new(const char* name, ClFn call){
+  ClassV* c=(ClassV*)cl_alloc(sizeof(ClassV));
+  c->name=name; c->call=call;
+  Value v=cl_null(); v.t=T_CLASS; v.o=c; return v;
+}
 static Value cl_enum_new(const char* name, Value members){
   EnumV* e=(EnumV*)cl_alloc(sizeof(EnumV));
   e->name=name; e->members=members;
@@ -860,6 +877,12 @@ static Value cl_get_field(Value obj, const char* name){
   Map* m=0;
   if(obj.t==T_OBJECT) m=(Map*)((Obj*)obj.o)->fields.o;   /* instance field map */
   else if(obj.t==T_MAP) m=(Map*)obj.o;                    /* map.key sugar for map["key"] */
+  else if(obj.t==T_CLASS){
+    /* A class answers to no property: the interpreter names it and stops,
+       and the VM used to hand back null, which let a typo travel. */
+    cl_throw(cl_str("TypeError: Cannot access property on class"));
+    return cl_null();
+  }
   else if(obj.t==T_ENUM){
     /* A member is the value itself; the four methods bind to the enum. An
        unknown name raises the interpreter's error, from cl_builtin_method. */
@@ -973,6 +996,9 @@ static Value cl_closure_new(ClFn fn, Value* cap, int ncap){
 }
 static Value cl_call(Value f, Value* args, long n){
   if(f.t==T_CLOSURE){ Closure* c=(Closure*)f.o; return c->fn(args, c->cap, n); }
+  /* A class held as a value constructs when it is called, which is what
+     `map([1, 2], A)` means in both other engines. */
+  if(f.t==T_CLASS){ ClassV* c=(ClassV*)f.o; return c->call(args, 0, n); }
   /* Calling something that is not a function is an error, as in both other
      engines; it answered null here, so the mistake travelled. */
   {
@@ -1488,6 +1514,7 @@ static Value cl_type_of(Value v){
   if(v.t==T_MAP) return cl_str("map");
   if(v.t==T_CLOSURE) return cl_str("function");
   if(v.t==T_ENUM) return cl_str("enum");
+  if(v.t==T_CLASS) return cl_str("class");
   if(v.t==T_OBJECT) return cl_str(((Obj*)v.o)->cls);
   return cl_str("null");
 }
