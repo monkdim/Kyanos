@@ -320,6 +320,19 @@ same("map comprehension over ragged rows", "show {p: q for p, q in [[1], [2, 3]]
 same("map comprehension whose items are not lists", "show {p: p for p, q in [1, 2]}")
 same("a comprehension reads the enclosing scope", "let scale = 10\nfn f() { return [n * scale for n in [1, 2]] }\nshow f()")
 
+show "-- Parity: an instance reads like its fields --"
+-- The VM handed the VMInstance itself to these, so keys(obj) came back
+-- ["_clarityType", "klass", "properties"] and `for k in keys(obj)` walked the
+-- engine's own representation.
+same("keys, values and entries of an instance", "class A { fn init(n) { this.n = n } }\nlet a = A(5)\na.extra = 9\nshow sort(keys(a))\nshow values(a)\nshow entries(a)")
+same("has on an instance", "class A { fn init(n) { this.n = n } }\nlet a = A(5)\nshow has(a, \"n\")\nshow has(a, \"nope\")")
+-- len(instance) answered 3 whatever the instance held -- the count of the
+-- engine's own internal properties -- and contradicted len(keys(a)) beside it.
+same("len of an instance is its field count", "class A { fn init(n) { this.n = n } }\nlet a = A(5)\nshow [len(a), len(keys(a))]\na.extra = 9\nshow [len(a), len(keys(a))]\nclass B { fn init() { this.p = 1\n this.q = 2\n this.r = 3 } }\nshow [len(B()), len(keys(B()))]")
+same("walking an instance by its keys", "class P { fn init() { this.x = 1\n this.y = 2 } }\nlet p = P()\nmut out = []\nfor k in keys(p) { push(out, k + \"=\" + str(p[k])) }\nshow out")
+same("a method taken as a value", "class Dog {\n    fn init(n) { this.name = n }\n    fn speak() { return this.name + \" barks\" }\n}\nlet d = Dog(\"Rex\")\nlet f = d.speak\nshow f()\nshow d.speak()")
+same("inheritance seen from outside", "class Animal {\n    fn init(n) { this.name = n }\n    fn speak() { return this.name + \" makes a sound\" }\n    fn describe() { return \"I am \" + this.name + \" and \" + this.speak() }\n    fn to_string() { return \"<Animal \" + this.name + \">\" }\n}\nclass Dog < Animal {\n    fn init(n, b) { this.name = n\n        this.breed = b }\n    fn speak() { return this.name + \" barks\" }\n}\nlet d = Dog(\"Rex\", \"lab\")\nshow d.speak()\nshow d.describe()\nshow str(d)\nshow type(d)\nshow sort(keys(d))\nlet g = d.describe\nshow g()")
+
 show "-- Parity: what examples/ was tripping over --"
 -- Each of these came out of running all seventeen files in examples/ under
 -- both engines. Four did not match; these are the four faults, each reduced

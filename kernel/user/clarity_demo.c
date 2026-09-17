@@ -118,6 +118,11 @@ static int cl_has_builtin_methods(Value v);
 static int cl_bm_known(Value v, const char* m);
 static Value cl_bound_builtin_method(Value self, const char* name);
 static Value cl_abs(Value v);   /* n.abs(), defined with the math helpers */
+/* a class's methods, for `let f = d.speak` -- the bound form, defined with
+   cl_dispatch below because it goes back through it */
+static ClMethod cl_find_method(const char* cls, const char* m);
+static Value cl_bound_method(Value self, const char* name);
+static Value cl_closure_new(ClFn fn, Value* cap, int ncap);
 
 /* ── conservative mark-sweep garbage collector (opt-in) ──
    Every runtime value carries a small header and is tracked in a global list.
@@ -496,6 +501,9 @@ static long cl_length(Value v){
   if(v.t==T_LIST) return ((List*)v.o)->len;
   if(v.t==T_MAP) return ((Map*)v.o)->len;
   if(v.t==T_STR) return (long)strlen(v.s);
+  /* An instance is as long as the field map keys/values/entries/has already
+     answer with -- so len(a) and len(keys(a)) agree. It used to answer 0. */
+  if(v.t==T_OBJECT) return ((Map*)((Obj*)v.o)->fields.o)->len;
   return 0;
 }
 /* Reading past the end of a list or a string, and indexing something that
@@ -728,6 +736,13 @@ static Value cl_get_field(Value obj, const char* name){
   }
   for(long j=0;j<m->len;j++) if(strcmp(m->keys[j],name)==0) return m->vals[j];
   if(obj.t==T_OBJECT){
+    /* Not a field, but maybe a method: naming one without calling it binds it
+       to its receiver, as it does for a list's, a string's and an enum's
+       methods, and as both other engines do for a class's. This used to fall
+       straight to the error below, so `let f = d.speak` could not be written
+       at all in a native build. */
+    const char* ocls = ((Obj*)obj.o)->cls;
+    if(cl_find_method(ocls, name)) return cl_bound_method(obj, name);
     char buf[160];
     snprintf(buf, sizeof buf, "RuntimeError: %s has no property '%s'", ((Obj*)obj.o)->cls, name);
     cl_throw(cl_str(cl_strdup(buf)));
@@ -775,6 +790,17 @@ static Value cl_dispatch(Value self, const char* m, Value* a, long n){
     cl_throw(cl_str(cl_strdup(buf)));
   }
   return cl_null();
+}
+/* `let f = d.speak` then `f()` is `d.speak()`. The receiver and the name
+   travel in the closure's captures and the call goes back through cl_dispatch,
+   so inheritance and a field holding a closure behave as they do for a direct
+   call. cl_bm_thunk does the same for a list's and a string's methods. */
+static Value cl_bound_method_thunk(Value* args, Value* cap, long n){
+  return cl_dispatch(cap[0], cap[1].s, args, n);
+}
+static Value cl_bound_method(Value self, const char* name){
+  Value cap[2]; cap[0]=self; cap[1]=cl_str(name);
+  return cl_closure_new(&cl_bound_method_thunk, cap, 2);
 }
 /* instances print via a to_string method if defined, else <Cls instance> */
 static char* cl_obj_default_display(Obj* o){

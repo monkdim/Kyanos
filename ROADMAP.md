@@ -283,6 +283,13 @@ lands with codegen tests that diff native output against the interpreter.
   inside the C compiler. An enum is a runtime value now, with the interpreter's four methods, its
   `<enum C>` display and its errors, while a member read where the enum is named still resolves
   while compiling.
+- **An instance reads like its fields, in every engine (done).** The VM leaked its own
+  representation from `keys`/`values`/`entries`/`has`, so `for k in keys(obj)` walked the engine's
+  internals under `--fast`. `len(instance)` was wrong in all three: the interpreter always said 3
+  (the count of its own internal properties, contradicting `keys()` beside it), the VM matched it
+  by the same accident, and native said 0 — all three answer the field count now. And a class
+  method taken as a value, `let f = d.speak`, raised in a native build where both other engines
+  bind it to its receiver.
 - **An unknown name is a Clarity error (done).** A name that resolved to nothing was emitted as
   `v_name` and reported by the C compiler as an undeclared identifier — an error about generated
   code, naming a variable the program never wrote. The backend tracks what is in scope now and

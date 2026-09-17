@@ -191,6 +191,42 @@ A name in scope is what a call means now, whatever else the name refers to at
 module level. Calling something that is not a function also raises the
 interpreter's error rather than answering null.
 
+### An instance did not read like its fields
+Fixed. Every engine agrees an instance reads like the map of its fields — that
+is why indexing one works, and why `for k in keys(p) { p[k] }` is the idiom.
+Except that it did not hold:
+
+```clarity
+class A { fn init(n) { this.n = n } }
+let a = A(5)
+a.extra = 9
+
+show sort(keys(a))   -- run ["extra","n"], cc ["extra","n"],
+                     --   --fast ["_clarityType","klass","properties"]
+show len(a)          -- run 3, cc 0, --fast 3
+```
+
+**The VM leaked its own representation** from `keys`, `values`, `entries` and
+`has`, so that loop walked the engine's internals and read three values the
+program never wrote. Silently wrong data, not an error. It goes through the
+same normalisation the interpreter's `_unwrap_props` does now.
+
+**`len(instance)` was wrong everywhere, in three different ways.** The
+interpreter answered **3 whatever the instance held** — it forwarded to the
+host `len()`, which counts the ClarityInstance's own three internal
+properties, so a one-field instance and a three-field instance both said 3.
+The VM matched it by the same accident; the native backend said 0, because
+`cl_length` had no `T_OBJECT` case. Here the interpreter was not a
+specification to copy: 3 is an implementation detail leaking, and it
+contradicted `keys()` in the same engine. All three now answer the field
+count, so `len(a) == len(keys(a))`.
+
+**A class method taken as a value** — `let f = d.speak` — raised
+`Dog has no property 'speak'` in a native build, where both other engines bind
+it to its receiver. `cl_get_field` looked only in the field map; it now finds
+the method and hands back a closure carrying the receiver, through the same
+bound-method machinery a list's, a string's and an enum's methods already use.
+
 ### An unknown name in a native build was a C compiler error
 Fixed. A name that resolved to nothing was emitted as `v_name` and left to the
 C compiler:

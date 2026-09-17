@@ -1014,6 +1014,63 @@ if CC == null {
         "show len(keys(pairs))\n" +
         "show pairs[\"99\"]")
 
+    -- ── an instance reads like its fields ─────────────────
+    -- `len(instance)` answered 0 natively where the interpreter counted the
+    -- engine's own internal properties and always said 3; both are fixed to
+    -- the field count, so len(a) and len(keys(a)) agree. And a method taken
+    -- as a value raised "has no property", where both other engines bind it
+    -- to its receiver.
+
+    same("instance_reads_like_its_fields",
+        "class A { fn init(n) { this.n = n } }\n" +
+        "let a = A(5)\n" +
+        "a.extra = 9\n" +
+        "show sort(keys(a))\n" +
+        "show values(a)\n" +
+        "show entries(a)\n" +
+        "show has(a, \"n\")\n" +
+        "show has(a, \"nope\")\n" +
+        "show [len(a), len(keys(a))]")
+    same("walking_an_instance_by_its_keys",
+        "class P { fn init() { this.x = 1\n this.y = 2 } }\n" +
+        "let p = P()\n" +
+        "mut out = []\n" +
+        "for k in keys(p) { push(out, k + \"=\" + str(p[k])) }\n" +
+        "show out")
+    same("method_as_a_value",
+        "class Dog {\n" +
+        "    fn init(n) { this.name = n }\n" +
+        "    fn speak() { return this.name + \" barks\" }\n" +
+        "}\n" +
+        "let d = Dog(\"Rex\")\n" +
+        "let f = d.speak\n" +
+        "show f()\n" +
+        "show d.speak()\n" +
+        "show map([Dog(\"A\"), Dog(\"B\")], fn(x) { return x.speak() })")
+    same("inherited_method_as_a_value",
+        "class Animal {\n" +
+        "    fn init(n) { this.name = n }\n" +
+        "    fn speak() { return this.name + \" makes a sound\" }\n" +
+        "    fn describe() { return \"I am \" + this.name + \" and \" + this.speak() }\n" +
+        "}\n" +
+        "class Dog < Animal {\n" +
+        "    fn init(n) { this.name = n }\n" +
+        "    fn speak() { return this.name + \" barks\" }\n" +
+        "}\n" +
+        "let d = Dog(\"Rex\")\n" +
+        "let g = d.describe\n" +
+        "show g()\n" +
+        "show sort(keys(d))")
+    same("a_field_holding_a_closure_still_wins",
+        "class C {\n" +
+        "    fn init() { this.speak = fn() { return \"field\" } }\n" +
+        "    fn speak() { return \"method\" }\n" +
+        "}\n" +
+        "let c = C()\n" +
+        "show c.speak()\n" +
+        "let f = c.speak\n" +
+        "show f()")
+
     -- ── a name that resolves nowhere ──────────────────────
     -- It used to be emitted as `v_name` and reported by the C compiler as an
     -- undeclared identifier -- an error about generated code, naming a
