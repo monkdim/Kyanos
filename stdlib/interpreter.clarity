@@ -256,6 +256,17 @@ fn _iter_items(iterable) {
 
 -- ── Interpreter ──────────────────────────────────────────
 
+-- `open` plus one more, as a new list. A copy rather than a push, because
+-- two sibling values must not see each other's ancestors: a list holding the
+-- same map twice is not a cycle, and pushing would make the second one look
+-- like it.
+fn _appended(open, value) {
+    mut out = []
+    for o in open { push(out, o) }
+    push(out, value)
+    return out
+}
+
 class Interpreter {
     fn init(builtins, source_dir) {
         this.global_env = Environment(null)
@@ -510,6 +521,10 @@ class Interpreter {
         -- any class blew the stack. The interpreter's knows about
         -- instances, and about to_string().
         this.global_env.set("display", fn(v) { return interp._to_display(v) }, true)
+        -- Reference identity. `==` on a list or a map is structural in every
+        -- engine, so this was the one question a program could not ask — and
+        -- rendering a value that contains itself needs exactly it.
+        this.global_env.set("identical", fn(a, b) { return identical(a, b) }, true)
         this.global_env.set("repr", fn(v) { return interp._to_repr(v) }, true)
         this.global_env.set("set", fn(lst) { return set(lst) }, true)
         this.global_env.set("error", fn(msg) { return error(msg) }, true)
@@ -1719,7 +1734,28 @@ class Interpreter {
         return true
     }
 
-    fn _to_display(value) {
+    -- `open` holds the containers between here and the top. A value that
+    -- refers to itself used to walk into itself until the stack ran out —
+    -- `mut a = {}` then `a["self"] = a` then `show a` was
+    -- "RangeError: Maximum call stack size exceeded" here and a segmentation
+    -- fault in a compiled binary. One that is already open renders as {...}
+    -- or [...], which is what Python does, and comes back off the list on the
+    -- way out, so a value that merely appears twice still prints twice: it is
+    -- a cycle that is elided, not sharing.
+    --
+    -- Membership is `identical`, not `contains`: `==` on a container is
+    -- structural, and asking whether a cyclic value equals another cyclic
+    -- value is the same infinite walk this is here to stop.
+    fn _is_open(value, open) {
+        for o in open {
+            if identical(o, value) { return true }
+        }
+        return false
+    }
+
+    fn _to_display(value) { return this._display_in(value, []) }
+
+    fn _display_in(value, open) {
         if value == null { return "null" }
         let t = type(value)
         if t == "bool" {
@@ -1729,13 +1765,17 @@ class Interpreter {
         if t == "number" { return str(value) }
         if t == "string" { return value }
         if t == "list" {
-            let items = join(map(value, fn(v) { return this._to_repr(v) }), ", ")
+            if this._is_open(value, open) { return "[...]" }
+            let inner = _appended(open, value)
+            let items = join(map(value, fn(v) { return this._repr_in(v, inner) }), ", ")
             return "[{items}]"
         }
         if t == "map" {
+            if this._is_open(value, open) { return "\{...\}" }
+            let inner = _appended(open, value)
             let ks = keys(value)
             let pairs = join(map(ks, fn(k) {
-                return "{k}: {this._to_repr(value[k])}"
+                return "{k}: {this._repr_in(value[k], inner)}"
             }), ", ")
             -- Build the braces by concatenation rather than interpolating
             -- inside `\{...\}`: the JS transpiler's greedy brace matcher
@@ -1751,7 +1791,11 @@ class Interpreter {
             if ts_method != null {
                 try {
                     let bound_result = this._call_bound_method(value, ts_method, [])
-                    return this._to_display(bound_result)
+                    -- Its own rendering is inside this one, so it inherits
+                    -- what is open: a to_string that hands back the instance
+                    -- itself, or a list holding it, stops here rather than
+                    -- on the stack limit.
+                    return this._display_in(bound_result, _appended(open, value))
                 } catch e_ts {
                     -- fall through
                 }
@@ -1764,11 +1808,13 @@ class Interpreter {
         return str(value)
     }
 
-    fn _to_repr(value) {
+    fn _to_repr(value) { return this._repr_in(value, []) }
+
+    fn _repr_in(value, open) {
         if type(value) == "string" {
             return "\"{value}\""
         }
-        return this._to_display(value)
+        return this._display_in(value, open)
     }
 
     fn _call_bound_method(instance, method, args) {

@@ -22,7 +22,9 @@ import { dlopen, FFIType, suffix as ffiSuffix, ptr as bunPtr, read as bunRead, C
 const _output = [];
 
 export function show(...vals) {
-  const text = vals.map(display).join(' ');
+  // Not `map(display)`: the second argument is now a seen-set, and map
+  // would hand it the element's index.
+  const text = vals.map((v) => display(v)).join(' ');
   console.log(text);
   _output.push(text);
 }
@@ -192,7 +194,7 @@ export function has(obj, key) {
 // ── Strings ──────────────────────────────────────────────
 
 export function split(s, sep = ' ') { return s.split(sep); }
-export function $join(list, sep = '') { return list.map(display).join(sep); }
+export function $join(list, sep = '') { return list.map((v) => display(v)).join(sep); }
 export function replace(s, from, to) { return s.split(from).join(to); }
 export function trim(s) { return s.trim(); }
 export function upper(s) { return s.toUpperCase(); }
@@ -662,7 +664,20 @@ export const $os = {
 
 // ── Display helpers ──────────────────────────────────────
 
-export function display(value) {
+// Whether two values are the same object rather than merely equal ones.
+// `==` on a list or a map is structural in every engine, deliberately, so
+// until this there was no way to ask the other question -- and rendering a
+// value that contains itself needs exactly this one answered. Primitives
+// compare as `==` does, so identical(NaN, NaN) is false, as NaN == NaN is.
+export function identical(a, b) { return a === b; }
+
+// A value that refers to itself used to take the process down: this walked
+// into it and recursed until the stack ran out, and a compiled binary
+// segfaulted without a word. `seen` holds the containers between here and
+// the top, and one that is already open renders as {...} or [...], which is
+// what Python does. Removed on the way out, so a value that merely appears
+// twice still prints twice -- it is a cycle that is elided, not sharing.
+export function display(value, seen) {
   if (value === null || value === undefined) return 'null';
   if (typeof value === 'boolean') return value ? 'true' : 'false';
   if (typeof value === 'number') {
@@ -674,20 +689,31 @@ export function display(value) {
   // shown quoted, the same as the object branch below already does and the
   // same as both other backends do. Displaying them bare made ["a", "b"]
   // print as [a, b] here and as ["a", "b"] everywhere else.
-  if (Array.isArray(value)) return '[' + value.map(repr).join(', ') + ']';
+  if (Array.isArray(value)) {
+    if (seen && seen.has(value)) return '[...]';
+    const s = seen || new Set();
+    s.add(value);
+    try { return '[' + value.map((v) => repr(v, s)).join(', ') + ']'; }
+    finally { s.delete(value); }
+  }
   if (value instanceof ClarityEnum) return value.toString();
   if (value instanceof ClarityInstance) return `<${value._className} instance>`;
   if (typeof value === 'function') return `<fn ${value.name || 'anonymous'}>`;
   if (typeof value === 'object') {
-    const pairs = Object.entries(value).map(([k, v]) => `${k}: ${repr(v)}`);
-    return '{' + pairs.join(', ') + '}';
+    if (seen && seen.has(value)) return '{...}';
+    const s = seen || new Set();
+    s.add(value);
+    try {
+      const pairs = Object.entries(value).map(([k, v]) => `${k}: ${repr(v, s)}`);
+      return '{' + pairs.join(', ') + '}';
+    } finally { s.delete(value); }
   }
   return String(value);
 }
 
-export function repr(value) {
+export function repr(value, seen) {
   if (typeof value === 'string') return `"${value}"`;
-  return display(value);
+  return display(value, seen);
 }
 
 export function truthy(value) {

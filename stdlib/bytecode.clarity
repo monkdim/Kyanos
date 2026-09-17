@@ -1472,6 +1472,14 @@ class VMSpread {
 
 -- A method retrieved off a VMInstance, with `this` already captured.
 -- _call_fn detects this and routes to _call_method so `this` is in scope.
+-- `open` plus one more, as a new list; see Interpreter._appended.
+fn _appended(open, value) {
+    mut out = []
+    for o in open { push(out, o) }
+    push(out, value)
+    return out
+}
+
 class VMBoundMethod {
     fn init(instance, method) {
         this._clarityType = "VMBoundMethod"
@@ -1624,6 +1632,9 @@ class VM {
             return filter(lst, fn(x) { return vm._is_truthy(vm._call_fn(f, [x])) })
         }
         this.globals["sort"] = fn(lst) { return sort(lst) }
+        -- Reference identity; see the interpreter's registration beside
+        -- display() for why the language needs one.
+        this.globals["identical"] = fn(a, b) { return identical(a, b) }
         this.globals["reverse"] = fn(lst) { return reverse(lst) }
         this.globals["keys"] = fn(m) { return keys(_vm_props(m)) }
         this.globals["values"] = fn(m) { return values(_vm_props(m)) }
@@ -2772,7 +2783,21 @@ class VM {
         return true
     }
 
-    fn _display(value) {
+    -- See Interpreter._display_in: `open` is what is being rendered between
+    -- here and the top, so a value that contains itself stops rather than
+    -- running the stack out. Membership is `identical`, because `==` on a
+    -- container is structural and comparing two cyclic values is the same
+    -- infinite walk.
+    fn _is_open(value, open) {
+        for o in open {
+            if identical(o, value) { return true }
+        }
+        return false
+    }
+
+    fn _display(value) { return this._display_in(value, []) }
+
+    fn _display_in(value, open) {
         if value == null { return "null" }
         let t = type(value)
         if t == "bool" {
@@ -2785,13 +2810,17 @@ class VM {
         }
         if t == "string" { return value }
         if t == "list" {
-            let items = join(map(value, fn(v) { return this._repr(v) }), ", ")
+            if this._is_open(value, open) { return "[...]" }
+            let inner = _appended(open, value)
+            let items = join(map(value, fn(v) { return this._repr_in(v, inner) }), ", ")
             return "[{items}]"
         }
         if t == "map" {
+            if this._is_open(value, open) { return "\{...\}" }
+            let inner = _appended(open, value)
             let ks = keys(value)
             let pair_strs = map(ks, fn(k) {
-                return "{k}: {this._repr(value[k])}"
+                return "{k}: {this._repr_in(value[k], inner)}"
             })
             return "\{" + join(pair_strs, ", ") + "\}"
         }
@@ -2808,17 +2837,36 @@ class VM {
             let ts = value.klass.find_method("to_string")
             if ts != null {
                 try {
-                    return this._display(this._call_method(value, ts, []))
+                    return this._display_in(this._call_method(value, ts, []),
+                                            _appended(open, value))
                 } catch e_ts { }
             }
             return value.to_string()
         }
+        -- A method taken off an instance is a value like any other, and it
+        -- had no rendering at all: _display fell through to the host's
+        -- str(), which walked this engine's own object graph -- instance to
+        -- class to methods and back -- until the stack ran out. `show inst.m`
+        -- was "RangeError: Maximum call stack size exceeded" where the other
+        -- two engines print something.
+        --
+        -- The wording is the interpreter's, which is the specification, and
+        -- it is a poor one: `<builtin>` for a method the program itself wrote
+        -- is the interpreter's host closure showing through, the same shape
+        -- as len(instance) answering 3. Saying `<fn m>` in all three needs
+        -- the interpreter to keep the method's name through the closure it
+        -- binds it into, and a compiled binary to do the same; that is filed
+        -- rather than done here, and this at least stops the crash without
+        -- inventing a third answer.
+        if t == "VMBoundMethod" { return "<builtin>" }
         return str(value)
     }
 
-    fn _repr(value) {
+    fn _repr(value) { return this._repr_in(value, []) }
+
+    fn _repr_in(value, open) {
         if type(value) == "string" { return "\"{value}\"" }
-        return this._display(value)
+        return this._display_in(value, open)
     }
 
     fn _type_name(value) {

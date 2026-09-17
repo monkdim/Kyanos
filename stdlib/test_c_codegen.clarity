@@ -181,6 +181,58 @@ if CC == null {
         "show int(\"100000000000000000000\")\n" +
         "show int(1e20)\nshow int(42)\nshow int(-3.9)\nshow int(3.9)\n" +
         "show int(\"42\")")
+    -- ── a value that refers to itself can be shown ────────
+    --
+    -- It could not: every engine walked into it until the stack ran out, and
+    -- here that was not a message but a segmentation fault — exit 139 with
+    -- nothing on either stream. The containers between a rendering and its
+    -- top are remembered now, and one that is already open prints as {...}
+    -- or [...], which is what Python does.
+    same("a_map_that_contains_itself",
+        "mut a = \{\}\n" +
+        "a[\"self\"] = a\n" +
+        "show a\n" +
+        "show str(a)")
+    same("a_list_that_contains_itself",
+        "mut xs = [1]\n" +
+        "push(xs, xs)\n" +
+        "show xs\n" +
+        "mut ys = []\n" +
+        "push(ys, ys)\n" +
+        "show ys")
+    -- Sharing is not a cycle: a value that merely appears twice prints twice,
+    -- because a container comes off the open list on the way out.
+    same("a_value_shown_twice_is_not_a_cycle",
+        "let inner = [1, 2]\n" +
+        "show [inner, inner]\n" +
+        "let m = \{\"a\": 1\}\n" +
+        "show \{\"x\": m, \"y\": m\}\n" +
+        "show [[inner], [inner]]")
+    -- Reference identity, which the language had no way to ask for: `==` on
+    -- a container is structural, and comparing two cyclic values that way is
+    -- the same infinite walk this stops.
+    same("identical_is_reference_identity",
+        "let xs = [1, 2]\n" +
+        "show identical(xs, xs)\n" +
+        "show identical(xs, [1, 2])\n" +
+        "show identical([1, 2], [1, 2])\n" +
+        "show xs == [1, 2]\n" +
+        "show identical(1, 1)\n" +
+        "show identical(\"a\", \"a\")\n" +
+        "show identical(null, null)\n" +
+        "show identical(1, \"1\")")
+    -- A to_string that throws is caught mid-rendering, which is the one place
+    -- a throw lands inside one. Whatever it left open has to be put back, or
+    -- every later rendering would elide those containers.
+    same("a_throwing_to_string_leaves_rendering_clean",
+        "class Bad {\n" +
+        "    fn init() { this.x = 1 }\n" +
+        "    fn to_string() { throw \"nope\" }\n" +
+        "}\n" +
+        "let inner = [1, 2]\n" +
+        "show [Bad(), Bad()]\n" +
+        "show [inner, inner]")
+
     -- ── every operator the parser can produce runs here ──
     --
     -- `is` was in the grammar, in the reference under Logical operators, and

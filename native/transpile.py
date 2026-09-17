@@ -783,7 +783,7 @@ def transpile_with_runtime(path):
         '  fetch, serve, compose, tap, $set, error as $error,\n'
         '  regex_match, regex_search, regex_find, regex_replace, regex_split, exec_full_regex,\n'
         '  print,\n'
-        '  display, repr, truthy as $truthy, ClarityEnum as $ClarityEnum,\n'
+        '  display, repr, identical, truthy as $truthy, ClarityEnum as $ClarityEnum,\n'
         '  ClarityInstance as $ClarityInstance,\n'
         '  _ffi_open, _ffi_bind, _ffi_close,\n'
         '  _ffi_alloc, _ffi_alloc_cstring, _ffi_read_cstring, _ffi_ptr_addr, _ffi_pointer_release,\n'
