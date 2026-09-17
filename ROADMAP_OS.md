@@ -30,9 +30,9 @@ every pull request; anything not gated is called out as unverified.
   reach the marker — reliability is part of the gate, not a re-run away.
 - **The AArch64 (Apple-Silicon-class) kernel runs programs, draws a screen,
   reads a keyboard, and can be typed at over a serial line.** The
-  `OS boot (aarch64, TCG)` gate boots it three ways — 512 MiB with 32 required
-  markers, then a PAN-capable CPU and 4 GiB with the thirteen and fourteen
-  that those configurations exist to prove — then screenshots the display,
+  `OS boot (aarch64, TCG)` gate boots it four ways — 512 MiB with 32 required
+  markers, then a PAN-capable CPU, a GICv3, and 4 GiB with the markers each of
+  those configurations exists to prove — then screenshots the display,
   types at the keyboard, and types at it again with no keyboard and no
   display at all. It has also been booted on an **Apple M5** and driven by
   hand through the shell; the transcript is in `kernel/RUNNING.md`. What is
@@ -299,15 +299,27 @@ What is left, in rough order:
   kernel command line's business — `clarity.idle=<seconds>`, two minutes by
   default — but a timeout is still a stand-in for blocking, and it is
   documented as one in `drivers/stdin.zig`.
-- **GICv3, so Apple hardware can run this at native speed.** The emulated
-  path has been run on an Apple M5 and driven by hand through the shell to
-  `exit 3` — see the transcript in `kernel/RUNNING.md`. The accelerated one
-  has not, and cannot. Measured on the same M5: `qemu-system-aarch64 -accel
-  hvf` answers `HVF does not support GICv2 emulation` and refuses to start.
-  `arch/aarch64/gic.zig` speaks GICv2 and nothing else, and Apple Silicon has
-  no GIC at all — the real controller is Apple's AIC — so QEMU emulates one,
-  and under HVF it emulates only a GICv3. There is no flag that avoids this.
-  The emulated `cortex-a72` path works on a Mac and is what to use meanwhile.
+- **GICv3 is done.** ✅ `arch/aarch64/gic.zig` spoke GICv2 and nothing else,
+  and Apple Silicon has no GIC at all — the real controller is Apple's AIC —
+  so QEMU emulates one, and under HVF it emulates only a GICv3. Measured on an
+  M5: `qemu-system-aarch64 -accel hvf` answers `HVF does not support GICv2
+  emulation` and refuses to start, and there is no flag that avoids it. Booted
+  against a GICv2 the kernel took a data abort at `0x0801_0004` — the GICv2
+  CPU interface's priority mask, which on a GICv3 is not memory at all.
+  The version now comes from the device tree (`arm,gic-v3` against
+  `arm,cortex-a15-gic`) and both drivers stay, because the emulated
+  `cortex-a72` path still builds a GICv2. On v3 the CPU interface is the
+  ICC_\*_EL1 system registers rather than a register block — `boot.S` sets
+  ICC_SRE_EL2.Enable in the one window where the kernel is still at EL2,
+  guarded on ID_AA64PFR0_EL1.GIC — and a core's own SGIs and PPIs are enabled
+  in its redistributor rather than in the distributor. That last one is the
+  trap: writing a PPI to the distributor on a GICv3 is *accepted* and delivers
+  nothing, which was measured by doing it — `ticks=0`, fifteen markers instead
+  of forty, and no fault to say why. The boot gate runs the same image with
+  `gic-version=3` as well as the default, so neither path can rot.
+  **Still not the same as running on the metal:** what this unblocks is HVF
+  acceleration under QEMU on a Mac, which has not been run yet — it needs the
+  hardware. Bare metal needs m1n1 and then AIC, below.
 - **Bare metal.** Everything above is QEMU `virt` — including the Apple M5
   session, where the Mac is running QEMU rather than running this kernel.
   Apple hardware proper needs m1n1, and then AIC rather than any GIC at all.
@@ -326,11 +338,14 @@ Both OS gates are live in `.github/workflows/os-boot.yml`:
   kernel-only rescue ISO, boot it under `qemu-system-x86_64` three times,
   require `KyanOS ready.` on all three.
 - **`OS boot (aarch64, TCG)`** — `zig build aarch64`, then boot under
-  `qemu-system-aarch64 -M virt` **three times**: 512 MiB, 4 GiB, and on a
-  PAN-capable `-cpu max`. The first requires all 28 markers; the other two
-  require the subset each is for — that the direct map was extended over all
-  4 GiB and the allocator manages it, and that a PAN-capable CPU reaches
-  userspace with no exception logged. Then two tools that look at the machine
+  `qemu-system-aarch64 -M virt` **four times**: 512 MiB, 4 GiB, a PAN-capable
+  `-cpu max`, and `gic-version=3`. The first requires all 28 markers; the
+  others require the subset each is for — that the direct map was extended
+  over all 4 GiB and the allocator manages it, that a PAN-capable CPU reaches
+  userspace with no exception logged, and that a GICv3 machine wakes its
+  redistributor and delivers both a private and a shared interrupt. The
+  default machine is separately asserted to still be *driven* as a GICv2, so
+  supporting both cannot become one of them quietly winning. Then two tools that look at the machine
   from outside:
   - `kernel/tools/fb_check.py` screenshots the display through QEMU's
     monitor and compares **every character cell** against a replay of the

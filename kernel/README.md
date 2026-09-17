@@ -59,8 +59,9 @@ claim with no marker behind it is in "What does not run yet".
   checked by asking the MMU (`at s1e1w`) rather than by reading a bit back
 - physical page allocator over the memory the device tree described, with
   the direct map extended to cover all of it
-- generic timer at 100 Hz through a GICv2, with interrupts proven to
-  arrive rather than assumed
+- generic timer at 100 Hz through the interrupt controller the machine
+  actually has — GICv2 or GICv3, read from the device tree — with interrupts
+  proven to arrive rather than assumed, on both
 - a 1024×768 framebuffer through `ramfb`, checked twice: the kernel reads
   its own pattern back, and CI takes a screenshot through QEMU's monitor
   and inspects the pixels

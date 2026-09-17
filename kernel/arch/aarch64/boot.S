@@ -107,6 +107,37 @@ _start:
 
     movz    x1, #0x8000, lsl #16        // HCR_EL2.RW (bit 31): EL1 is AArch64
     msr     hcr_el2, x1
+
+    // Let EL1 reach the GICv3 CPU interface, where there is one.
+    //
+    // A GICv3 has no memory-mapped CPU interface: ICC_PMR_EL1, ICC_IAR1_EL1
+    // and the rest are system registers. An EL1 access to them traps to EL2
+    // unless ICC_SRE_EL2.Enable is set, and at this point EL2 has no vectors —
+    // VBAR_EL2 is whatever reset left — so the trap would not be a diagnosis,
+    // it would be the machine wandering off. Enabling it here, in the one
+    // window where the kernel is still at EL2, is the only place it can be
+    // done.
+    //
+    // Guarded, because the registers do not exist on every CPU and writing
+    // one that does not is an undefined instruction — which, at EL2 with no
+    // vectors, is the machine wandering off again. ID_AA64PFR0_EL1.GIC
+    // (bits 27:24) is the architecture's own answer to "is there a system
+    // register interface": zero means no.
+    //
+    // Nothing on this machine proves the guard is needed. It was tested by
+    // removing it and booting the emulated cortex-a72 with a GICv2, which came
+    // up byte for byte the same — so QEMU reports the interface on that CPU
+    // whichever controller is wired to it, and the write is harmless there.
+    // A real Cortex-A72 in a GICv2 system reads zero, and that is the machine
+    // this is written for. Said plainly rather than left to look verified.
+    mrs     x1, id_aa64pfr0_el1
+    ubfx    x1, x1, #24, #4
+    cbz     x1, .Lno_icc_sre
+    mov     x1, #0x9                    // ICC_SRE_EL2: SRE (bit 0) | Enable (bit 3)
+    msr     S3_4_C12_C9_5, x1           // ICC_SRE_EL2
+    isb
+.Lno_icc_sre:
+
     mov     x1, #0x3c5                  // DAIF masked, M[3:0]=0b0101 (EL1h)
     msr     spsr_el2, x1
     adr     x1, .Lat_el1                // PC-relative: still a physical address
