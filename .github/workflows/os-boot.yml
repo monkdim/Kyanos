@@ -510,6 +510,63 @@ jobs:
             exit 1
           fi
 
+      # The interrupt controller Apple hardware forces.
+      #
+      # Apple Silicon has no GIC at all — the real controller is Apple's AIC —
+      # so a Mac running this under QEMU gets an emulated one, and under HVF
+      # acceleration QEMU emulates only a GICv3: `-accel hvf` with a GICv2
+      # answers "HVF does not support GICv2 emulation" and refuses to start.
+      # The kernel therefore has to speak both, and the boot above only
+      # exercises the GICv2 that `virt` builds by default.
+      #
+      # This is the same image on the same emulator with one flag changed, so
+      # a difference in the output is the interrupt controller and nothing
+      # else. The timer marker is the one that matters: on a GICv3 a private
+      # interrupt is enabled in the core's redistributor rather than in the
+      # distributor, and writing it to the distributor is *accepted* and
+      # delivers nothing — measured, by doing exactly that: ticks=0 and
+      # fifteen markers instead of forty, with no fault to say why.
+      - name: Boot on a GICv3, the controller Apple hardware forces
+        run: |
+          timeout 120 qemu-system-aarch64 \
+            -M virt,gic-version=3 \
+            -cpu max \
+            -m 512 \
+            -kernel kernel/zig-out/bin/clarity-kernel-aarch64.img \
+            -device ramfb \
+            -device virtio-keyboard-device \
+            -append "clarity.idle=3" \
+            -serial stdio \
+            -display none \
+            -no-reboot \
+            > serial-arm-gicv3.log 2>&1 || true
+          echo "----- serial output -----"
+          cat serial-arm-gicv3.log
+          echo "-------------------------"
+          if grep -q "\[ok\] interrupt controller: GICv3" serial-arm-gicv3.log \
+             && grep -q "\[ok\] aarch64 timer: interrupts delivered" serial-arm-gicv3.log \
+             && grep -q "\[ok\] keyboard: interrupt .* routed to this core" serial-arm-gicv3.log \
+             && grep -q "\[ok\] EL0: the timer interrupted it" serial-arm-gicv3.log \
+             && grep -q "\[ok\] preemption: B ran" serial-arm-gicv3.log \
+             && grep -q "\[ok\] init: a compiled, linked ELF ran at EL0 twice" serial-arm-gicv3.log \
+             && grep -q "KyanOS aarch64: EL1 boot ok" serial-arm-gicv3.log \
+             && ! grep -q "AARCH64 EXCEPTION" serial-arm-gicv3.log; then
+            echo "PASS: redistributor woken, PPI and SPI delivered, EOI through the system registers"
+          else
+            echo "FAIL: the GICv3 path is broken — a Mac cannot run this accelerated"
+            exit 1
+          fi
+
+      # And that the GICv2 path the default `virt` builds is still the one
+      # taken there, so "both are supported" is not one of them quietly
+      # winning. The boots above assert the GICv2 behaviour; this asserts the
+      # kernel says so, which is what makes the line above meaningful.
+      - name: Assert the default machine is still driven as a GICv2
+        run: |
+          grep -q "\[ok\] interrupt controller: GICv2" serial-arm.log \
+            || { echo "FAIL: the default virt machine is no longer detected as a GICv2"; exit 1; }
+          echo "PASS: default virt is a GICv2 and is driven as one"
+
       # A machine with more RAM than the boot stub could map on its own.
       #
       # The stub runs before anything has read the device tree, so all it can

@@ -402,6 +402,77 @@ fn decode_gic_interrupt(value: []const u8) ?u32 {
     };
 }
 
+/// Every `reg` region of the first node whose name starts with `prefix`, in
+/// the order the tree lists them, written into `out`; the count is returned.
+///
+/// `node_reg` below answers the common case, where a device has one window.
+/// An interrupt controller does not: a GICv2 lists its distributor and its CPU
+/// interface, and a GICv3 lists its distributor and its redistributors, and
+/// which of them is which is the order they appear in. Reading only the first
+/// would find a GICv3's distributor and leave the kernel with no way to reach
+/// the frame that actually enables the timer.
+pub fn node_regs(fdt: *const Fdt, prefix: []const u8, out: []Region) usize {
+    var w = Walker.init(fdt);
+    var depth: u32 = 0;
+    var matched_depth: ?u32 = null;
+
+    while (w.next()) |ev| {
+        switch (ev) {
+            .node_start => {
+                depth += 1;
+                if (matched_depth == null and starts_with(ev.node_start, prefix)) matched_depth = depth;
+            },
+            .node_end => {
+                if (matched_depth) |d| if (depth == d) {
+                    matched_depth = null;
+                };
+                if (depth > 0) depth -= 1;
+            },
+            .prop => |pr| {
+                if (matched_depth) |d| {
+                    if (depth == d and str_eq(pr.name, "reg")) return decode_reg(fdt, pr.value, out);
+                }
+            },
+        }
+    }
+    return 0;
+}
+
+/// A property of the first node whose name starts with `prefix`, as raw bytes.
+///
+/// `node_prop` matches a whole name, which suits `/chosen` and `/cpus`. A
+/// device node carries a unit address it cannot be asked to predict —
+/// `intc@8000000` — so this matches the way `node_reg` does. Scoped to the
+/// matched node's own properties, so a child's `compatible` is not mistaken
+/// for its parent's: a GICv3 node has an ITS under it with a `compatible` of
+/// its own.
+pub fn node_prop_prefix(fdt: *const Fdt, prefix: []const u8, prop: []const u8) ?[]const u8 {
+    var w = Walker.init(fdt);
+    var depth: u32 = 0;
+    var matched_depth: ?u32 = null;
+
+    while (w.next()) |ev| {
+        switch (ev) {
+            .node_start => {
+                depth += 1;
+                if (matched_depth == null and starts_with(ev.node_start, prefix)) matched_depth = depth;
+            },
+            .node_end => {
+                if (matched_depth) |d| if (depth == d) {
+                    matched_depth = null;
+                };
+                if (depth > 0) depth -= 1;
+            },
+            .prop => |pr| {
+                if (matched_depth) |d| {
+                    if (depth == d and str_eq(pr.name, prop)) return pr.value;
+                }
+            },
+        }
+    }
+    return null;
+}
+
 /// The first `reg` region of the first node whose name starts with `prefix`.
 ///
 /// Node names on a real tree carry a unit address — `fw-cfg@9020000` — so the

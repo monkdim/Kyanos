@@ -80,6 +80,13 @@ export fn kernel_main_aarch64(dtb_phys: u64) callconv(.C) noreturn {
     cmdline.init(tree);
     report_command_line();
 
+    // Which interrupt controller this machine has, before anything programs
+    // one. Read from the tree rather than assumed: the emulated cortex-a72
+    // path gets a GICv2, and a Mac running this accelerated gets a GICv3
+    // because HVF emulates nothing else.
+    gic.detect(tree);
+    report_interrupt_controller();
+
     timer.init(100);
     console.print("  [ok] generic timer armed at 100 Hz, cntfrq=");
     console.print_dec(timer.frequency());
@@ -1328,6 +1335,20 @@ extern const __stack_top: u8;
 /// QEMU `virt` defaults and the memory phase below reports that it cannot
 /// run. It is worth distinguishing from a tree that parsed and said something
 /// unexpected, because the two have completely different causes.
+/// Say which interrupt controller was found, and stop if there was none.
+///
+/// A kernel that reaches this line without a controller has no timer and no
+/// keyboard: it would boot, print, and then sit still for reasons nothing on
+/// the serial line would explain. Saying so is the difference between a bug
+/// report and a mystery.
+fn report_interrupt_controller() void {
+    switch (gic.detected()) {
+        .v2 => console.println("  [ok] interrupt controller: GICv2 (memory-mapped CPU interface)"),
+        .v3 => console.println("  [ok] interrupt controller: GICv3 (redistributor + system registers)"),
+        .unknown => console.println("  [!!] interrupt controller: none found in the device tree — no interrupts will be delivered"),
+    }
+}
+
 fn describe_machine(dtb_phys: u64) ?fdt.Fdt {
     const tree = fdt.parse(vm.phys_to_virt(dtb_phys)) orelse {
         console.print("  [--] no device tree at ");
