@@ -33,7 +33,7 @@ clarity build --install # Build and install to /usr/local/bin
 ## Running Tests
 
 ```bash
-clarity test stdlib/    # Run all test suites (50 files, ~2,750 assertions)
+clarity test stdlib/    # Run all test suites (66 files, more than 4,000 assertions)
 clarity smoke ./native/dist/clarity  # Run smoke tests on a binary
 ```
 
