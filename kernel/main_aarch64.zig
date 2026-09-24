@@ -167,6 +167,10 @@ export fn kernel_main_aarch64(dtb_phys: u64) callconv(.C) noreturn {
     // nothing the kernel did not choose.
     regprobe_program();
 
+    // And whether a system call gives a program its floating point back.
+    // Alone, so nothing else can be the explanation.
+    fpprobe_program();
+
     // A program that stops being itself. Everything above runs to completion
     // or is stopped; this one asks the kernel to put a different image in
     // its place and keep its identity.
@@ -568,6 +572,10 @@ const EXEC_ELF = @embedFile("exec_elf_aarch64");
 /// the end of `aarch64_enter_user`.
 const REGPROBE_ELF = @embedFile("regprobe_elf_aarch64");
 
+/// A program that asks whether its floating-point registers come back from a
+/// system call. See user/fpprobe_aarch64.zig.
+const FPPROBE_ELF = @embedFile("fpprobe_elf_aarch64");
+
 /// Load that ELF into a fresh address space and run it.
 ///
 /// Everything the probe above proves, this proves again without the kernel
@@ -952,6 +960,43 @@ fn regprobe_program() void {
     console.print(" code=");
     console.print_dec(out.code);
     console.println(" — it wanted status=0 code=0, and says above what it found");
+}
+
+/// Run the floating-point probe and require it to find everything where it
+/// left it.
+///
+/// It runs on its own, which is the point: with one program at EL0 a value
+/// that moved was moved by the system call path and by nothing else. Whether
+/// a *preemption* keeps the vector file is a different question, and the
+/// two-copy spin test is where that one is asked.
+fn fpprobe_program() void {
+    if (pmm.stats().total_pages == 0) return;
+
+    const asid = claim_asid("fpprobe") orelse return;
+    var proc = loader.load(FPPROBE_ELF, asid, heap.allocator()) catch |e| {
+        console.print("  [FAIL] fpprobe: could not load: ");
+        console.println(@errorName(e));
+        sched.free_asid(asid);
+        return;
+    };
+    const p = begin_process("fpprobe", proc.space, proc.brk_start);
+
+    paging.activate(&proc.space);
+    trap.reset();
+    const out = trap.enter_user_full(proc.entry, proc.user_sp, 0);
+    paging.deactivate();
+    loader.release(&proc, proc.brk_start);
+    if (p) |pp| sched.exit_process(pp, @intCast(out.code)) else sched.free_asid(asid);
+
+    if (out.status == trap.EXIT_DONE and out.code == 0) {
+        console.println("  [ok] floating point: a system call gives a program its vector file back");
+        return;
+    }
+    console.print("  [FAIL] floating point: the probe came back status=");
+    console.print_dec(out.status);
+    console.print(" code=");
+    console.print_dec(out.code);
+    console.println(" — it says above which register moved");
 }
 
 /// Claim an ASID for a program about to be loaded, and say so if there is
