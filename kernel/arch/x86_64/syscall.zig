@@ -125,9 +125,21 @@ pub fn syscall_entry() callconv(.Naked) void {
         \\ pushq %rdx
         \\ pushq %rsi
         \\ pushq %rdi
+        \\ pushq %r15
+        \\ pushq %r14
+        \\ pushq %r13
+        \\ pushq %r12
+        \\ pushq %rbp
+        \\ pushq %rbx
         \\ movq %rax, %rdi
         \\ movq %rsp, %rsi
         \\ call dispatch_syscall_c
+        \\ popq %rbx
+        \\ popq %rbp
+        \\ popq %r12
+        \\ popq %r13
+        \\ popq %r14
+        \\ popq %r15
         \\ popq %rdi
         \\ popq %rsi
         \\ popq %rdx
@@ -143,24 +155,55 @@ pub fn syscall_entry() callconv(.Naked) void {
     );
 }
 
-/// The six pushed argument registers, in the order the trampoline pushes
-/// them, so a pointer to the lowest one is a pointer to this struct.
-const RawArgs = extern struct {
-    a0: u64,
-    a1: u64,
-    a2: u64,
-    a3: u64,
-    a4: u64,
-    a5: u64,
+/// Everything the trampoline pushed, in the order it pushed it, so a pointer
+/// to the lowest one is a pointer to this struct.
+///
+/// It used to stop after the six argument registers, which was all any system
+/// call needed to read. `fork` needs the rest: it has to build a child that
+/// resumes where the parent will, and where the parent will resume is the
+/// `rip`, `rsp` and `rflags` sitting at the top of this frame — the values
+/// `sysretq` is about to put back.
+pub const UserFrame = extern struct {
+    // The callee-saved set, pushed last so it sits at the bottom of the
+    // struct. The kernel preserves these for the *parent* by obeying the C
+    // ABI, which is why they were never pushed — but a forked child has to be
+    // given them, and by the time `fork` runs they are spilled somewhere on
+    // the kernel stack rather than still in the registers. Six pushes and six
+    // pops per system call is what it costs to be able to hand them over.
+    rbx: u64,
+    rbp: u64,
+    r12: u64,
+    r13: u64,
+    r14: u64,
+    r15: u64,
+
+    a0: u64, // rdi
+    a1: u64, // rsi
+    a2: u64, // rdx
+    a3: u64, // r10
+    a4: u64, // r8
+    a5: u64, // r9
+    /// The system call number on the way in, and the return value on the way
+    /// out — except that the trampoline pops it into nothing and `dispatch`'s
+    /// return value in %rax is what the program sees. A forked child gets its
+    /// zero from the IRET frame the kernel builds for it, not from here.
+    rax: u64,
+    /// The user stack, saved to the per-CPU area on entry and pushed here.
+    rsp: u64,
+    /// RFLAGS, which `syscall` puts in %r11.
+    rflags: u64,
+    /// Where the program resumes, which `syscall` puts in %rcx.
+    rip: u64,
 };
 
-export fn dispatch_syscall_c(nr: u64, args: *const RawArgs) callconv(.C) i64 {
+export fn dispatch_syscall_c(nr: u64, frame: *const UserFrame) callconv(.C) i64 {
     return dispatch.dispatch(nr, .{
-        .a0 = args.a0,
-        .a1 = args.a1,
-        .a2 = args.a2,
-        .a3 = args.a3,
-        .a4 = args.a4,
-        .a5 = args.a5,
+        .a0 = frame.a0,
+        .a1 = frame.a1,
+        .a2 = frame.a2,
+        .a3 = frame.a3,
+        .a4 = frame.a4,
+        .a5 = frame.a5,
+        .user = frame,
     });
 }

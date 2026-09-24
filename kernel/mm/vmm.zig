@@ -163,6 +163,129 @@ fn split_huge_page(entry: *u64, level: usize) !void {
     entry.* = table_phys | PAGE_PRESENT | PAGE_WRITE | PAGE_USER;
 }
 
+/// What this space maps `virt` to, and with what rights — or null if it maps
+/// nothing there.
+///
+/// The counterpart of `map_page`, and the thing that had been missing: until
+/// now nothing could ask an address space what it held, only tell it what to
+/// hold. Copying one — which is what `fork` is — needs the question as much
+/// as the answer.
+///
+/// Huge pages are followed rather than refused, because the boot stub
+/// identity-maps the first gigabyte with 2 MiB pages and a walk that stopped
+/// there would report "nothing mapped" for memory that plainly is. The
+/// address returned is the frame plus the offset within it, so the caller
+/// gets the physical address of `virt` itself and not of the page it sits in.
+pub const Mapping = struct {
+    /// The physical address `virt` translates to, frame plus offset.
+    phys: u64,
+    /// The leaf entry's permission bits, with the frame address and the
+    /// huge-page bit removed — so it can be handed straight to `map_page`
+    /// for a 4 KiB mapping of the same memory with the same rights.
+    flags: u64,
+};
+
+pub fn lookup(space: *const AddressSpace, virt: u64) ?Mapping {
+    const indices = [_]u9{
+        @intCast((virt >> 39) & 0x1FF),
+        @intCast((virt >> 30) & 0x1FF),
+        @intCast((virt >> 21) & 0x1FF),
+        @intCast((virt >> 12) & 0x1FF),
+    };
+    // How much of the address a leaf at this level does not cover.
+    const level_shift = [_]u6{ 39, 30, 21, 12 };
+
+    var table_phys = space.pml4_phys;
+    var level: usize = 0;
+    while (level < 4) : (level += 1) {
+        const table = phys_to_table(table_phys);
+        const entry = table[indices[level]];
+        if (entry & PAGE_PRESENT == 0) return null;
+        const frame = entry & ADDR_MASK;
+        const leaf = level == 3 or (level > 0 and (entry & PAGE_HUGE) != 0);
+        if (leaf) {
+            const size: u64 = @as(u64, 1) << level_shift[level];
+            return .{
+                .phys = frame + (virt & (size - 1)),
+                // The rights, not the summary a region keeps. A region records
+                // only whether the process may write there; the entry records
+                // what the hardware will actually allow, which is what a copy
+                // of this page has to be given.
+                .flags = entry & ~ADDR_MASK & ~PAGE_HUGE,
+            };
+        }
+        table_phys = frame;
+    }
+    return null;
+}
+
+/// Copy every page the source has in the user half into the destination,
+/// each into a page of its own, with the permissions the source's own page
+/// tables give it.
+///
+/// Driven by the page tables rather than by the region list, and that is the
+/// point. Regions are bookkeeping kept for the page-fault and brk machinery,
+/// and they are *incomplete*: `loader` records one per ELF segment and none
+/// for the user stack, which it maps directly. A clone driven by regions
+/// therefore copied a program's code and data and left it with no stack, and
+/// the child faulted on its first push — `error_code=0x6` at an address one
+/// word below its own %rsp, measured.
+///
+/// What a process has is what its tables say it has. Ask them.
+///
+/// Only the user half: PML4 entries 0-255 are the addresses below the
+/// canonical hole, and everything above is the kernel, which every space
+/// already shares.
+pub fn clone_user_half(src: *const AddressSpace, dst: *AddressSpace) !void {
+    var top: usize = 0;
+    while (top < 256) : (top += 1) {
+        const pml4 = phys_to_table(src.pml4_phys);
+        if (pml4[top] & PAGE_PRESENT == 0) continue;
+        try clone_level(pml4[top] & ADDR_MASK, 1, @as(u64, top) << 39, dst);
+    }
+}
+
+/// One level of the walk. `base` is the virtual address the entries under
+/// this table start at.
+fn clone_level(table_phys: u64, level: usize, base: u64, dst: *AddressSpace) !void {
+    const shift: u6 = switch (level) {
+        1 => 30,
+        2 => 21,
+        else => 12,
+    };
+    const table = phys_to_table(table_phys);
+    var i: usize = 0;
+    while (i < 512) : (i += 1) {
+        const entry = table[i];
+        if (entry & PAGE_PRESENT == 0) continue;
+        const va = base + (@as(u64, i) << shift);
+        const frame = entry & ADDR_MASK;
+
+        if (level == 3 or (entry & PAGE_HUGE) != 0) {
+            // A leaf. A huge one covers many 4 KiB pages and is copied as
+            // that many, because the child is built out of 4 KiB mappings and
+            // nothing here needs the larger ones.
+            const flags = entry & ~ADDR_MASK & ~PAGE_HUGE;
+            const span: u64 = @as(u64, 1) << shift;
+            var off: u64 = 0;
+            while (off < span) : (off += 4096) {
+                const page = pmm.alloc_page() orelse return error.OutOfMemory;
+                copy_phys_page(page, frame + off);
+                try map_page(dst, va + off, page, flags);
+            }
+            continue;
+        }
+        try clone_level(frame, level + 1, va, dst);
+    }
+}
+
+fn copy_phys_page(dst_phys: u64, src_phys: u64) void {
+    const HHDM: u64 = 0xFFFF_8000_0000_0000;
+    const d: [*]u8 = @ptrFromInt(HHDM + dst_phys);
+    const s: [*]const u8 = @ptrFromInt(HHDM + src_phys);
+    @memcpy(d[0..4096], s[0..4096]);
+}
+
 pub fn unmap_page(space: *AddressSpace, virt: u64) void {
     const indices = [_]u9{
         @intCast((virt >> 39) & 0x1FF),

@@ -16,6 +16,7 @@ const pmm = @import("../mm/pmm.zig");
 const vmm = @import("../mm/vmm.zig");
 const context = @import("../arch/x86_64/context.zig");
 const gdt = @import("../arch/x86_64/gdt.zig");
+const arch_syscall = @import("../arch/x86_64/syscall.zig");
 const elf = @import("../loader/elf.zig");
 const loader = @import("../loader/load.zig");
 /// The process model, told what an address space is on this architecture.
@@ -69,6 +70,12 @@ pub const Thread = struct {
     /// own", which is true of a Thread that has not been given one.
     kernel_stack_bytes: u64 = 0,
     iret_rsp: u64 = 0,                      // for first entry to userspace
+    /// The register file a forked child resumes with, or null for a thread
+    /// that starts at an ELF entry point and is owed nothing but zeroes.
+    ///
+    /// On the heap rather than inline because it is copied out of the
+    /// *parent's* kernel stack, which is gone by the time the child runs.
+    fork_regs: ?*context.Regs = null,
     next: ?*Thread = null,
     ticks_run: u64 = 0,
     exit_code: i32 = 0,
@@ -241,6 +248,12 @@ fn user_entry(_: u64) callconv(.C) noreturn {
         console.println("PANIC: user_entry with no current thread");
         while (true) asm volatile ("cli; hlt");
     };
+    // A forked child is resuming, not starting, so it gets the register file
+    // its parent had. Everything else starts at an ELF entry point, where
+    // zeroes are what the ABI promises and all the program can use.
+    if (t.fork_regs) |regs| {
+        context.enter_userland_regs(t.context.cr3, t.iret_rsp, @intFromPtr(&t.context.fpu), regs);
+    }
     context.enter_userland(t.context.cr3, t.iret_rsp, @intFromPtr(&t.context.fpu));
 }
 
@@ -513,13 +526,19 @@ pub fn queue_len(p: Priority) usize {
 
 /// Clone the current process's address space + state into a new
 /// child process. Returns child PID to the parent, 0 to the child.
-pub fn fork() !Pid {
+/// Make a second process out of this one: same memory, same place in its own
+/// code, told apart only by what `fork` answers.
+///
+/// `user` is the frame the system call trampoline pushed — the parent's
+/// resume point. The child has to come back to the same instruction on its
+/// own copy of the same stack, with zero in %rax instead of the child's PID,
+/// and that is the whole of what makes the one call return twice.
+pub fn fork(user: *const arch_syscall.UserFrame) !Pid {
     const cur = current orelse return error.NoCurrent;
     const parent = process_table.lookup(cur.pid) orelse return error.NoCurrent;
 
-    // Clone the address space (deep copy of regions; pages start
-    // shared + COW marked when we add real COW. Phase 70 ships
-    // straight private copies for simplicity).
+    // Every page the parent has, copied. See clone_address_space for why
+    // eagerly rather than copy-on-write.
     const child_space = try clone_address_space(parent.address_space);
     const child = try process_table.gpa.create(process.Process);
     child.* = .{
@@ -538,9 +557,11 @@ pub fn fork() !Pid {
     try process_table.register(child);
     try parent.add_child(child.pid, process_table.gpa);
 
-    // Build a new Thread for the child that resumes right after
-    // the syscall return — same user RIP, same user RSP, but with
-    // RAX = 0 so userspace sees a 0 return value.
+    // A thread for the child, built the way spawn_user builds one. This is
+    // what was missing: the Thread used to get a tid, a pid, a name and a
+    // CR3 and nothing else — no kernel stack, no IRET frame, a zero context —
+    // so the first switch into it jumped to address 0 with no stack and no
+    // kernel mapped, and the machine triple-faulted.
     const t = @as(*Thread, @ptrCast(@alignCast(heap.alloc(@sizeOf(Thread)) orelse return error.OutOfMemory)));
     t.* = .{
         .tid = next_tid,
@@ -549,8 +570,61 @@ pub fn fork() !Pid {
         .priority = .normal,
         .state = .runnable,
     };
-    t.context.cr3 = child_space.pml4_phys;
     next_tid += 1;
+
+    const kstack_pages = 4;
+    const kstack_phys = pmm.alloc_pages(kstack_pages) orelse return error.OutOfMemory;
+    t.kernel_stack_top = 0xFFFF_8000_0000_0000 + kstack_phys + kstack_pages * pmm.PAGE_SIZE;
+    t.kernel_stack_bytes = kstack_pages * pmm.PAGE_SIZE;
+    t.context.cr3 = child_space.pml4_phys;
+
+    // Where the child comes back to. The parent's rip and rsp, because the
+    // child is the same program at the same point on a copy of the same
+    // stack; the parent's rflags, because the child inherits the machine
+    // state it forked in.
+    //
+    // Entering through an IRET frame rather than sysret is what lets the
+    // child's registers be chosen: `sysretq` would hand back whatever
+    // dispatch returned in %rax, which is the child's PID — the parent's
+    // answer, given to the child.
+    t.iret_rsp = context.build_iret_frame(
+        t.kernel_stack_top,
+        user.rip,
+        user.rsp,
+        user.rflags,
+        gdt.USER_CODE,
+        gdt.USER_DATA,
+    );
+    // The floating-point state, saved out of the live registers rather than
+    // left at whatever a fresh Context is born with. The parent is mid-call
+    // with its own values in the register file, and a child that started with
+    // a blank one would silently compute something else — the same class of
+    // wrong the aarch64 side just spent three changes closing.
+    context.fxsave_into(&t.context.fpu);
+
+    // The registers the child is owed. Everything except %rax, %rcx and %r11,
+    // which fork(2) and the ABI between them say it may not rely on. Kept on
+    // the heap because the frame it is copied from is on the *parent's*
+    // kernel stack and will be gone by the time the child first runs.
+    const regs = @as(*context.Regs, @ptrCast(@alignCast(heap.alloc(@sizeOf(context.Regs)) orelse return error.OutOfMemory)));
+    regs.* = .{
+        .rbx = user.rbx,
+        .rbp = user.rbp,
+        .r12 = user.r12,
+        .r13 = user.r13,
+        .r14 = user.r14,
+        .r15 = user.r15,
+        .rdi = user.a0,
+        .rsi = user.a1,
+        .rdx = user.a2,
+        .r10 = user.a3,
+        .r8 = user.a4,
+        .r9 = user.a5,
+    };
+    t.fork_regs = regs;
+
+    context.init_kernel_thread(&t.context, t.kernel_stack_top - context.IRET_FRAME_RESERVE, user_entry, 0);
+
     child.main_thread_tid = t.tid;
     queues.enqueue(t, @intFromEnum(Priority.normal));
     return child.pid;
@@ -622,11 +696,48 @@ pub fn kill(target_pid: Pid, sig: i32) bool {
     return true;
 }
 
+/// Copy an address space: the same memory at the same addresses with the same
+/// permissions, in pages of its own.
+///
+/// This used to allocate a PML4, copy the region *list*, and return — with a
+/// comment saying "physical pages copied below" and nothing below. No page was
+/// copied, no table entry written, and `share_kernel_half` never called, so
+/// the child's PML4 did not even map the kernel. Nothing noticed because
+/// nothing had ever called `fork`: the first program that did printed one line
+/// as the parent and then the machine triple-faulted, which is what a boot
+/// with `-d cpu_reset` says out loud.
+///
+/// No copy-on-write. Every page is copied eagerly, which is slower and simpler
+/// and — more to the point — has no failure mode that only appears under
+/// memory pressure. COW is worth having once there is a fault handler that can
+/// be trusted to get it right, and a test that can tell a shared page from a
+/// copied one.
 fn clone_address_space(src: *vmm.AddressSpace) !*vmm.AddressSpace {
     const dst = try process_table.gpa.create(vmm.AddressSpace);
+    errdefer process_table.gpa.destroy(dst);
+
     const new_pml4 = pmm.alloc_page() orelse return error.OutOfMemory;
+    zero_phys_page(new_pml4);
     dst.* = .{ .pml4_phys = new_pml4, .regions = .{} };
-    // Region table is shallow-cloned; physical pages copied below.
+
+    // The upper half, which every address space shares and which the loader
+    // gives every space it builds. Without it the child's first instruction
+    // fetch in the kernel — the one that returns from the switch — has no
+    // page to fetch from.
+    vmm.share_kernel_half(new_pml4);
+
+    // The regions, which the page-fault and brk machinery read.
     for (src.regions.items) |r| try dst.regions.append(heap.allocator(), r);
+
+    // And the memory itself, taken from the parent's page tables rather than
+    // from that list — see vmm.clone_user_half for what driving it from the
+    // list got wrong, twice.
+    try vmm.clone_user_half(src, dst);
     return dst;
+}
+
+fn zero_phys_page(phys: u64) void {
+    const HHDM: u64 = 0xFFFF_8000_0000_0000;
+    const p: [*]u8 = @ptrFromInt(HHDM + phys);
+    @memset(p[0..4096], 0);
 }

@@ -181,6 +181,88 @@ pub const IretFrame = extern struct {
 /// says a program starts in. It goes before the CR3 load only because it is
 /// tidier to read that way — the area is an HHDM address, which every address
 /// space maps, so either side would work.
+/// Enter ring 3 with a register file taken from somewhere, rather than a
+/// blank one.
+///
+/// `enter_userland` gives a program zeroes, which is what a program starting
+/// at its ELF entry point is entitled to and all it can use. A forked child is
+/// not starting: it is resuming, in the middle of a function, and the System V
+/// ABI says a system call destroys %rcx and %r11 *and nothing else* — so the
+/// program may be keeping live values in any other register across its call to
+/// fork(2). Handing it zeroes would be the same bug this kernel fixed on the
+/// AArch64 side, in the other direction.
+///
+/// %rax is not taken from the frame. It is the one register fork(2) is defined
+/// to change, and zero is the child's answer.
+///
+/// %rcx and %r11 are zeroed rather than restored, because the ABI says a
+/// system call is entitled to destroy them and the saved values are the
+/// trampoline's own (the return address and RFLAGS `syscall` put there).
+///
+/// `regs` is reached after CR3 has changed, which is safe because it is a
+/// kernel heap address and every address space maps the upper half.
+pub fn enter_userland_regs(cr3: u64, frame_rsp: u64, fpu_area: u64, regs: *const Regs) noreturn {
+    asm volatile (
+        \\ cli
+        \\ fxrstor (%%rdx)
+        \\ movq %%rax, %%cr3
+        \\ movq %%rsi, %%rsp
+        \\ movq 0(%%rcx), %%rbx
+        \\ movq 8(%%rcx), %%rbp
+        \\ movq 16(%%rcx), %%r12
+        \\ movq 24(%%rcx), %%r13
+        \\ movq 32(%%rcx), %%r14
+        \\ movq 40(%%rcx), %%r15
+        \\ movq 48(%%rcx), %%rdi
+        \\ movq 56(%%rcx), %%rsi
+        \\ movq 64(%%rcx), %%rdx
+        \\ movq 72(%%rcx), %%r10
+        \\ movq 80(%%rcx), %%r8
+        \\ movq 88(%%rcx), %%r9
+        \\ xor %%eax, %%eax
+        \\ xor %%ecx, %%ecx
+        \\ xor %%r11d, %%r11d
+        \\ swapgs
+        \\ iretq
+        :
+        : [cr3] "{rax}" (cr3),
+          [frame] "{rsi}" (frame_rsp),
+          [fpu] "{rdx}" (fpu_area),
+          [regs] "{rcx}" (regs),
+        : "memory"
+    );
+    unreachable;
+}
+
+/// The twelve registers a forked child is owed, in the order
+/// `syscall_entry` pushes them — so a pointer to the saved frame is a
+/// pointer to this. The offsets are hard-coded in the assembly above.
+pub const Regs = extern struct {
+    rbx: u64,
+    rbp: u64,
+    r12: u64,
+    r13: u64,
+    r14: u64,
+    r15: u64,
+    rdi: u64,
+    rsi: u64,
+    rdx: u64,
+    r10: u64,
+    r8: u64,
+    r9: u64,
+};
+
+/// Save the live floating-point state into `area`, which must be 16-byte
+/// aligned. Used when forking: the parent is mid-call with its own values in
+/// the register file, and the child is owed a copy of them.
+pub fn fxsave_into(area: *[512]u8) void {
+    asm volatile ("fxsave (%[a])"
+        :
+        : [a] "r" (area),
+        : "memory"
+    );
+}
+
 pub fn enter_userland(cr3: u64, frame_rsp: u64, fpu_area: u64) noreturn {
     asm volatile (
         \\ cli

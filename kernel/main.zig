@@ -25,6 +25,7 @@ const drivers = @import("drivers/init.zig");
 const multiboot = @import("boot/multiboot2.zig");
 const initprog = @import("initprog.zig");
 const regprobe = @import("regprobe.zig");
+const forkprobe = @import("forkprobe.zig");
 const clarityprog = @import("clarityprog.zig");
 const threadtest = @import("threadtest.zig");
 const fstest = @import("fstest.zig");
@@ -217,6 +218,9 @@ pub export fn kernel_main(mb_info_phys: u64) callconv(.C) noreturn {
     //    instruction. The answer used to be every general register; this
     //    requires it to be nothing the kernel did not choose.
     regprobe.run();
+
+    // 11b. The first call to fork(2) this kernel has ever served.
+    forkprobe.run();
 
     // 12. A Clarity program. Everything above this ran code written for the
     //    kernel; this is a Clarity source file compiled to C by
