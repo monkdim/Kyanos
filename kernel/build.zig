@@ -307,6 +307,22 @@ pub fn build(b: *std.Build) void {
         .root_source_file = fork_prog_arm.getEmittedBin(),
     });
 
+    // /bin/clarity-waitprobe for aarch64: does wait(2) actually wait? Its
+    // parent asks before the child has run, so a wait that only looks for an
+    // already-finished child has nothing to find.
+    const wait_prog_arm = b.addExecutable(.{
+        .name = "clarity-waitprobe-aarch64",
+        .root_source_file = b.path("user/waitprobe_aarch64.zig"),
+        .target = user_arm_target,
+        .optimize = .ReleaseSmall,
+    });
+    wait_prog_arm.setLinkerScript(b.path("user/user.ld"));
+    wait_prog_arm.entry = .{ .symbol_name = "_start" };
+    wait_prog_arm.pie = false;
+    kernel_arm.root_module.addAnonymousImport("waitprobe_elf_aarch64", .{
+        .root_source_file = wait_prog_arm.getEmittedBin(),
+    });
+
     // /bin/clarity-spin for aarch64: a program that spends time at EL0.
     //
     // Two copies of it run at once, one per kernel thread, which is the whole

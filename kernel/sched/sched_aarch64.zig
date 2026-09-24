@@ -100,6 +100,25 @@ pub const Thread = struct {
     /// and the only thing that knows is the thread the parent's `svc` was
     /// serviced on.
     proc: ?*Process = null,
+
+    /// Whether this thread is inside a system call: 0 or 1. Read by the
+    /// timer's handler through `trap.in_syscall`, which is what decides
+    /// whether a time slice may end here. Per-thread for the reason set out
+    /// over `trap.syscall_depth` — one counter shared by two threads goes
+    /// below zero the first time a program exits while another thread is
+    /// mid-call, which panics this build and silently kills preemption in one
+    /// without the safety checks.
+    syscall_depth: u32 = 0,
+
+    /// Which child this thread is blocked in `wait` for: a PID, or 0 for
+    /// "any", or 0 when it is not waiting at all. Meaningful only while the
+    /// thread is on the `waiters` list.
+    wait_for: Pid = 0,
+    /// The next thread on the `waiters` list. Separate from `next`, which
+    /// belongs to the run queues: a waiting thread is on neither queue, and
+    /// borrowing the same field would mean the two lists could never both be
+    /// right.
+    wait_next: ?*Thread = null,
 };
 
 const Queues = runqueue.MultiQueue(Thread, 3);
@@ -650,6 +669,17 @@ pub fn exit_process(p: *Process, code: i32) void {
         parent.record_zombie(p.*, processes.gpa) catch {};
         _ = parent.remove_child(p.pid);
     }
+    // After the zombie is recorded rather than before.
+    //
+    // Which is an ordering this code cannot currently be caught getting
+    // wrong, and that is worth saying rather than implying otherwise: moving
+    // this line above the `record_zombie` was tried and the gate still
+    // passed, because nothing between the two yields — the woken parent is
+    // only marked runnable and does not get the CPU until well after the
+    // record. It is written this way because the property the waiter needs
+    // is "there is something to reap when you are told to look", and that
+    // should not depend on which lines happen to be between these two.
+    wake_waiters_for(p.parent_pid, p.pid);
     free_asid(p.address_space.asid);
     processes.remove(p.pid);
 }
@@ -836,4 +866,129 @@ fn fork_child_entry(arg: u64) callconv(.C) noreturn {
 
     heap.free(@as([*]u8, @ptrCast(c)), @sizeOf(ForkChild));
     thread_exit(0);
+}
+
+// ── wait ────────────────────────────────────────────────────────────────
+//
+// `fork` gave a parent a second process and no way to find out how it went.
+// This is the other half: a call that does not return until a child has
+// exited, and then says which one and with what.
+//
+// "Does not return" is the whole of what is new. Every system call this
+// kernel has had could be answered on the spot; this one has to put the
+// calling thread to sleep and let something else have the CPU, and be woken
+// by an event on another thread. `sched.wake` has existed since the scheduler
+// landed with a comment saying nothing called it yet. Something does now.
+
+/// Threads asleep in `wait`, linked by `wait_next`. Not a queue — the order
+/// does not matter, and there is no fairness question while a parent can have
+/// only one thread.
+var waiters: ?*Thread = null;
+
+pub const Waited = struct { pid: Pid, exit_code: i32 };
+
+/// How many times a `wait` has actually gone to sleep.
+///
+/// The difference between this call and the one the x86_64 side has, which
+/// reaps a zombie if there happens to be one and answers ECHILD otherwise. A
+/// parent that waits immediately after forking finds no zombie, so a boot
+/// where this is still zero is a boot where `wait` never waited — and every
+/// other check a test could make would pass on such a kernel.
+pub var wait_sleeps: u64 = 0;
+
+/// Reap a child of `p`: the named one, or any if `target` is not positive.
+fn reap_zombie(p: *Process, target: Pid) ?Waited {
+    const z = (if (target <= 0) p.reap_any() else p.reap_pid(target)) orelse return null;
+    return .{ .pid = z.pid, .exit_code = z.exit_code };
+}
+
+/// Does `p` still have a child worth waiting for?
+///
+/// Asked only after `reap_zombie` has already said no, so a child that has
+/// exited and been recorded is not in this list any more — `exit_process`
+/// takes it out when it records the zombie.
+fn has_child(p: *const Process, target: Pid) bool {
+    if (target <= 0) return p.children.items.len > 0;
+    for (p.children.items) |c| {
+        if (c == target) return true;
+    }
+    return false;
+}
+
+/// Wake every thread waiting for this child.
+///
+/// Every, rather than the first: two threads of one process may both be in
+/// `wait`, and only one of them will win the reap. The loser goes round its
+/// loop, finds nothing and sleeps again, which is what a spurious wake-up is
+/// for and why the caller's loop re-checks rather than trusting the wake.
+fn wake_waiters_for(parent_pid: Pid, child_pid: Pid) void {
+    const guard = irqlock.acquire();
+    defer guard.release();
+
+    var prev: ?*Thread = null;
+    var it = waiters;
+    while (it) |t| {
+        const nxt = t.wait_next;
+        const matches = blk: {
+            const tp = t.proc orelse break :blk false;
+            if (tp.pid != parent_pid) break :blk false;
+            break :blk t.wait_for <= 0 or t.wait_for == child_pid;
+        };
+        if (matches) {
+            if (prev) |pv| pv.wait_next = nxt else waiters = nxt;
+            t.wait_next = null;
+            t.wait_for = 0;
+            wake(t);
+        } else {
+            prev = t;
+        }
+        it = nxt;
+    }
+}
+
+/// wait(2) — sleep until a child of this process has exited, then reap it.
+///
+/// `target` names a child, or is 0 or -1 for any. Returns null when there is
+/// nothing to wait for, which the caller turns into ECHILD: a process with no
+/// children that waits would otherwise sleep for the life of the machine.
+///
+/// The loop is not belt-and-braces. A wake-up means "something happened",
+/// never "your child is ready" — another thread of the same process may have
+/// reaped it first — so the answer is always re-derived from the zombie list
+/// rather than carried in the wake.
+pub fn waitpid(target: Pid) ?Waited {
+    const t = current orelse return null;
+    const p = t.proc orelse return null;
+
+    while (true) {
+        const guard = irqlock.acquire();
+
+        if (reap_zombie(p, target)) |w| {
+            guard.release();
+            return w;
+        }
+        if (!has_child(p, target)) {
+            guard.release();
+            return null;
+        }
+
+        // Nothing yet, and something to wait for. Going to sleep is three
+        // steps, and all three are under the guard the whole way to the
+        // switch: onto the waiters list, into the blocked state, and then
+        // `yield`. Releasing before any of them would leave a window where a
+        // child exits, walks a list this thread is not on yet or finds it
+        // still `running`, and skips the wake that would ever get it back.
+        //
+        // `yield` takes the same guard again, which nests; it saves this
+        // thread's masked DAIF on its own stack and restores it when
+        // something switches back, so the release below puts back what the
+        // caller had.
+        t.wait_for = target;
+        t.wait_next = waiters;
+        waiters = t;
+        t.state = .blocked;
+        wait_sleeps +%= 1;
+        yield();
+        guard.release();
+    }
 }
