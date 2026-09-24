@@ -36,6 +36,7 @@ const threadtest = @import("threadtest_aarch64.zig");
 const sched = @import("sched/sched_aarch64.zig");
 const schedtest = @import("schedtest_aarch64.zig");
 const proctest = @import("proctest_aarch64.zig");
+const clonetest = @import("clonetest_aarch64.zig");
 const userpreempt = @import("userpreempt_aarch64.zig");
 const heap = @import("mm/heap.zig");
 const loader = @import("loader/load_aarch64.zig");
@@ -143,6 +144,10 @@ export fn kernel_main_aarch64(dtb_phys: u64) callconv(.C) noreturn {
     // And the other half of "what is running": a process table. The
     // scheduler above says which thread has the CPU; this says whose it is.
     proctest.run();
+
+    // Copying an address space, which is the half of fork that can be asked
+    // about before there is a fork to ask it through.
+    clonetest.run();
 
     // A screen, and then a console on it.
     //
