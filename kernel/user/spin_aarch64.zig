@@ -77,14 +77,35 @@ fn spin() void {
 /// `id` arrives in x0 from the kernel: 0 for the first copy, 1 for the
 /// second. It picks the character and the exit code, so the boot can tell
 /// which copy said what and that each one got its own number.
+fn read_sp() u64 {
+    return asm volatile ("mov %[out], sp"
+        : [out] "=r" (-> u64),
+    );
+}
+
 export fn _start(id: u64) callconv(.C) noreturn {
     const ch: u8 = if (id == 0) 'A' else 'B';
     const line = [_]u8{ch};
+
+    // EXPERIMENT: does this program's stack pointer survive being preempted?
+    // SP_EL0 is one register for the whole core and the kernel writes it at
+    // every `enter_user`; nothing saves it across a thread switch. Two copies
+    // of one image cannot see that, because their stacks are at the same
+    // virtual address — so the kernel starts these two at addresses 0x1000
+    // apart, and this remembers which one it got.
+    const sp_at_start = read_sp();
 
     var round: usize = 0;
     while (round < ROUNDS) : (round += 1) {
         write(&line);
         spin();
+        const sp_now = read_sp();
+        // The frame is the same one each time round, so the only thing that
+        // can change this is the kernel.
+        if (sp_now != sp_at_start) {
+            write("\nSP CHANGED under this program\n");
+            exit(90 + id);
+        }
     }
 
     // 70 and 71, which nothing else on this boot exits with — so "both
