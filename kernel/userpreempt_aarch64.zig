@@ -79,7 +79,10 @@ fn run_copy(arg: u64) callconv(.C) noreturn {
     // preemption gets it from this thread's Context, which `spawn` set.
     paging.activate(&c.proc.space);
 
-    const out = trap.enter_user_full(c.proc.entry, c.proc.user_sp, arg);
+    // EXPERIMENT: 0x1000 apart, so the two programs' stack pointers are
+    // distinguishable numbers. Both are inside the stack the loader mapped.
+    const sp = c.proc.user_sp - @as(u64, i) * 0x1000;
+    const out = trap.enter_user_full(c.proc.entry, sp, arg);
     c.status = out.status;
     c.code = out.code;
     c.ran = true;

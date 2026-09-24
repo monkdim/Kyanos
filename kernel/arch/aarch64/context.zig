@@ -65,6 +65,24 @@ pub const Context = extern struct {
     /// — `yield`, the exit path, the way back to the boot context — and the
     /// one that forgot would be the one that only fails with two processes.
     tpidr: u64 = 0,
+
+    /// SP_EL0: the stack the *process* on this thread runs on.
+    ///
+    /// One register for the whole core, written by `aarch64_enter_user` and,
+    /// until this field existed, never saved by anything. A thread preempted
+    /// at EL0 therefore came back holding whichever process had entered EL0
+    /// most recently — its stack pointer, in its address space.
+    ///
+    /// That was invisible for as long as the only two programs running at
+    /// once were two copies of one image: their stacks are at the same
+    /// virtual address, so the wrong pointer was numerically the right one,
+    /// and each address space mapped it to its own pages. The selftest starts
+    /// them a page apart on purpose now, which is what makes the difference
+    /// between the two something a program can see.
+    ///
+    /// EL1 does not use it — SPSel is 1, so the kernel is on SP_EL1 — which
+    /// is why writing it from here is safe at all.
+    sp_el0: u64 = 0,
 };
 
 comptime {
@@ -79,6 +97,7 @@ comptime {
     std.debug.assert(@offsetOf(Context, "d") == 104);
     std.debug.assert(@offsetOf(Context, "ttbr0") == 168);
     std.debug.assert(@offsetOf(Context, "tpidr") == 176);
+    std.debug.assert(@offsetOf(Context, "sp_el0") == 184);
 }
 
 /// Switch from `prev` to `next`. Saves `prev`'s callee-saved state and the

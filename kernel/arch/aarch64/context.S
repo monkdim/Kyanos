@@ -29,6 +29,7 @@
 .set CTX_D14,  152
 .set CTX_TTBR0, 168
 .set CTX_TPIDR, 176
+.set CTX_SPEL0, 184
 
 .section .text
 
@@ -72,6 +73,13 @@ clarity_switch_to:
     mrs     x11, tpidr_el1
     str     x11, [x0, #CTX_TPIDR]
 
+    // The stack the process on this thread runs on. One register for the
+    // whole core, and nothing else saves it — so without this a thread
+    // preempted at EL0 comes back holding whichever process entered EL0 most
+    // recently. See context.zig for why that hid for as long as it did.
+    mrs     x11, sp_el0
+    str     x11, [x0, #CTX_SPEL0]
+
     ldp     x19, x20, [x1, #CTX_X19]
     ldp     x21, x22, [x1, #CTX_X21]
     ldp     x23, x24, [x1, #CTX_X23]
@@ -85,6 +93,8 @@ clarity_switch_to:
 
     ldr     x11, [x1, #CTX_TPIDR]
     msr     tpidr_el1, x11
+    ldr     x11, [x1, #CTX_SPEL0]
+    msr     sp_el0, x11
 
     ldr     x9,  [x1, #CTX_TTBR0]
     ldr     x10, [x1, #CTX_SP]
