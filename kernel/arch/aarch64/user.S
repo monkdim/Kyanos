@@ -191,6 +191,106 @@ aarch64_enter_user:
 
     eret
 
+// u64 aarch64_enter_user_frame(const Frame *frame, UserSave *save, u64 user_sp)
+//
+// The same journey as `aarch64_enter_user`, starting from a place a process
+// has already been rather than from an entry point.
+//
+// `enter_user` starts a program: it picks the entry, zeroes the register
+// file, resets the floating-point control and hands over one argument.
+// Everything it does is a decision about what a program is entitled to begin
+// with. This does the opposite — it takes a `Frame`, the exact register file
+// a vector entry recorded when a process trapped, and puts every bit of it
+// back, so the process continues from the instruction after its `svc` with
+// the registers it had there.
+//
+// Which is what `fork` needs and could not have before. A child is not a
+// program that starts; it is a process that was already running and now
+// exists twice. The only thing the kernel changes between the parent's frame
+// and the child's is the saved x0 — the value the system call returns — and
+// that is a store into the copy in Zig, not anything here.
+//
+// `user_sp` is separate because SP_EL0 is not in the frame: it is one
+// register for the whole core, untouched by an exception from EL0, so the
+// caller reads it while the process's own value is still in it and hands it
+// over here. A child on a different kernel thread has no other way to get it.
+//
+// Restores, in order: SP_EL0, ELR, SPSR, FPSR, FPCR, q0-q31, x1-x30, and x0
+// last because x0 is the pointer everything else is being read through.
+.global aarch64_enter_user_frame
+.type aarch64_enter_user_frame, %function
+aarch64_enter_user_frame:
+    // This thread's way home, exactly as `enter_user` lays it down — the
+    // `leave_user` that unwinds through it cannot tell the two apart, and
+    // must not have to.
+    msr     tpidr_el1, x1
+    stp     x19, x20, [x1, #0]
+    stp     x21, x22, [x1, #16]
+    stp     x23, x24, [x1, #32]
+    stp     x25, x26, [x1, #48]
+    stp     x27, x28, [x1, #64]
+    stp     x29, x30, [x1, #80]
+    mov     x3, sp
+    str     x3, [x1, #96]
+    mrs     x4, daif
+    str     x4, [x1, #104]
+
+    msr     sp_el0, x2
+
+    // The system registers the frame carries. SPSR is the process's own
+    // PSTATE as the exception recorded it — its condition flags included, so
+    // a process forked in the middle of a comparison resumes with the answer
+    // it had.
+    ldr     x3, [x0, #248]          // ELR: the instruction after the `svc`
+    msr     elr_el1, x3
+    ldr     x3, [x0, #256]          // SPSR
+    msr     spsr_el1, x3
+    ldr     x3, [x0, #264]          // FPSR: the exception flags accumulated
+    msr     fpsr, x3
+    ldr     x3, [x0, #272]          // FPCR: the rounding mode chosen
+    msr     fpcr, x3
+
+    // The whole vector file, both halves of every register. Not the eight
+    // `clarity_switch_to` keeps: a process is not a function call, and a
+    // program interrupted mid-expression has live values everywhere in here.
+    add     x3, x0, #288
+    ldp     q0, q1, [x3, #0]
+    ldp     q2, q3, [x3, #32]
+    ldp     q4, q5, [x3, #64]
+    ldp     q6, q7, [x3, #96]
+    ldp     q8, q9, [x3, #128]
+    ldp     q10, q11, [x3, #160]
+    ldp     q12, q13, [x3, #192]
+    ldp     q14, q15, [x3, #224]
+    ldp     q16, q17, [x3, #256]
+    ldp     q18, q19, [x3, #288]
+    ldp     q20, q21, [x3, #320]
+    ldp     q22, q23, [x3, #352]
+    ldp     q24, q25, [x3, #384]
+    ldp     q26, q27, [x3, #416]
+    ldp     q28, q29, [x3, #448]
+    ldp     q30, q31, [x3, #480]
+
+    // x0 last: it is the base every load above reads through.
+    ldp     x1, x2, [x0, #8]
+    ldp     x3, x4, [x0, #24]
+    ldp     x5, x6, [x0, #40]
+    ldp     x7, x8, [x0, #56]
+    ldp     x9, x10, [x0, #72]
+    ldp     x11, x12, [x0, #88]
+    ldp     x13, x14, [x0, #104]
+    ldp     x15, x16, [x0, #120]
+    ldp     x17, x18, [x0, #136]
+    ldp     x19, x20, [x0, #152]
+    ldp     x21, x22, [x0, #168]
+    ldp     x23, x24, [x0, #184]
+    ldp     x25, x26, [x0, #200]
+    ldp     x27, x28, [x0, #216]
+    ldp     x29, x30, [x0, #232]
+    ldr     x0, [x0, #0]
+
+    eret
+
 // void aarch64_leave_user(u64 return_value) — never returns to its caller.
 .global aarch64_leave_user
 .type aarch64_leave_user, %function

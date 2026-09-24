@@ -33,6 +33,7 @@ const line = @import("../../drivers/line.zig");
 const stdin = @import("../../drivers/stdin.zig");
 const cmdline = @import("../../boot/cmdline.zig");
 const vfs = @import("../../fs/vfs.zig");
+const sched = @import("../../sched/sched_aarch64.zig");
 
 /// The interrupted process's state, as the vector entry laid it out.
 /// `extern` because the offsets are shared with assembly and must not be
@@ -109,12 +110,15 @@ const SYS_WRITE: u64 = 1;
 const SYS_OPEN: u64 = 2;
 const SYS_CLOSE: u64 = 3;
 const SYS_BRK: u64 = 9;
+const SYS_FORK: u64 = 10;
 const SYS_EXEC: u64 = 11;
 const SYS_EXIT: u64 = 12;
 const SYS_READDIR: u64 = 34;
 
 /// Negative errno, the way the x86_64 dispatcher returns them.
 const EBADF: i64 = -9;
+const EAGAIN: i64 = -11;
+const ENOMEM: i64 = -12;
 const EFAULT: i64 = -14;
 const ENOENT: i64 = -2;
 const ENOTDIR: i64 = -20;
@@ -257,6 +261,31 @@ pub fn enter_user_full(entry: u64, user_sp: u64, arg: u64) Exit {
     return .{ .status = status, .code = save.exit_code };
 }
 
+/// Resume a process at EL0 from a frame it was already stopped in, with
+/// `user_sp` as its stack.
+///
+/// `enter_user_full` starts a program; this continues one. The frame is the
+/// register file a vector entry recorded when the process trapped, so the
+/// process comes back at the instruction after its `svc` with everything it
+/// had there — which is what a forked child is: not a program that starts,
+/// but a process that was running and now exists twice.
+///
+/// The address space is the caller's business, as it is for `enter_user`.
+pub fn enter_user_frame(frame: *const Frame, user_sp: u64) Exit {
+    // Copied onto this thread's stack with sixteen-byte alignment, because
+    // `aarch64_enter_user_frame` reloads the vector file with `ldp q`, and an
+    // unaligned pair access faults when SCTLR_EL1.A is set. That bit is not
+    // set here, and its reset value is architecturally unknown, so the
+    // guarantee is made rather than relied on — a caller holding the frame in
+    // heap memory, which a forked child does, has no alignment to offer.
+    var aligned: Frame align(16) = frame.*;
+    var save: UserSave = undefined;
+    save.exit_code = 0;
+    const status = aarch64_enter_user_frame(&aligned, &save, user_sp);
+    syscall_depth = 0;
+    return .{ .status = status, .code = save.exit_code };
+}
+
 /// Where a thread's kernel state waits while its process runs at EL0.
 ///
 /// The layout is user.S's, which addresses every field by a hard-coded
@@ -308,6 +337,7 @@ fn current_save() ?*UserSave {
 }
 
 extern fn aarch64_enter_user(entry: u64, user_sp: u64, save: *UserSave, arg: u64) callconv(.C) u64;
+extern fn aarch64_enter_user_frame(frame: *const Frame, save: *UserSave, user_sp: u64) callconv(.C) u64;
 extern fn aarch64_leave_user(value: u64) callconv(.C) noreturn;
 
 fn read_esr() u64 {
@@ -425,6 +455,9 @@ fn dispatch(frame: *Frame) void {
         SYS_BRK => {
             frame.x[0] = @bitCast(sys_brk(frame.x[0]));
         },
+        SYS_FORK => {
+            frame.x[0] = @bitCast(sys_fork(frame));
+        },
         SYS_EXEC => {
             frame.x[0] = @bitCast(sys_exec(frame.x[0]));
         },
@@ -445,6 +478,40 @@ fn dispatch(frame: *Frame) void {
             frame.x[0] = @bitCast(ENOSYS);
         },
     }
+}
+
+/// fork(2) — this process, twice.
+///
+/// Returns in both, which is the whole of what the call means and the only
+/// thing a program can use to tell the two apart: the parent is told the
+/// child's PID and the child is told zero. Everything else about them is
+/// identical, because the child *is* the parent — the same registers, the
+/// same stack pointer, the same next instruction, and a copy of every page.
+///
+/// The frame is handed over rather than anything read out of it here. It is
+/// the parent's register file as the vector entry recorded it, and the child
+/// resumes from exactly that; `sched.fork` copies it, writes zero into the
+/// saved x0, and starts a kernel thread that erets into it.
+///
+/// SP_EL0 is read here and not there. It is one register for the whole core
+/// and an exception from EL0 does not touch it, so at this instant it still
+/// holds the parent's user stack pointer — which is the only place the child
+/// can get its own from, the frame having no room for it.
+fn sys_fork(frame: *const Frame) i64 {
+    const pid = sched.fork(frame, read_sp_el0()) orelse return EAGAIN;
+    return @intCast(pid);
+}
+
+fn read_sp_el0() u64 {
+    return asm volatile ("mrs %[out], sp_el0"
+        : [out] "=r" (-> u64),
+    );
+}
+
+fn read_ttbr0() u64 {
+    return asm volatile ("mrs %[out], ttbr0_el1"
+        : [out] "=r" (-> u64),
+    );
 }
 
 /// exec(path) — replace this process's image with the one at `path`.
@@ -731,6 +798,24 @@ fn sys_write(fd: u64, buf: u64, len: u64) i64 {
 /// log has to explain.
 fn sys_brk(requested: u64) i64 {
     const space = brk_space orelse return @bitCast(@as(u64, 0));
+
+    // Whose heap this is.
+    //
+    // `brk_space` is one variable for the whole kernel, set by whoever
+    // loaded the program, and until `fork` existed there was only ever one
+    // process that could reach this code. There are two now, running in two
+    // address spaces, and only one of them owns the break — so a `brk` from
+    // the other would allocate pages and map them into the *parent*: memory
+    // the caller cannot see, appearing in a process that did not ask for it,
+    // and no error anywhere.
+    //
+    // Checked against TTBR0_EL1 rather than against a record of which
+    // process is current, because TTBR0 is the address space the caller is
+    // actually running in — the hardware's answer, not the kernel's belief
+    // about it. A child gets ENOMEM, which is a refusal it can handle; a
+    // forked process with no heap of its own is a limitation, and one
+    // silently growing its parent's is a bug.
+    if (read_ttbr0() != paging.ttbr_value(space)) return ENOMEM;
     if (requested == 0) return @intCast(brk_current);
     if (requested < brk_start) return @intCast(brk_current);
     if (requested > brk_start +| HEAP_MAX) return @intCast(brk_current);

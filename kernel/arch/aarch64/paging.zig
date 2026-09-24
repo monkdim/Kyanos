@@ -246,6 +246,36 @@ pub fn clone_user(src: *const AddressSpace, dst: *AddressSpace) Error!void {
     }
 }
 
+/// Free every page a space has mapped, and then the space itself.
+///
+/// The counterpart of `clone_user`, and the reason it exists separately from
+/// `destroy`: `destroy` frees the tables and deliberately leaves the mapped
+/// pages alone, because a space built by the loader does not own them — the
+/// loader does, and `release` hands them back from the ranges it recorded.
+/// A *cloned* space has no loader and no ranges. Every page in it was
+/// allocated by `clone_user` for this space and nothing else has it, so this
+/// space is the only thing that can free them, and the tables are the only
+/// record of which they are.
+///
+/// Without this a fork leaks the child's entire memory the moment the child
+/// exits, which is invisible until the machine runs out of pages.
+pub fn free_user(space: *AddressSpace) void {
+    const l1 = table(space.root_phys);
+    for (l1) |e1| {
+        if (!is_table(e1)) continue;
+        const l2 = table(e1 & ADDR_MASK);
+        for (l2) |e2| {
+            if (!is_table(e2)) continue;
+            const l3 = table(e2 & ADDR_MASK);
+            for (l3) |leaf| {
+                if (leaf == 0) continue;
+                pmm.free_page(leaf & ADDR_MASK);
+            }
+        }
+    }
+    destroy(space);
+}
+
 /// Write one leaf descriptor into a space, allocating the tables on the way
 /// down. Like `map_page` except that the descriptor is given rather than
 /// built, which is what lets `clone_user` carry the source's attributes

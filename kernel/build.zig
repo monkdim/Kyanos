@@ -290,6 +290,23 @@ pub fn build(b: *std.Build) void {
         .root_source_file = fp_prog_arm.getEmittedBin(),
     });
 
+    // /bin/clarity-forkprobe for aarch64: does fork(2) make a second
+    // process? Both halves check that they came back with the registers they
+    // had, which is the part that is new on this architecture — a child
+    // resumes, it does not start.
+    const fork_prog_arm = b.addExecutable(.{
+        .name = "clarity-forkprobe-aarch64",
+        .root_source_file = b.path("user/forkprobe_aarch64.zig"),
+        .target = user_arm_target,
+        .optimize = .ReleaseSmall,
+    });
+    fork_prog_arm.setLinkerScript(b.path("user/user.ld"));
+    fork_prog_arm.entry = .{ .symbol_name = "_start" };
+    fork_prog_arm.pie = false;
+    kernel_arm.root_module.addAnonymousImport("forkprobe_elf_aarch64", .{
+        .root_source_file = fork_prog_arm.getEmittedBin(),
+    });
+
     // /bin/clarity-spin for aarch64: a program that spends time at EL0.
     //
     // Two copies of it run at once, one per kernel thread, which is the whole
