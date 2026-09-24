@@ -53,6 +53,19 @@ pub const EC_DATA_ABORT: u64 = 0x24;
 /// is ENOSYS, and the process keeps running.
 pub const EXIT_DONE: u64 = 0;
 pub const EXIT_FAULT: u64 = 1;
+/// The process asked to be replaced by another image. Unlike the two above
+/// this is not the end of anything: `exec_path` names what to load, and the
+/// caller of `enter_user` is expected to load it into the same process and
+/// enter again.
+///
+/// On x86_64 `exec` does not return because a process there is a scheduled
+/// thread and the call can simply never come back. Here a program is a
+/// *nested call* the kernel makes — `enter_user` returns a status when the
+/// program is done — so "never returns" would mean unwinding a frame that
+/// something still owns. Leaving with a third status instead keeps that
+/// structure: exec becomes an iteration of the loop that runs programs,
+/// which is what it already was for the boot path.
+pub const EXIT_EXEC: u64 = 2;
 
 /// From syscall/dispatch.zig's `Nr`, which is stdlib/kernel_abi.clarity's
 /// table. Deliberately the same numbers as the x86_64 side rather than a
@@ -63,6 +76,7 @@ const SYS_WRITE: u64 = 1;
 const SYS_OPEN: u64 = 2;
 const SYS_CLOSE: u64 = 3;
 const SYS_BRK: u64 = 9;
+const SYS_EXEC: u64 = 11;
 const SYS_EXIT: u64 = 12;
 const SYS_READDIR: u64 = 34;
 
@@ -128,6 +142,21 @@ pub var last_fault: ?Fault = null;
 pub var calls: u64 = 0;
 pub var bytes_written: u64 = 0;
 pub var exit_status: u64 = 0;
+
+/// What the last `exec` asked for, copied out of the process before its
+/// address space went away. Read through `exec_path()`.
+var exec_path_buf: [PATH_MAX]u8 = undefined;
+var exec_path_len: usize = 0;
+
+/// How many times a process *asked* to be replaced, whether or not it was.
+/// The boot compares this against the number of replacements that happened,
+/// which is how it can say a refusal was refused by the kernel rather than
+/// never attempted.
+pub var execs: u64 = 0;
+
+pub fn exec_path() []const u8 {
+    return exec_path_buf[0..exec_path_len];
+}
 pub var bad_call: u64 = 0;
 
 /// The timer's tick count at the first system call and at the last one. Both
@@ -279,6 +308,9 @@ fn dispatch(frame: *Frame) void {
         SYS_BRK => {
             frame.x[0] = @bitCast(sys_brk(frame.x[0]));
         },
+        SYS_EXEC => {
+            frame.x[0] = @bitCast(sys_exec(frame.x[0]));
+        },
         SYS_EXIT => {
             ticks_leaving = timer.ticks();
             exit_status = frame.x[0];
@@ -295,6 +327,39 @@ fn dispatch(frame: *Frame) void {
             frame.x[0] = @bitCast(ENOSYS);
         },
     }
+}
+
+/// exec(path) — replace this process's image with the one at `path`.
+///
+/// Returns only when it fails, and that is the whole design of it. Once the
+/// kernel leaves EL0 there is no way back to the instruction after the
+/// `svc`: `enter_user` starts a program at its entry point, not in the
+/// middle of a system call. So everything a program could reasonably have
+/// handled is checked *here*, before leaving — an unreadable pointer is
+/// EFAULT and a path that names nothing is ENOENT, and in both cases the
+/// caller carries on with the image it has, which is what POSIX promises.
+///
+/// Past the leave, failure is fatal to the process, and that is also what a
+/// real kernel does: once the old image is gone there is nothing left to
+/// return to.
+///
+/// The path is copied out while this process's address space is still the
+/// current one. A moment later it will not be — the caller is about to
+/// replace it — and a pointer into the old image would then name whatever
+/// the new one put at that address.
+fn sys_exec(path_ptr: u64) i64 {
+    var buf: [PATH_MAX]u8 = undefined;
+    const path = copy_user_path(path_ptr, &buf) orelse return EFAULT;
+    // Counted before the check, not after: a refused exec is still an exec
+    // the process asked for, and the difference between this and the number
+    // of replacements that actually happened is what says the refusal
+    // reached the kernel rather than being invented by the program.
+    execs += 1;
+    const fd = vfs.open(path, 0, 0) catch return ENOENT;
+    vfs.close(@intCast(fd)) catch {};
+    @memcpy(exec_path_buf[0..path.len], path);
+    exec_path_len = path.len;
+    aarch64_leave_user(EXIT_EXEC);
 }
 
 /// write(fd, buf, len) — the console, and nothing else yet.

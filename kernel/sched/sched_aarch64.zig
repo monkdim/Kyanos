@@ -472,6 +472,27 @@ pub fn alloc_asid() ?u16 {
 /// show that — the selftest below passes with this line removed — so it is
 /// here because the architecture requires it, and that is said plainly
 /// rather than implied by a test that would pass either way.
+/// Throw away every translation cached under this ASID, without giving the
+/// number back.
+///
+/// What `exec` needs: the process keeps its identity and its ASID — it is
+/// the same process — but its address space is replaced wholesale, so every
+/// entry the hardware cached for the old one is now a lie. Freeing and
+/// re-allocating would do the same invalidation and then very likely hand
+/// back the same number anyway; this says what is meant.
+pub fn flush_asid(a: u16) void {
+    if (a < ASID_FIRST or a >= ASID_COUNT) return;
+    asm volatile (
+        \\dsb ishst
+        \\tlbi aside1is, %[op]
+        \\dsb ish
+        \\isb
+        :
+        : [op] "r" (@as(u64, a) << 48),
+        : "memory"
+    );
+}
+
 pub fn free_asid(a: u16) void {
     if (a < ASID_FIRST or a >= ASID_COUNT) return;
     asm volatile (
