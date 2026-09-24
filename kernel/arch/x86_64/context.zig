@@ -184,15 +184,50 @@ pub const IretFrame = extern struct {
 pub fn enter_userland(cr3: u64, frame_rsp: u64, fpu_area: u64) noreturn {
     asm volatile (
         \\ cli
-        \\ fxrstor (%[fpu])
-        \\ movq %[cr3], %%cr3
-        \\ movq %[frame], %%rsp
+        \\ fxrstor (%%rdx)
+        \\ movq %%rax, %%cr3
+        \\ movq %%rcx, %%rsp
+        // Every general register, because the register file is not the
+        // kernel's to leave lying around. `iretq` pops RIP, CS, RFLAGS, RSP
+        // and SS and nothing else, so without this rax through r15 reach
+        // ring 3 holding what the kernel last had in them -- the CR3 just
+        // loaded, the frame pointer, addresses the ELF loader walked. None
+        // of it is anything ring 3 is entitled to know, and none of it costs
+        // a fault to obtain.
+        //
+        // Here and not sooner: rax, rcx and rdx carry the three operands,
+        // and nothing needs a register after RSP and CR3 are set. `swapgs`
+        // reads none and `iretq` takes everything off the frame. The flags
+        // these `xor`s write are replaced by the frame's RFLAGS.
+        //
+        // The three operands are pinned to named registers rather than left
+        // to the compiler precisely because this clobbers all of them: which
+        // register holds what has to be something this block knows.
+        //
+        // The vector file needs nothing, because `fxrstor` above has already
+        // loaded the process's own image over it -- which user/regprobe.zig
+        // checks rather than takes on trust.
+        \\ xor %%eax, %%eax
+        \\ xor %%ebx, %%ebx
+        \\ xor %%ecx, %%ecx
+        \\ xor %%edx, %%edx
+        \\ xor %%esi, %%esi
+        \\ xor %%edi, %%edi
+        \\ xor %%ebp, %%ebp
+        \\ xor %%r8d, %%r8d
+        \\ xor %%r9d, %%r9d
+        \\ xor %%r10d, %%r10d
+        \\ xor %%r11d, %%r11d
+        \\ xor %%r12d, %%r12d
+        \\ xor %%r13d, %%r13d
+        \\ xor %%r14d, %%r14d
+        \\ xor %%r15d, %%r15d
         \\ swapgs
         \\ iretq
         :
-        : [cr3] "r" (cr3),
-          [frame] "r" (frame_rsp),
-          [fpu] "r" (fpu_area),
+        : [cr3] "{rax}" (cr3),
+          [frame] "{rcx}" (frame_rsp),
+          [fpu] "{rdx}" (fpu_area),
         : "memory"
     );
     unreachable;

@@ -24,6 +24,7 @@ const tmpfs = @import("fs/tmpfs.zig");
 const drivers = @import("drivers/init.zig");
 const multiboot = @import("boot/multiboot2.zig");
 const initprog = @import("initprog.zig");
+const regprobe = @import("regprobe.zig");
 const clarityprog = @import("clarityprog.zig");
 const threadtest = @import("threadtest.zig");
 const fstest = @import("fstest.zig");
@@ -211,6 +212,11 @@ pub export fn kernel_main(mb_info_phys: u64) callconv(.C) noreturn {
         console.println(@errorName(err));
         hang();
     };
+
+    // 11a. What that process could see of the kernel at its first
+    //    instruction. The answer used to be every general register; this
+    //    requires it to be nothing the kernel did not choose.
+    regprobe.run();
 
     // 12. A Clarity program. Everything above this ran code written for the
     //    kernel; this is a Clarity source file compiled to C by
