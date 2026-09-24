@@ -45,6 +45,7 @@ const pmm = @import("../mm/pmm.zig");
 const heap = @import("../mm/heap.zig");
 const vm = @import("../arch/aarch64/vm.zig");
 const console = @import("../arch/aarch64/console.zig");
+const paging = @import("../arch/aarch64/paging.zig");
 
 pub const Priority = enum(u8) {
     high = 0,
@@ -391,4 +392,214 @@ pub fn dump(prefix: []const u8) void {
     console.print(" current=");
     if (current) |c| console.print_dec(@intCast(c.tid)) else console.print("none");
     console.println("");
+}
+
+// ── Processes ───────────────────────────────────────────────────────────
+//
+// Threads are above; this is the other half. A process is an address space
+// with an identity: a PID, a parent, the children it is answerable for, and
+// a break that `brk` moves. The model itself is `sched/process.zig`, shared
+// with the x86_64 scheduler and told here what an address space is on this
+// architecture.
+//
+// Until now this side had no process identity at all. A program was loaded,
+// entered, and released, and the ASID it ran under was a literal at the call
+// site — 5 for the Clarity demo, 7 for the shell. Two programs alive at once
+// with the same number would each see the other's cached translations, and
+// nothing anywhere was keeping track. `arch/aarch64/paging.zig` says as much
+// where it defines `AddressSpace`: the ASID "becomes a recycling problem
+// ... That belongs with the process table, which does not exist on this
+// architecture yet." It does now, and the recycling is below.
+
+const procmodel = @import("process.zig").Model(paging.AddressSpace);
+pub const Process = procmodel.Process;
+pub const ProcessTable = procmodel.Table;
+pub const Pid = @import("process.zig").Pid;
+
+pub var processes: ProcessTable = undefined;
+var processes_ready: bool = false;
+
+// ── ASIDs ───────────────────────────────────────────────────────────────
+//
+// TCR_EL1.AS is clear in `boot.S` — TCR_VALUE sets no bit 36 — so an ASID is
+// **eight bits**, and there are 256 of them, not 65,536. That is the whole
+// reason this is an allocator rather than a counter: `next_asid += 1` is
+// correct for exactly 255 processes and then silently hands the 256th an
+// ASID that is still live, and two address spaces answer to one tag.
+//
+// Zero is not handed out. `paging.deactivate` writes TTBR0_EL1 = 0, which is
+// ASID 0 with a null root, so zero means "no process" and giving it to one
+// would make those two states indistinguishable.
+//
+// A free list is the right shape here and a generation counter is not. A
+// generation counter exists for kernels with more live processes than ASIDs,
+// where a number has to be taken back from a process that is still using it.
+// With 255 available and a hard refusal at the 256th, no live process ever
+// loses its ASID, so there is nothing to generation-stamp. If this machine
+// ever needs a 256th process, the honest change is to set TCR_EL1.AS and get
+// 16 bits, and only after that to recycle under generations.
+const ASID_COUNT: usize = 256;
+const ASID_FIRST: u16 = 1;
+
+var asid_taken: [ASID_COUNT]bool = [_]bool{false} ** ASID_COUNT;
+var asid_hint: u16 = ASID_FIRST;
+
+/// Take an unused ASID, or nothing if all 255 are live.
+pub fn alloc_asid() ?u16 {
+    const guard = irqlock.acquire();
+    defer guard.release();
+    var tries: usize = 0;
+    var a = asid_hint;
+    while (tries < ASID_COUNT - 1) : (tries += 1) {
+        if (a < ASID_FIRST) a = ASID_FIRST;
+        if (!asid_taken[a]) {
+            asid_taken[a] = true;
+            asid_hint = if (a + 1 >= ASID_COUNT) ASID_FIRST else a + 1;
+            return a;
+        }
+        a = if (a + 1 >= ASID_COUNT) ASID_FIRST else a + 1;
+    }
+    return null;
+}
+
+/// Give an ASID back, after throwing away every translation cached under it.
+///
+/// The invalidation is the part that matters and the part this boot cannot
+/// prove it needs. `tlbi aside1is` drops every entry tagged with this ASID
+/// across the inner-shareable domain; without it, the next process handed
+/// the same number inherits whatever the last one left in the TLB and reads
+/// its memory. QEMU under TCG does not model a TLB faithfully enough to
+/// show that — the selftest below passes with this line removed — so it is
+/// here because the architecture requires it, and that is said plainly
+/// rather than implied by a test that would pass either way.
+pub fn free_asid(a: u16) void {
+    if (a < ASID_FIRST or a >= ASID_COUNT) return;
+    asm volatile (
+        \\dsb ishst
+        \\tlbi aside1is, %[op]
+        \\dsb ish
+        \\isb
+        :
+        : [op] "r" (@as(u64, a) << 48),
+        : "memory"
+    );
+    const guard = irqlock.acquire();
+    defer guard.release();
+    asid_taken[a] = false;
+}
+
+/// How many ASIDs are live. For the selftest, and for anything trying to
+/// understand a refusal to start a process.
+pub fn asids_in_use() usize {
+    const guard = irqlock.acquire();
+    defer guard.release();
+    var n: usize = 0;
+    for (asid_taken) |t| {
+        if (t) n += 1;
+    }
+    return n;
+}
+
+/// Start the process table and the init process.
+///
+/// The allocator is handed over here rather than in a separate call that
+/// something has to remember to make. On the x86_64 side that separate call
+/// existed and nothing invoked it, so the table's `std.mem.Allocator` kept
+/// its .bss value — a null vtable pointer — and the first spawn loaded a
+/// function pointer from physical page 0 and jumped into the real-mode
+/// interrupt vector table. One kernel heap, one place that says so.
+pub fn init_processes() void {
+    processes = ProcessTable.init(heap.allocator());
+    asid_taken = [_]bool{false} ** ASID_COUNT;
+    asid_hint = ASID_FIRST;
+    processes_ready = true;
+
+    // PID 1 has to exist before anything can be reparented to it:
+    // `reparent_children` looks init up and gives up quietly if it is not
+    // there, so without this an orphan would keep pointing at a dead parent
+    // and nothing would say so.
+    //
+    // It stands for the boot path, which owns no user address space — root 0
+    // and ASID 0, which is what `paging.deactivate` leaves in TTBR0_EL1 and
+    // means "no process is current". That is why zero is never handed out.
+    const gpa = processes.gpa;
+    const held = gpa.create(paging.AddressSpace) catch return;
+    held.* = .{ .root_phys = 0, .asid = 0 };
+    const p = gpa.create(Process) catch {
+        gpa.destroy(held);
+        return;
+    };
+    p.* = .{
+        .pid = processes.init_pid,
+        .parent_pid = 0,
+        .name = "init",
+        .address_space = held,
+        .state = .running,
+    };
+    processes.register(p) catch {
+        gpa.destroy(p);
+        gpa.destroy(held);
+    };
+}
+
+pub fn processes_started() bool {
+    return processes_ready;
+}
+
+/// Register a process for an address space the loader has already built.
+///
+/// `space` is copied into storage the Process owns, because the loader
+/// returns its `AddressSpace` by value on this architecture and the caller's
+/// copy goes out of scope.
+pub fn register_process(
+    name: []const u8,
+    space: paging.AddressSpace,
+    parent: Pid,
+    brk_start: u64,
+) ?*Process {
+    if (!processes_ready) return null;
+    const gpa = processes.gpa;
+    const held = gpa.create(paging.AddressSpace) catch return null;
+    held.* = space;
+    const p = gpa.create(Process) catch {
+        gpa.destroy(held);
+        return null;
+    };
+    p.* = .{
+        .pid = processes.alloc_pid(),
+        .parent_pid = parent,
+        .name = name,
+        .address_space = held,
+        .state = .runnable,
+        .brk = brk_start,
+        .brk_start = brk_start,
+    };
+    processes.register(p) catch {
+        gpa.destroy(p);
+        gpa.destroy(held);
+        return null;
+    };
+    if (parent != 0) {
+        if (processes.lookup(parent)) |par| {
+            par.add_child(p.pid, gpa) catch {};
+        }
+    }
+    return p;
+}
+
+/// A process is over: record it against its parent, hand its children to
+/// init, give back its ASID, and take it out of the table.
+///
+/// The Process itself is not freed here — it is the zombie its parent will
+/// reap, and `Table.remove` plus the parent's `reap_pid` is what ends it.
+pub fn exit_process(p: *Process, code: i32) void {
+    p.state = .zombie;
+    p.exit_code = code;
+    processes.reparent_children(p) catch {};
+    if (processes.lookup(p.parent_pid)) |parent| {
+        parent.record_zombie(p.*, processes.gpa) catch {};
+        _ = parent.remove_child(p.pid);
+    }
+    free_asid(p.address_space.asid);
+    processes.remove(p.pid);
 }

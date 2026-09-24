@@ -18,7 +18,9 @@ const context = @import("../arch/x86_64/context.zig");
 const gdt = @import("../arch/x86_64/gdt.zig");
 const elf = @import("../loader/elf.zig");
 const loader = @import("../loader/load.zig");
-const process = @import("process.zig");
+/// The process model, told what an address space is on this architecture.
+/// The AArch64 scheduler names the same file with its own `AddressSpace`.
+const process = @import("process.zig").Model(vmm.AddressSpace);
 const irqlock = @import("../sync/irqlock.zig");
 const runqueue = @import("runqueue.zig");
 const vfs = @import("../fs/vfs.zig");

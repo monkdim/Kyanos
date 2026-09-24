@@ -65,9 +65,9 @@ every pull request; anything not gated is called out as unverified.
     filesystem
 
   This is no longer "the start of the Apple Silicon track". It is not parity
-  either: there is a thread scheduler on this side now — run queues,
-  priorities, threads that finish — but no process table, so `exec` has
-  nothing to put a new image into. See **Outstanding on aarch64** below.
+  either: there is a thread scheduler and a process table on this side now,
+  but no `exec`, so a program still cannot start another one. See
+  **Outstanding on aarch64** below.
 - **The kernel reaches userspace.** It writes a small ELF to
   `/bin/clarity-init`, and `spawn_user` reads it back off the VFS, parses it,
   maps its segments into a fresh address space, switches CR3 and enters ring
@@ -318,15 +318,45 @@ What is left, in rough order:
   still runnable); and **the window between choosing a thread and switching
   to it** (widened 120,000-fold, 500 switches and 52–63 ticks, every tick on
   the stack the scheduler named — with the guard removed, a data abort).
-  What is still missing is the *process* half: no process table on this
-  architecture, so `exec` has nothing to put a new image into.
+  The process half is the entry below.
+- **A process table, and ASIDs that are allocated rather than chosen.** ✅
+  `sched/process.zig` already held the model — PIDs, parent and children,
+  zombie records, reparenting an orphan to init, an fd table, the break —
+  and was tied to the x86_64 `vmm.AddressSpace`. It takes the address-space
+  type as a parameter now, the way `runqueue.zig` takes the thread type, so
+  both architectures share one process model instead of growing a second
+  that agrees with the first until it does not.
+  **The ASIDs are the part that was actually wrong.** `TCR_EL1.AS` is clear
+  in `boot.S`, so an ASID is eight bits — 256 of them — and every program
+  this kernel ran was loaded under a number written at the call site: 3 and 4
+  for the two init runs, 5 for the demo, 7 for the shell. They did not
+  collide, but nothing made them not collide. `paging.zig` had said so where
+  it defines `AddressSpace`: recycling "belongs with the process table, which
+  does not exist on this architecture yet". There is an allocator now, and a
+  `tlbi aside1is` when a number goes back, because the next process to be
+  given it would otherwise inherit the last one's cached translations.
+  Six things checked on every boot and each one measured against a build with
+  it removed: **a counter instead of an allocator** hands out 301 ASIDs and a
+  256th over a live one; **no reparenting** leaves an orphan pointing at a
+  dead PID; **a reap that does not consume** returns the same zombie twice;
+  **an ASID that is never released** exhausts the pool and the boot's own
+  programs then fail to start; **no `add_child`** loses the child entirely.
+  The boot's four programs run as processes with allocated PIDs and ASIDs,
+  and a check at the end requires every one of them to have given both back —
+  only init is left.
+  What the boot cannot show is that the TLB invalidation is needed: QEMU
+  under TCG does not model a tagged TLB faithfully enough, and the selftest
+  passes with that line removed. It is there because the architecture
+  requires it, and the file says exactly that rather than implying a test
+  stands behind it.
 - **A filesystem with something under it.** tmpfs and the VFS run here now,
   unchanged from the x86_64 side, and `cat` reads through them. There is
   still no disk, so the root is tmpfs and programs are still loaded from ELFs
   embedded in the kernel image — there is nowhere else to read one from.
 - **A session.** The shell reads, parses and runs commands, and that is all
-  it is: nothing holds a terminal, a process table or a working directory,
-  and `exit` ends the boot's last program rather than returning to anything.
+  it is: there is a process table now, but nothing holds a terminal or a
+  working directory, and `exit` ends the boot's last program rather than
+  returning to anything.
   The call it is most obviously missing has its own entry below.
 - **`readdir` is a system call now, and the shell has `ls`.** ✅ The VFS packs
   a directory into a caller's buffer — inode, record length, type, name
@@ -340,7 +370,9 @@ What is left, in rough order:
 - **`exec`, so the shell can start a program.** Every program on this machine
   is loaded by the boot path from an ELF embedded in the kernel image and run
   to completion in a fixed order. The shell can run its own built-in commands and
-  nothing else. This needs a process table before it needs anything else.
+  nothing else. The process table it needed first exists now, so this is the
+  next thing on this architecture: a PID, an address space and a break are
+  all there to be replaced — what is missing is the call that replaces them.
 - **Preemption stops at the kernel's door.** System calls run with interrupts
   on, so devices are serviced during one, but a time slice that expires inside
   a system call is ignored rather than taken: suspending a half-finished call
