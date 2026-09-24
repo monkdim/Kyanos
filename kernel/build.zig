@@ -323,6 +323,37 @@ pub fn build(b: *std.Build) void {
         .root_source_file = wait_prog_arm.getEmittedBin(),
     });
 
+    // /bin/clarity-hello for aarch64: the smallest program that can be asked
+    // for by name. Installed in /bin, because a forked child reaches it the
+    // way any program does — through the filesystem, by path.
+    const hello_prog_arm = b.addExecutable(.{
+        .name = "clarity-hello-aarch64",
+        .root_source_file = b.path("user/hello_aarch64.zig"),
+        .target = user_arm_target,
+        .optimize = .ReleaseSmall,
+    });
+    hello_prog_arm.setLinkerScript(b.path("user/user.ld"));
+    hello_prog_arm.entry = .{ .symbol_name = "_start" };
+    hello_prog_arm.pie = false;
+    kernel_arm.root_module.addAnonymousImport("hello_elf_aarch64", .{
+        .root_source_file = hello_prog_arm.getEmittedBin(),
+    });
+
+    // /bin/clarity-forkexec for aarch64: fork, exec in the child, wait, and
+    // still be there afterwards.
+    const forkexec_prog_arm = b.addExecutable(.{
+        .name = "clarity-forkexec-aarch64",
+        .root_source_file = b.path("user/forkexec_aarch64.zig"),
+        .target = user_arm_target,
+        .optimize = .ReleaseSmall,
+    });
+    forkexec_prog_arm.setLinkerScript(b.path("user/user.ld"));
+    forkexec_prog_arm.entry = .{ .symbol_name = "_start" };
+    forkexec_prog_arm.pie = false;
+    kernel_arm.root_module.addAnonymousImport("forkexec_elf_aarch64", .{
+        .root_source_file = forkexec_prog_arm.getEmittedBin(),
+    });
+
     // /bin/clarity-spin for aarch64: a program that spends time at EL0.
     //
     // Two copies of it run at once, one per kernel thread, which is the whole
