@@ -36,6 +36,7 @@ const threadtest = @import("threadtest_aarch64.zig");
 const sched = @import("sched/sched_aarch64.zig");
 const schedtest = @import("schedtest_aarch64.zig");
 const proctest = @import("proctest_aarch64.zig");
+const userpreempt = @import("userpreempt_aarch64.zig");
 const heap = @import("mm/heap.zig");
 const loader = @import("loader/load_aarch64.zig");
 const fb = @import("graphics/fb.zig");
@@ -165,6 +166,12 @@ export fn kernel_main_aarch64(dtb_phys: u64) callconv(.C) noreturn {
     // or is stopped; this one asks the kernel to put a different image in
     // its place and keep its identity.
     exec_program();
+
+    // And two programs at once — the first time on this machine that the
+    // scheduler has had anything to choose between at EL0. Everything above
+    // runs one program to completion before the next one starts; this one is
+    // two, on two kernel threads, with the timer moving the CPU between them.
+    userpreempt.run();
 
     // And then a Clarity program, through the same path.
     demo_program();

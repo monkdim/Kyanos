@@ -22,6 +22,7 @@
 //! validation something the hardware does rather than something this code
 //! remembers to.
 
+const std = @import("std");
 const console = @import("console.zig");
 const timer = @import("timer.zig");
 const mmu = @import("mmu.zig");
@@ -182,15 +183,99 @@ pub fn reset() void {
 /// currently in TTBR0 — installing it is the caller's business, because the
 /// caller is the one that knows which process this is.
 pub fn enter_user(entry: u64, user_sp: u64) u64 {
-    const status = aarch64_enter_user(entry, user_sp);
+    return enter_user_arg(entry, user_sp, 0);
+}
+
+/// The same, with one number handed to the program in x0. See user.S for why
+/// that is not argv and what it is for.
+pub fn enter_user_arg(entry: u64, user_sp: u64, arg: u64) u64 {
+    // On this thread's own kernel stack, and that is the whole of what makes
+    // two threads able to be in EL0 at once. `aarch64_enter_user` puts its
+    // address in TPIDR_EL1, `clarity_switch_to` carries that from thread to
+    // thread, and `aarch64_leave_user` reads it back — so the way home a
+    // process unwinds through belongs to the thread that started it, not to
+    // whichever one entered EL0 most recently.
+    //
+    // It outlives this frame in the only sense that matters: `leave_user`
+    // restores SP to the value saved here, so the frame is not gone until
+    // after the last read of the area inside it.
+    return enter_user_full(entry, user_sp, arg).status;
+}
+
+/// What a program left behind: why it stopped, and what it said on the way
+/// out. Two values because they answer different questions — `EXIT_DONE`
+/// with a code of 1 is a program that ran correctly and failed its own
+/// checks, which is not the same as a fault.
+pub const Exit = struct {
+    status: u64,
+    code: u64,
+};
+
+/// The whole answer, and the only one that is safe to read when more than one
+/// program is running: `code` comes out of this thread's own save area rather
+/// than the global below.
+pub fn enter_user_full(entry: u64, user_sp: u64, arg: u64) Exit {
+    var save: UserSave = undefined;
+    save.exit_code = 0;
+    const status = aarch64_enter_user(entry, user_sp, &save, arg);
     // Whatever the process was doing, it is not doing it any more. A call it
     // left through — `exit`, or a fault — never ran the code that undoes the
     // depth, so this is where it is undone.
     syscall_depth = 0;
-    return status;
+    return .{ .status = status, .code = save.exit_code };
 }
 
-extern fn aarch64_enter_user(entry: u64, user_sp: u64) callconv(.C) u64;
+/// Where a thread's kernel state waits while its process runs at EL0.
+///
+/// The layout is user.S's, which addresses every field by a hard-coded
+/// offset; the asserts below are what stops the two drifting apart. Nothing
+/// in Zig ever reads a field — the type exists to give the area a size, an
+/// alignment and a name, and to put that name somewhere a reader will find
+/// it.
+pub const UserSave = extern struct {
+    /// x19-x30: the callee-saved set, which is exactly what `enter_user`'s
+    /// caller is entitled to still have when it returns.
+    regs: [12]u64,
+    sp: u64,
+    daif: u64,
+
+    /// What the process passed to `exit`, written by `sys_exit` before it
+    /// leaves EL0 — inside the system call, where nothing can preempt it.
+    ///
+    /// The global `exit_status` below says the same thing and cannot be
+    /// trusted once two programs run at once: `enter_user` returns with
+    /// interrupts on, so a thread can be preempted between its process
+    /// exiting and its reading of that variable, and read the *other*
+    /// program's exit code. Here the answer travels in the asking thread's
+    /// own save area, which is what TPIDR_EL1 points at and what
+    /// `clarity_switch_to` carries from thread to thread.
+    ///
+    /// Nothing in user.S touches it; it is past everything that file knows
+    /// about, which is why the asserts stop at `daif`.
+    exit_code: u64 = 0,
+};
+
+comptime {
+    // user.S hard-codes the first three.
+    std.debug.assert(@offsetOf(UserSave, "regs") == 0);
+    std.debug.assert(@offsetOf(UserSave, "sp") == 96);
+    std.debug.assert(@offsetOf(UserSave, "daif") == 104);
+    std.debug.assert(@offsetOf(UserSave, "exit_code") == 112);
+}
+
+/// The running thread's save area, or null if this thread is not inside
+/// `enter_user`. `aarch64_enter_user` sets TPIDR_EL1 and `aarch64_leave_user`
+/// clears it, so "not null" means exactly "a process is running on this
+/// thread".
+fn current_save() ?*UserSave {
+    const p = asm volatile ("mrs %[out], tpidr_el1"
+        : [out] "=r" (-> u64),
+    );
+    if (p == 0) return null;
+    return @ptrFromInt(p);
+}
+
+extern fn aarch64_enter_user(entry: u64, user_sp: u64, save: *UserSave, arg: u64) callconv(.C) u64;
 extern fn aarch64_leave_user(value: u64) callconv(.C) noreturn;
 
 fn read_esr() u64 {
@@ -314,6 +399,7 @@ fn dispatch(frame: *Frame) void {
         SYS_EXIT => {
             ticks_leaving = timer.ticks();
             exit_status = frame.x[0];
+            if (current_save()) |save| save.exit_code = frame.x[0];
             aarch64_leave_user(EXIT_DONE);
         },
         else => {
@@ -545,6 +631,30 @@ pub var bytes_read: u64 = 0;
 /// process's address space. Two consecutive user pages are two unrelated
 /// physical frames, and copying across the boundary as though they were one
 /// is a bug that needs a buffer to straddle a page to appear at all.
+/// The first byte of each `write`, while `writer_trace_on` is set.
+///
+/// Who wrote, in what order — nothing else. It exists because "two programs
+/// were preempted in favour of each other" is not visible in the console
+/// output alone: a boot log holding `ABABAB` and one holding `AAABBB` look
+/// alike to an assertion that only counts characters, and the second one is
+/// the failure. The order is the measurement, so the order is what is kept.
+///
+/// Inert unless a selftest turns it on, which is why the buffer is small: it
+/// is not a log, it is one experiment's worth of evidence.
+pub var writer_trace: [64]u8 = undefined;
+pub var writer_trace_len: usize = 0;
+pub var writer_trace_on: bool = false;
+
+pub fn writer_trace_reset() void {
+    writer_trace_len = 0;
+    writer_trace_on = true;
+}
+
+pub fn writer_trace_stop() []const u8 {
+    writer_trace_on = false;
+    return writer_trace[0..writer_trace_len];
+}
+
 fn sys_write(fd: u64, buf: u64, len: u64) i64 {
     if (fd != 1 and fd != 2) return EBADF;
     if (len == 0) return 0;
@@ -564,6 +674,17 @@ fn sys_write(fd: u64, buf: u64, len: u64) i64 {
         done += n;
     }
     bytes_written += done;
+
+    // After the write rather than before it, and only once it got somewhere:
+    // a trace entry for a write that returned EFAULT would record something
+    // the program never actually said.
+    if (writer_trace_on and done > 0 and writer_trace_len < writer_trace.len) {
+        if (mmu.translate_user_read(buf)) |phys| {
+            const first: [*]const u8 = @ptrFromInt(vm.phys_to_virt(phys));
+            writer_trace[writer_trace_len] = first[0];
+            writer_trace_len += 1;
+        }
+    }
     return @intCast(done);
 }
 

@@ -230,6 +230,25 @@ pub fn build(b: *std.Build) void {
         .root_source_file = exec_prog_arm.getEmittedBin(),
     });
 
+    // /bin/clarity-spin for aarch64: a program that spends time at EL0.
+    //
+    // Two copies of it run at once, one per kernel thread, which is the whole
+    // of what "a program can be preempted" means here. Built once and loaded
+    // twice; the copies tell themselves apart by the number the kernel hands
+    // them in x0.
+    const spin_prog_arm = b.addExecutable(.{
+        .name = "clarity-spin-aarch64",
+        .root_source_file = b.path("user/spin_aarch64.zig"),
+        .target = user_arm_target,
+        .optimize = .ReleaseSmall,
+    });
+    spin_prog_arm.setLinkerScript(b.path("user/user.ld"));
+    spin_prog_arm.entry = .{ .symbol_name = "_start" };
+    spin_prog_arm.pie = false;
+    kernel_arm.root_module.addAnonymousImport("spin_elf_aarch64", .{
+        .root_source_file = spin_prog_arm.getEmittedBin(),
+    });
+
     // /bin/clarity-demo for aarch64: the same generated C as the x86_64 one,
     // linked against the same C library. Nothing in user/clarity_demo.c knows
     // which machine it is for — `clarity cc --freestanding` emits portable C

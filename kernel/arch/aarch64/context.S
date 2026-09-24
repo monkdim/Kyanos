@@ -28,6 +28,7 @@
 .set CTX_D12,  136
 .set CTX_D14,  152
 .set CTX_TTBR0, 168
+.set CTX_TPIDR, 176
 
 .section .text
 
@@ -64,6 +65,13 @@ clarity_switch_to:
     stp     d12, d13, [x0, #CTX_D12]
     stp     d14, d15, [x0, #CTX_D14]
 
+    // Where this thread goes back to when the process it is running stops
+    // being the kernel's problem — see context.zig. Saved and restored with
+    // the rest rather than left alone, because a thread that came back with
+    // another thread's save area would unwind onto another thread's stack.
+    mrs     x11, tpidr_el1
+    str     x11, [x0, #CTX_TPIDR]
+
     ldp     x19, x20, [x1, #CTX_X19]
     ldp     x21, x22, [x1, #CTX_X21]
     ldp     x23, x24, [x1, #CTX_X23]
@@ -74,6 +82,9 @@ clarity_switch_to:
     ldp     d10, d11, [x1, #CTX_D10]
     ldp     d12, d13, [x1, #CTX_D12]
     ldp     d14, d15, [x1, #CTX_D14]
+
+    ldr     x11, [x1, #CTX_TPIDR]
+    msr     tpidr_el1, x11
 
     ldr     x9,  [x1, #CTX_TTBR0]
     ldr     x10, [x1, #CTX_SP]
