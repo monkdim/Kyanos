@@ -198,6 +198,13 @@ jobs:
             grep -q "clarity-demo: all checks passed" "serial-$attempt.log" || missing="$missing clarity-program"
             grep -q "float 3.1415929203539825 1.4142135623730951 6.25" "serial-$attempt.log" || missing="$missing clarity-floats"
             grep -q "KyanOS: userspace complete." "serial-$attempt.log" || missing="$missing kernel-outlived"
+            # And that nothing said it failed. Every check above asks whether
+            # an expected line is present, which means a selftest that runs
+            # and reports [FAIL] passes the gate in silence. That is not
+            # hypothetical: the aarch64 boot printed "[FAIL] thread stacks
+            # leaked" on every run for a whole pull request without the gate
+            # noticing, because no grep was looking for it.
+            grep -q "\[FAIL\]" "serial-$attempt.log" && missing="$missing no-[FAIL]-lines"
             if [ -z "$missing" ]; then
               echo "--> attempt $attempt: PASS"
             else
@@ -237,6 +244,7 @@ jobs:
           grep -q "\[ok\] user pointers" serial-smap.log || missing="$missing user-pointers"
           grep -q "clarity-demo: all checks passed" serial-smap.log || missing="$missing clarity-program"
           grep -q "KyanOS: userspace complete." serial-smap.log || missing="$missing kernel-outlived"
+          grep -q "\[FAIL\]" serial-smap.log && missing="$missing no-[FAIL]-lines"
           if [ -n "$missing" ]; then
             echo "FAIL: with SMEP and SMAP enforced, missing:$missing"
             exit 1
@@ -453,7 +461,8 @@ jobs:
              && grep -q "\[ok\] pmm:" serial-arm.log \
              && grep -q "\[ok\] framebuffer:" serial-arm.log \
              && grep -q "KyanOS aarch64: EL1 boot ok" serial-arm.log \
-             && grep -q "\[ok\] aarch64 timer: interrupts delivered" serial-arm.log; then
+             && grep -q "\[ok\] aarch64 timer: interrupts delivered" serial-arm.log \
+             && ! grep -q "\[FAIL\]" serial-arm.log; then
             echo "PASS: aarch64 reached EL1 in the high half, read its device tree, allocated a page, and drew a screen"
           else
             echo "FAIL: aarch64 boot, address space, device tree, page allocator or screen did not come up"
@@ -504,7 +513,8 @@ jobs:
              && grep -q "\[ok\] preemption: B ran" serial-arm-pan.log \
              && grep -q "\[ok\] init: a compiled, linked ELF ran at EL0 twice" serial-arm-pan.log \
              && grep -q "KyanOS aarch64: EL1 boot ok" serial-arm-pan.log \
-             && ! grep -q "AARCH64 EXCEPTION" serial-arm-pan.log; then
+             && ! grep -q "AARCH64 EXCEPTION" serial-arm-pan.log \
+             && ! grep -q "\[FAIL\]" serial-arm-pan.log; then
             echo "PASS: the kernel never touched a user address directly"
           else
             echo "FAIL: PAN caught the kernel dereferencing user memory, or the boot broke"
@@ -551,7 +561,8 @@ jobs:
              && grep -q "\[ok\] preemption: B ran" serial-arm-gicv3.log \
              && grep -q "\[ok\] init: a compiled, linked ELF ran at EL0 twice" serial-arm-gicv3.log \
              && grep -q "KyanOS aarch64: EL1 boot ok" serial-arm-gicv3.log \
-             && ! grep -q "AARCH64 EXCEPTION" serial-arm-gicv3.log; then
+             && ! grep -q "AARCH64 EXCEPTION" serial-arm-gicv3.log \
+             && ! grep -q "\[FAIL\]" serial-arm-gicv3.log; then
             echo "PASS: redistributor woken, PPI and SPI delivered, EOI through the system registers"
           else
             echo "FAIL: the GICv3 path is broken — a Mac cannot run this accelerated"
@@ -609,7 +620,8 @@ jobs:
              && grep -q "\[ok\] EL0: a program wrote" serial-arm-4g.log \
              && grep -q "\[ok\] preemption: B ran" serial-arm-4g.log \
              && grep -q "\[ok\] init: a compiled, linked ELF ran at EL0 twice" serial-arm-4g.log \
-             && grep -q "KyanOS aarch64: EL1 boot ok" serial-arm-4g.log; then
+             && grep -q "KyanOS aarch64: EL1 boot ok" serial-arm-4g.log \
+             && ! grep -q "\[FAIL\]" serial-arm-4g.log; then
             echo "PASS: the direct map was extended over all 4 GiB and the allocator manages it"
           else
             echo "FAIL: the kernel did not map all of a 4 GiB machine"

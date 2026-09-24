@@ -152,6 +152,10 @@ pub fn on_tick() void {
     const done = a.* >= WANT and b.* >= WANT and preemptions >= MIN_SWITCHES;
 
     if (done or ticks_used > TICK_LIMIT) {
+        // The allocator's racers are not stopped where they stand; they are
+        // asked, and stop at the top of their own loop. Until both have,
+        // this tick's work is to keep handing them the CPU.
+        if (in_race and !park_racers()) return;
         gave_up = !done;
         running = false;
         const leaving = if (current == 1) &ctx_pa else &ctx_pb;
@@ -160,6 +164,11 @@ pub fn on_tick() void {
     }
 
     preemptions += 1;
+    switch_threads();
+}
+
+/// Hand the CPU from whichever of the two threads is running to the other.
+fn switch_threads() void {
     if (current == 1) {
         current = 2;
         context.switch_to(&ctx_pa, &ctx_pb);
@@ -201,13 +210,70 @@ var race_allocs: u64 = 0;
 var race_collisions: u64 = 0;
 var race_refused: u64 = 0;
 
+/// Which of the two tests the tick handler is supervising. The racers stop
+/// differently from the spinners, and only they need the extra step.
+var in_race: bool = false;
+
+/// Set when the racers are to stop; each sets its own `race_parked` entry
+/// once it has, at the top of its loop.
+var race_stopping: bool = false;
+var race_parked: [2]bool = .{ false, false };
+var race_unparked: bool = false;
+
+/// How many extra ticks the racers get to reach the top of their loops. Each
+/// needs at most one slice, so this is a wide margin — and a ceiling rather
+/// than a wait, so a racer that somehow never parks reports instead of
+/// hanging the boot.
+const PARK_TICKS: u64 = 10;
+
+/// Ask both racers to stop, and keep handing them the CPU until they have.
+/// Returns true once neither is running any more.
+///
+/// The obvious thing is to switch away from whichever racer is running and
+/// call the test over, which is what this did — and it left two pages out on
+/// every boot. A racer is between its `alloc_page` and its `free_page` for
+/// most of its loop, because holding the page is the whole point: that is
+/// what gives the other thread time to collide with it. Stopped there, it
+/// still owns a page and nothing else knows which. The boot said so —
+/// `[FAIL] thread stacks leaked: 129232 -> 129230`, two pages, one per racer
+/// — and the gate could not see it, because the gate only looked for the
+/// markers it expected.
+///
+/// So the stop is asked for. Each racer checks the flag at the top of its
+/// loop, which is the one point in it where it holds nothing, and parks
+/// there. Recording the page in a global and freeing it afterwards would
+/// have left a window of a couple of instructions between the allocation and
+/// the record — the kind of rarely-wrong that a gate run thousands of times
+/// finds eventually.
+fn park_racers() bool {
+    race_stopping = true;
+    const parked: *volatile [2]bool = &race_parked;
+    if (parked[0] and parked[1]) return true;
+    if (ticks_used > TICK_LIMIT + PARK_TICKS) {
+        race_unparked = true;
+        return true;
+    }
+    switch_threads();
+    return false;
+}
+
 /// Allocate, stamp, hold, check, free — forever, until the timer stops us.
 fn racer(id: u8, mine: u64, counter: *volatile u64) noreturn {
     const w: *volatile u64 = &who;
     const total: *volatile u64 = &race_allocs;
     const bad: *volatile u64 = &race_collisions;
     const refused: *volatile u64 = &race_refused;
+    const stopping: *volatile bool = &race_stopping;
+    const parked: *volatile bool = &race_parked[mine - 1];
     while (true) {
+        // The top of the loop is the only point in it where this thread
+        // holds no page, so it is where it agrees to stop. It never runs
+        // again afterwards: the supervisor switches away for the last time
+        // once both racers are here.
+        if (stopping.*) {
+            parked.* = true;
+            while (true) asm volatile ("" ::: "memory");
+        }
         w.* = mine;
         counter.* +%= 1;
         const phys = pmm.alloc_page() orelse {
@@ -256,6 +322,10 @@ fn allocator_race() void {
     race_allocs = 0;
     race_collisions = 0;
     race_refused = 0;
+    race_stopping = false;
+    race_parked = .{ false, false };
+    race_unparked = false;
+    in_race = true;
 
     context.init_kernel_thread(&ctx_pa, stack_a, &race_a, 0);
     context.init_kernel_thread(&ctx_pb, stack_b, &race_b, 0);
@@ -266,6 +336,7 @@ fn allocator_race() void {
     context.switch_to(&ctx_main, &ctx_pa);
     // The timer handler switched back here.
     pmm.race_window_spins = 0;
+    in_race = false;
 
     const allocs = race_allocs;
     const bad = race_collisions;
@@ -273,7 +344,13 @@ fn allocator_race() void {
     // A run that allocated almost nothing would report zero collisions and
     // mean nothing, so the count it managed is part of the pass.
     const MIN_ALLOCS: u64 = 2000;
-    if (bad == 0 and allocs >= MIN_ALLOCS) {
+    if (race_unparked) {
+        // At least one racer did not reach the top of its loop within
+        // PARK_TICKS, so it is still holding a page and the leak check below
+        // will say so. Said here as well, because "two pages short" on its
+        // own does not name a cause.
+        console.println("  [FAIL] allocator under two threads: a racer never parked");
+    } else if (bad == 0 and allocs >= MIN_ALLOCS) {
         console.print("  [ok] allocator under two threads: ");
         console.print_dec(allocs);
         console.print(" alloc/free pairs with the race window held open, ");
@@ -385,6 +462,7 @@ fn preemptive() void {
     preemptions = 0;
     ticks_used = 0;
     gave_up = false;
+    in_race = false;
 
     context.init_kernel_thread(&ctx_pa, stack_a, &spin_a, 0);
     context.init_kernel_thread(&ctx_pb, stack_b, &spin_b, 0);
