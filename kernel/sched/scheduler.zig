@@ -590,6 +590,21 @@ pub fn waitpid(target: i32) ?WaitResult {
     return .{ .pid = z.pid, .exit_code = z.exit_code };
 }
 
+/// What a thread exited with, for a caller that is not its parent.
+///
+/// `waitpid` is the real answer and cannot be used here: it reaps from
+/// `current`, and the boot path has no `current` — it is not a thread. A
+/// boot selftest that spawns a process and wants to know how it went has no
+/// other way to ask.
+///
+/// Safe to read after the thread is dead because nothing on this
+/// architecture frees a Thread: there is no dead list and no reap. The day
+/// there is one, this becomes a use-after-free and has to move into it.
+pub fn exit_code_of(t: *const Thread) ?i32 {
+    if (t.state != .zombie) return null;
+    return t.exit_code;
+}
+
 pub fn kill(target_pid: Pid, sig: i32) bool {
     const target = process_table.lookup(target_pid) orelse return false;
     // Signal handling is its own future phase; for now the only
