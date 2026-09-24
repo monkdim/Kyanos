@@ -38,6 +38,11 @@ fn timer_irq(frame: *idt.InterruptFrame) callconv(.Interrupt) void {
     // for a whole round of the run queue — acknowledging afterwards would
     // stop the clock at the first preemption.
     idt.end_of_interrupt(TIMER_VECTOR);
+    // Before the switch, and before anything is moved: does the thread the
+    // scheduler believes is running match the stack the CPU is on? This is
+    // the one moment where that can be asked and answered, and it costs a
+    // compare.
+    sched.check_on_stack();
     // A real switch. This used to call sched.schedule(), which only chooses
     // the next thread without moving to it — so the comment here claimed
     // "the arch-level switch happens before we return from this IRQ" and

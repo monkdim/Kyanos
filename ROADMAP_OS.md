@@ -258,6 +258,26 @@ a bigger surface than the one measured here and pins the ABI to Linux's.
   out, one per racer. It is asked to stop now and parks at the top of its own
   loop, the one point where it holds nothing. Why that was not caught is the
   more useful half, and it is the gate entry below.
+- **The x86_64 scheduler's `yield` takes the same lock.** ✅ It set
+  `current = next` and then switched to it, and between those two the
+  scheduler's belief and the machine disagreed: the successor was named as
+  running while the CPU was still on the predecessor's stack. A tick landing
+  there re-entered `yield` with `prev` set to a thread that was not running,
+  and saved the caller's stack and resume address into that thread's context;
+  whatever switched to it later resumed on somebody else's stack, part way
+  through an interrupt handler, and left through an `iretq` whose frame had
+  been written over.
+  That was **seen once** — a general protection fault at exactly that `iretq`,
+  with RSP in low memory where no kernel thread's stack is — and then not
+  again in forty-nine boots, because the window is a handful of instructions
+  wide. So it is widened on purpose in a boot selftest
+  (`sched.preempt_window_spins`), and the timer asks the question directly:
+  is RSP inside the stack of the thread `current` names? **Without the guard,
+  the first tick in the widened window answers no and the boot does not
+  survive it, three times out of three. With it, ten boots finish and every
+  tick of every one of them answers yes.** The check is not selftest-only: it
+  runs on every tick of every boot, because an invariant only examined when
+  someone remembers to look is not an invariant.
 - **User pointers are validated on both architectures now.** x86_64 had
   none of it: `sys_read`, `sys_write` and `sys_open` cast the argument to a
   pointer and used it, so a bad one was a page fault in ring 0. x86 has no

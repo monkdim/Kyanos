@@ -19,6 +19,7 @@ const gdt = @import("../arch/x86_64/gdt.zig");
 const elf = @import("../loader/elf.zig");
 const loader = @import("../loader/load.zig");
 const process = @import("process.zig");
+const irqlock = @import("../sync/irqlock.zig");
 const vfs = @import("../fs/vfs.zig");
 const console = @import("../arch/x86_64/console.zig");
 
@@ -60,6 +61,10 @@ pub const Thread = struct {
     // valid FPU image, and zeroing it would unmask every SSE exception.
     context: context.Context = .{},
     kernel_stack_top: u64 = 0,
+    /// How big that stack is. Kept so `check_on_stack` has a range rather
+    /// than a single address to compare against; zero means "no stack of its
+    /// own", which is true of a Thread that has not been given one.
+    kernel_stack_bytes: u64 = 0,
     iret_rsp: u64 = 0,                      // for first entry to userspace
     next: ?*Thread = null,
     ticks_run: u64 = 0,
@@ -187,6 +192,7 @@ pub fn spawn_kthread(
     // the picture, "whatever CR3 was current" is sometimes a process's.
     t.context.cr3 = vmm.kernel().pml4_phys;
     t.kernel_stack_top = stack_top;
+    t.kernel_stack_bytes = stack_pages * pmm.PAGE_SIZE;
 
     queues[@intFromEnum(priority)].enqueue(t);
     return t;
@@ -231,6 +237,7 @@ pub fn spawn_user(path: []const u8) !*Thread {
     const kstack_pages = 4;
     const kstack_phys = pmm.alloc_pages(kstack_pages) orelse return error.OutOfMemory;
     t.kernel_stack_top = 0xFFFF_8000_0000_0000 + kstack_phys + kstack_pages * pmm.PAGE_SIZE;
+    t.kernel_stack_bytes = kstack_pages * pmm.PAGE_SIZE;
     t.context.cr3 = loaded.address_space.pml4_phys;
 
     // 4. Build the IRET frame so the first dispatch lands in user
@@ -293,6 +300,10 @@ var boot_context: context.Context = .{};
 /// this thread" wants yield() or preempt().
 pub fn schedule() void {
     if (frozen) return;
+    // Same reason as `yield`: this moves threads between `current` and the
+    // queues, and the timer's handler does too.
+    const guard = irqlock.acquire();
+    defer guard.release();
     const prev = current;
     if (prev) |p| {
         if (p.state == .running) {
@@ -312,6 +323,47 @@ pub fn schedule() void {
     current = null;
 }
 
+/// Spins inserted between `current = next` and the switch that makes it
+/// true, and nothing but a boot selftest ever sets it.
+///
+/// That window is where the scheduler's belief and the machine disagree:
+/// `current` names the successor while the CPU is still on the predecessor's
+/// stack. It is a handful of instructions wide, so a timer tick lands in it
+/// once in tens of thousands of boots — which is exactly often enough to
+/// produce one unexplained general protection fault and no way to reproduce
+/// it. Widening it on purpose is how the guard below was shown to be
+/// necessary rather than merely plausible.
+pub var preempt_window_spins: u32 = 0;
+
+/// Ticks that arrived while the CPU was not on the stack of the thread
+/// `current` names. Counted on every tick of every boot, not only during the
+/// selftest: it costs one compare, and an invariant that is only checked
+/// when someone remembers to look is not an invariant.
+pub var wrong_stack_ticks: u64 = 0;
+
+fn widen_preempt_window() void {
+    var i: u32 = 0;
+    while (i < preempt_window_spins) : (i += 1) asm volatile ("pause" ::: "memory");
+}
+
+/// Check, from the timer's handler, that the thread the scheduler believes is
+/// running is the one whose stack the CPU is standing on.
+///
+/// Called before `preempt`, so it sees the state the tick arrived in. A
+/// thread with no stack of its own is skipped, and so is the boot path, which
+/// has no Thread at all — `current` is null there and there is nothing to
+/// disagree with.
+pub fn check_on_stack() void {
+    const c = current orelse return;
+    if (c.kernel_stack_bytes == 0) return;
+    const rsp = asm volatile ("movq %%rsp, %[out]"
+        : [out] "=r" (-> u64),
+    );
+    const top = c.kernel_stack_top;
+    const bottom = top - c.kernel_stack_bytes;
+    if (rsp < bottom or rsp >= top) wrong_stack_ticks +%= 1;
+}
+
 /// Give up the CPU: pick the next runnable thread and actually switch to it.
 ///
 /// Separate from `schedule`, which chooses a successor without moving to it.
@@ -323,6 +375,27 @@ pub fn schedule() void {
 /// Returns when something switches back to the caller.
 pub fn yield() void {
     if (frozen) return;
+
+    // Held across the switch, and the two mechanisms interlock. `switch_to`
+    // does `pushfq; cli` on the way in and `popfq` on the way out, so it
+    // writes the outgoing thread's interrupt state onto that thread's own
+    // stack and restores the incoming thread's — which means a thread
+    // resumed inside this call comes back masked, exactly as it left, and
+    // this deferred release then puts back the flags the caller had before
+    // it yielded. A brand-new thread starts unmasked because
+    // `init_kernel_thread` writes 0x202 into that slot.
+    //
+    // Without it there is a window between `current = next` and the switch
+    // that makes it true. A tick landing there calls back into this function
+    // with `prev = current = next` — a thread that is not running — and
+    // saves the *caller's* stack and resume address into that thread's
+    // context. Whatever later switches to it resumes on a stack that belongs
+    // to somebody else, halfway through an interrupt handler, and leaves
+    // through an `iretq` whose frame has since been written over. That is a
+    // general protection fault with a low RSP, which is what was seen once
+    // in forty-nine boots before any of this was written down.
+    const guard = irqlock.acquire();
+    defer guard.release();
 
     const prev = current;
     const prev_ctx: *context.Context = if (prev) |p| &p.context else &boot_context;
@@ -344,7 +417,8 @@ pub fn yield() void {
             // The CPU takes an interrupt in ring 3 onto the stack named by the
             // TSS, so RSP0 has to follow whichever thread is running — a stale
             // one would push the frame onto a stack another thread is using.
-            if (next.kernel_stack_top != 0) gdt.set_kernel_stack(next.kernel_stack_top);
+                if (next.kernel_stack_top != 0) gdt.set_kernel_stack(next.kernel_stack_top);
+            if (preempt_window_spins != 0) widen_preempt_window();
             context.switch_to(prev_ctx, &next.context);
             return;
         }
@@ -369,9 +443,13 @@ pub fn yield() void {
 /// End the calling thread. It never runs again, so this does not return: the
 /// switch away from it is the last thing that happens on its stack.
 pub fn thread_exit(code: i32) noreturn {
-    if (current) |c| {
-        c.state = .zombie;
-        c.exit_code = code;
+    {
+        const guard = irqlock.acquire();
+        defer guard.release();
+        if (current) |c| {
+            c.state = .zombie;
+            c.exit_code = code;
+        }
     }
     yield();
     // Only reached if there was nowhere to go, which means nothing is left to
@@ -424,9 +502,15 @@ pub fn preempt() void {
 }
 
 pub fn block(reason: WaitReason) void {
-    if (current) |c| {
-        c.state = .blocked;
-        c.wait = reason;
+    {
+        // Same reason as `yield`: the timer's handler moves threads between
+        // `current` and the queues, and so does this.
+        const guard = irqlock.acquire();
+        defer guard.release();
+        if (current) |c| {
+            c.state = .blocked;
+            c.wait = reason;
+        }
     }
     // yield, not schedule: a blocked thread has to stop running, and until
     // now this only *chose* a successor without moving to it, so the caller
@@ -436,6 +520,8 @@ pub fn block(reason: WaitReason) void {
 }
 
 pub fn wake(t: *Thread) void {
+    const guard = irqlock.acquire();
+    defer guard.release();
     if (t.state != .blocked) return;
     t.state = .runnable;
     t.wait = .none;
@@ -443,10 +529,14 @@ pub fn wake(t: *Thread) void {
 }
 
 pub fn exit(code: i32) noreturn {
-    if (current) |c| {
-        c.state = .zombie;
-        c.exit_code = code;
-        // Reaping is the parent's responsibility via waitpid.
+    {
+        const guard = irqlock.acquire();
+        defer guard.release();
+        if (current) |c| {
+            c.state = .zombie;
+            c.exit_code = code;
+            // Reaping is the parent's responsibility via waitpid.
+        }
     }
     // Switch away for real. This used to be `while (true) schedule()`, which
     // picks a successor but never moves to it — so a thread that called exit
