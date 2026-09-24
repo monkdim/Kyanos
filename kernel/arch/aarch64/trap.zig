@@ -135,33 +135,16 @@ const ENOSYS: i64 = -38;
 /// same "you got less than you asked for" it already has to handle.
 const HEAP_MAX: u64 = 64 * 1024 * 1024;
 
-/// The running process's heap.
-///
-/// Module state rather than a field of a process, because this architecture
-/// has no process table: one program is loaded, entered, and torn down before
-/// the next. `set_heap` is what the loader calls to say whose it is, and it is
-/// the thing that has to become a per-process field the moment there are two.
-var brk_space: ?*paging.AddressSpace = null;
-var brk_start: u64 = 0;
-var brk_current: u64 = 0;
-
-/// Told to the kernel by whoever loaded the program, before it is entered.
-pub fn set_heap(space: *paging.AddressSpace, start: u64) void {
-    brk_space = space;
-    brk_start = start;
-    brk_current = start;
-}
-
-pub fn clear_heap() void {
-    brk_space = null;
-    brk_start = 0;
-    brk_current = 0;
-}
-
-/// Where the break ended up, so a teardown knows which pages to give back.
-pub fn heap_end() u64 {
-    return brk_current;
-}
+// The heap used to live here, as three module variables and a `set_heap`
+// the loader called before entering a program. The comment above them said
+// what it was waiting for: "it is the thing that has to become a per-process
+// field the moment there are two." `fork` made two.
+//
+// It is `Process.brk` and `Process.brk_start` now — fields that have existed
+// since the process table landed and that nothing filled in — reached through
+// `sched.current_process()`. What that replaced was a guard comparing
+// TTBR0_EL1 against the one break's address space, which could only ever
+// refuse the second process rather than give it a heap of its own.
 
 /// How much of a single `write` the kernel will copy in one go. A user
 /// program can name any length it likes; this is the bound on what that can
@@ -584,12 +567,6 @@ fn read_sp_el0() u64 {
     );
 }
 
-fn read_ttbr0() u64 {
-    return asm volatile ("mrs %[out], ttbr0_el1"
-        : [out] "=r" (-> u64),
-    );
-}
-
 /// exec(path) — replace this process's image with the one at `path`.
 ///
 /// Returns only when it fails, and that is the whole design of it. Once the
@@ -873,40 +850,30 @@ fn sys_write(fd: u64, buf: u64, len: u64) i64 {
 /// running. A refusal still reports, because a refused brk is a failure the
 /// log has to explain.
 fn sys_brk(requested: u64) i64 {
-    const space = brk_space orelse return @bitCast(@as(u64, 0));
+    // Whose heap this is: the calling *process's*, which is a question only
+    // the thread running it can answer. A process with no image behind it —
+    // nothing in the table, or a program the boot path entered without
+    // registering one — has no break and is told so, rather than being handed
+    // somebody else's.
+    const p = sched.current_process() orelse return @bitCast(@as(u64, 0));
+    if (p.brk_start == 0) return @bitCast(@as(u64, 0));
+    const space = p.address_space;
 
-    // Whose heap this is.
-    //
-    // `brk_space` is one variable for the whole kernel, set by whoever
-    // loaded the program, and until `fork` existed there was only ever one
-    // process that could reach this code. There are two now, running in two
-    // address spaces, and only one of them owns the break — so a `brk` from
-    // the other would allocate pages and map them into the *parent*: memory
-    // the caller cannot see, appearing in a process that did not ask for it,
-    // and no error anywhere.
-    //
-    // Checked against TTBR0_EL1 rather than against a record of which
-    // process is current, because TTBR0 is the address space the caller is
-    // actually running in — the hardware's answer, not the kernel's belief
-    // about it. A child gets ENOMEM, which is a refusal it can handle; a
-    // forked process with no heap of its own is a limitation, and one
-    // silently growing its parent's is a bug.
-    if (read_ttbr0() != paging.ttbr_value(space)) return ENOMEM;
-    if (requested == 0) return @intCast(brk_current);
-    if (requested < brk_start) return @intCast(brk_current);
-    if (requested > brk_start +| HEAP_MAX) return @intCast(brk_current);
+    if (requested == 0) return @intCast(p.brk);
+    if (requested < p.brk_start) return @intCast(p.brk);
+    if (requested > p.brk_start +| HEAP_MAX) return @intCast(p.brk);
 
-    if (requested <= brk_current) {
+    if (requested <= p.brk) {
         // Shrinking moves the break without unmapping. The pages stay until
         // the process is torn down, which is what the x86_64 side does too:
         // a program that shrinks its heap almost always grows it again, and
         // handing the frames back only to take them straight out again costs
         // more than holding them.
-        brk_current = requested;
-        return @intCast(brk_current);
+        p.brk = requested;
+        return @intCast(p.brk);
     }
 
-    var addr = (brk_current + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+    var addr = (p.brk + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
     const end = (requested + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
     while (addr < end) : (addr += PAGE_SIZE) {
         const phys = pmm.alloc_page() orelse {
@@ -916,7 +883,7 @@ fn sys_brk(requested: u64) i64 {
             console.print("  brk: no physical page for ");
             console.print_hex(addr);
             console.println("");
-            return @intCast(brk_current);
+            return @intCast(p.brk);
         };
         const zeroed: [*]u8 = @ptrFromInt(vm.phys_to_virt(phys));
         @memset(zeroed[0..PAGE_SIZE], 0);
@@ -926,12 +893,12 @@ fn sys_brk(requested: u64) i64 {
             console.print(": ");
             console.println(@errorName(err));
             pmm.free_page(phys);
-            return @intCast(brk_current);
+            return @intCast(p.brk);
         };
-        brk_current = addr + PAGE_SIZE;
+        p.brk = addr + PAGE_SIZE;
     }
-    brk_current = requested;
-    return @intCast(brk_current);
+    p.brk = requested;
+    return @intCast(p.brk);
 }
 
 const PAGE_SIZE: u64 = 4096;

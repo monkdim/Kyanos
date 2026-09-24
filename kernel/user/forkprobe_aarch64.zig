@@ -37,6 +37,12 @@ const NR_EXIT: u64 = 12;
 const MARK_PARENT: u64 = 0x1111_2222_3333_4444;
 const MARK_CHILD: u64 = 0x5555_6666_7777_8888;
 
+/// The same question asked of the heap rather than the data page: two
+/// different numbers, each written by one half into the first word of a page
+/// it asked `brk` for.
+const HEAP_PARENT: u64 = 0xAAAA_BBBB_CCCC_DDDD;
+const HEAP_CHILD: u64 = 0xEEEE_FFFF_0101_2323;
+
 var shared: u64 = MARK_PARENT;
 
 fn read_shared() u64 {
@@ -176,23 +182,37 @@ export fn _start() callconv(.C) noreturn {
 
     // Whose heap is whose.
     //
-    // The kernel holds one break for the whole machine, set by whoever loaded
-    // this program, and the child runs in a different address space. Asking
-    // from the child has to be refused — ENOMEM — because the only thing the
-    // kernel could otherwise do is grow the *parent's* heap on the child's
-    // behalf, into pages the child cannot see. Asking from the parent has to
-    // work, because it is the parent's break.
-    const brk = syscall3(NR_BRK, 0, 0, 0);
-    if (child) {
-        if (brk != -12) {
-            write("forkprobe: the child was given the parent's heap\n");
-            exit(10);
-        }
-    } else {
-        if (brk <= 0) {
-            write("forkprobe: the parent lost its own heap\n");
-            exit(11);
-        }
+    // Both halves have one, and they are not the same heap. Each asks where
+    // its break is, grows it by a page, writes its own number into the first
+    // word of that page and requires to read its own number back — and the
+    // parent checks again at the end, after the child has certainly been and
+    // gone.
+    //
+    // A kernel that keeps one break for the whole machine fails this, however
+    // it fails: if the child is refused it cannot grow at all, and if it is
+    // answered it grows the *parent's* heap, mapping pages into a space the
+    // child cannot even reach and writing the child's number where the parent
+    // will find it.
+    const brk0 = syscall3(NR_BRK, 0, 0, 0);
+    if (brk0 <= 0) {
+        write("forkprobe: this half has no heap of its own\n");
+        exit(if (child) 10 else 11);
+    }
+    const want: u64 = @as(u64, @intCast(brk0)) + 0x1000;
+    const grown = syscall3(NR_BRK, want, 0, 0);
+    if (grown < @as(i64, @intCast(want))) {
+        write("forkprobe: this half could not grow its heap\n");
+        exit(if (child) 12 else 13);
+    }
+
+    // The break points one past the last valid byte, so the page that was
+    // just added starts exactly where the break used to be.
+    const heap_cell: *volatile u64 = @ptrFromInt(@as(usize, @intCast(brk0)));
+    const mine: u64 = if (child) HEAP_CHILD else HEAP_PARENT;
+    heap_cell.* = mine;
+    if (heap_cell.* != mine) {
+        write("forkprobe: this half could not write its own heap\n");
+        exit(if (child) 14 else 15);
     }
 
     if (child) {
@@ -210,6 +230,10 @@ export fn _start() callconv(.C) noreturn {
     if (read_shared() != MARK_PARENT) {
         write("forkprobe: the child's write reached the parent — one page, not two\n");
         exit(9);
+    }
+    if (heap_cell.* != HEAP_PARENT) {
+        write("forkprobe: the child's heap is the parent's heap\n");
+        exit(16);
     }
     exit(60);
 }

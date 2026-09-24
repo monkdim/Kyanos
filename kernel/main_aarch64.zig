@@ -702,7 +702,7 @@ fn shell_program() void {
     };
     const sh_proc = begin_process("shell", proc.space, proc.brk_start);
 
-    const ran = run_until_done(&proc, sh_asid);
+    const ran = run_until_done(&proc, sh_asid, sh_proc);
     const status = ran.status;
     const code = ran.code;
     const wrote = ran.wrote;
@@ -757,13 +757,13 @@ fn demo_program() void {
 
     paging.activate(&proc.space);
     trap.reset();
-    trap.set_heap(&proc.space, proc.brk_start);
+    sched.set_current_process(demo_proc);
     const status = trap.enter_user(proc.entry, proc.user_sp);
     const code = trap.exit_status;
     const wrote = trap.bytes_written;
-    const heap_used = trap.heap_end() - proc.brk_start;
-    const heap_end = trap.heap_end();
-    trap.clear_heap();
+    const heap_end = if (demo_proc) |dp| dp.brk else proc.brk_start;
+    const heap_used = heap_end - proc.brk_start;
+    sched.set_current_process(null);
     paging.deactivate();
     loader.release(&proc, heap_end);
     if (demo_proc) |dp| sched.exit_process(dp, @intCast(code)) else sched.free_asid(demo_asid);
@@ -817,7 +817,7 @@ fn exec_program() void {
     const p = begin_process("exec", proc.space, proc.brk_start);
 
     const before = trap.execs;
-    const ran = run_until_done(&proc, asid);
+    const ran = run_until_done(&proc, asid, p);
     loader.release(&proc, ran.heap_end);
     if (p) |pp| sched.exit_process(pp, @intCast(ran.code)) else sched.free_asid(asid);
 
@@ -882,18 +882,18 @@ const Ran = struct {
 /// it is the difference between "fatal because the design says so" and
 /// "fatal because the old image was already gone", and the second one cannot
 /// be improved later without finding this line first.
-fn run_until_done(proc: *loader.Loaded, asid: u16) Ran {
+fn run_until_done(proc: *loader.Loaded, asid: u16, p: ?*sched.Process) Ran {
     var out = Ran{};
     while (true) {
         paging.activate(&proc.space);
         trap.reset();
-        trap.set_heap(&proc.space, proc.brk_start);
+        sched.set_current_process(p);
         const status = trap.enter_user(proc.entry, proc.user_sp);
         out.status = status;
         out.code = trap.exit_status;
         out.wrote += trap.bytes_written;
-        out.heap_end = trap.heap_end();
-        trap.clear_heap();
+        out.heap_end = if (p) |pp| pp.brk else proc.brk_start;
+        sched.set_current_process(null);
 
         if (status != trap.EXIT_EXEC) {
             paging.deactivate();
@@ -932,6 +932,24 @@ fn run_until_done(proc: *loader.Loaded, asid: u16) Ran {
         // is here because the architecture requires it.
         sched.flush_asid(asid);
         proc.* = next;
+        // A new image means a new heap: the break starts again at the page
+        // after everything the *new* program occupies, and the old one's
+        // pages went back with the old image. Same process, same PID, a
+        // different break.
+        if (p) |pp| {
+            // The Process's copy of the address space too, and this is the
+            // one that is easy to miss: `register_process` copied the space
+            // by value when the *first* image was loaded, so leaving it alone
+            // points the Process at a root that has just been freed. Nothing
+            // reads it until a system call needs the process's own tables —
+            // and the first one that does is `brk`, which then maps the new
+            // image's heap into the old image's dead space. Measured: the
+            // exec'd Clarity demo died with a data abort at 0x4011e008, one
+            // page past its image, which is exactly where its heap starts.
+            pp.address_space.* = next.space;
+            pp.brk_start = next.brk_start;
+            pp.brk = next.brk_start;
+        }
         out.execs += 1;
     }
 }
@@ -1086,12 +1104,12 @@ fn run_init(announce: bool) InitRun {
 
     paging.activate(&proc.space);
     trap.reset();
-    trap.set_heap(&proc.space, proc.brk_start);
+    sched.set_current_process(ip);
     const status = trap.enter_user(proc.entry, proc.user_sp);
     const wrote = trap.bytes_written;
     const code = trap.exit_status;
-    const heap_end = trap.heap_end();
-    trap.clear_heap();
+    const heap_end = if (ip) |p| p.brk else proc.brk_start;
+    sched.set_current_process(null);
     paging.deactivate();
     loader.release(&proc, heap_end);
     if (ip) |p| sched.exit_process(p, @intCast(code)) else sched.free_asid(asid);
