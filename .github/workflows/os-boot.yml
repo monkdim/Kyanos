@@ -185,6 +185,11 @@ jobs:
             # invisible while the two threads were two separate functions.
             grep -q "\[B\] round 1" "serial-$attempt.log" || missing="$missing thread-argument"
             grep -q "\[ok\] preemption" "serial-$attempt.log" || missing="$missing preemption"
+            # The window between the scheduler choosing a thread and switching
+            # to it, held open on purpose so a tick lands inside it. Without
+            # the guard in yield(), the same build does not survive this test
+            # — which is the only reason the zero it reports means anything.
+            grep -q "\[ok\] preempt window" "serial-$attempt.log" || missing="$missing preempt-window"
             grep -q "\[ok\] fpu switch" "serial-$attempt.log" || missing="$missing fpu-switch"
             grep -q "\[ok\] vfs" "serial-$attempt.log" || missing="$missing vfs"
             grep -q "\[ok\] vfs: readdir packed" "serial-$attempt.log" || missing="$missing vfs-readdir"
@@ -241,6 +246,7 @@ jobs:
           cat serial-smap.log
           missing=""
           grep -q "\[ok\] smep+smap" serial-smap.log || missing="$missing smep-smap-enabled"
+          grep -q "\[ok\] preempt window" serial-smap.log || missing="$missing preempt-window"
           grep -q "\[ok\] user pointers" serial-smap.log || missing="$missing user-pointers"
           grep -q "clarity-demo: all checks passed" serial-smap.log || missing="$missing clarity-program"
           grep -q "KyanOS: userspace complete." serial-smap.log || missing="$missing kernel-outlived"
