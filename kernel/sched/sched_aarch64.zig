@@ -204,7 +204,28 @@ pub fn current_process() ?*Process {
 /// heap is a field of the Process now, so there is nothing left for the
 /// second one to carry.
 pub fn set_current_process(p: ?*Process) void {
-    if (current) |t| t.proc = p else boot_proc = p;
+    if (current) |t| {
+        t.proc = p;
+        return;
+    }
+    boot_proc = p;
+
+    // And the boot context's address space, which is the same statement made
+    // to the other half of the machine.
+    //
+    // A Thread carries its TTBR0 in its Context and `clarity_switch_to` puts
+    // it back; the boot path's context carried a zero, which means "leave
+    // TTBR0 alone". That was true for as long as the boot path never gave up
+    // the CPU while it had a program at EL0 — and then `wait` did. The shell
+    // runs from the boot path; its `run` forks, waits, and the wait yields to
+    // the child's thread, which installs the child's address space. Coming
+    // back, the core was still in it: the shell carried on at EL0 reading a
+    // *copy* of its own memory, frozen at the fork and then freed.
+    //
+    // Measured, from the serial test: the shell's second `run` printed the
+    // first one's path spliced with fragments of older lines —
+    // "run: cannot run /nope", then "lo.txt", then "ial — no such file".
+    boot_context.ttbr0 = if (p) |pp| paging.ttbr_value(pp.address_space) else 0;
 }
 
 pub fn queue_len(p: Priority) usize {
@@ -1060,8 +1081,7 @@ fn wake_waiters_for(parent_pid: Pid, child_pid: Pid) void {
 /// reaped it first — so the answer is always re-derived from the zombie list
 /// rather than carried in the wake.
 pub fn waitpid(target: Pid) ?Waited {
-    const t = current orelse return null;
-    const p = t.proc orelse return null;
+    const p = current_process() orelse return null;
 
     while (true) {
         const guard = irqlock.acquire();
@@ -1074,6 +1094,27 @@ pub fn waitpid(target: Pid) ?Waited {
             guard.release();
             return null;
         }
+
+        // The boot path waits by hand.
+        //
+        // It is not a Thread — it is the kernel's initial stack — so there is
+        // nothing to put on a run queue and nothing for `wake` to find. What
+        // it can do is give the CPU to the run queue and look again, which is
+        // exactly what `run_queued` does and the only thing "waiting" can
+        // mean here. Most of the programs on this machine still run from the
+        // boot path, the shell among them, so this is not a corner: it is how
+        // the shell's own `run` waits for the program it started.
+        //
+        // If nothing is runnable and no child has finished, nobody is going
+        // to make one finish, and yielding again would spin forever. Saying
+        // so is better than hanging: the caller gets the same answer it would
+        // for a child that never existed, and the boot carries on.
+        const t = current orelse {
+            guard.release();
+            if (!anything_runnable()) return null;
+            yield();
+            continue;
+        };
 
         // Nothing yet, and something to wait for. Going to sleep is three
         // steps, and all three are under the guard the whole way to the

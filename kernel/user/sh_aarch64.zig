@@ -42,7 +42,9 @@ const NR_READ: u64 = 0;
 const NR_WRITE: u64 = 1;
 const NR_OPEN: u64 = 2;
 const NR_CLOSE: u64 = 3;
+const NR_FORK: u64 = 10;
 const NR_EXEC: u64 = 11;
+const NR_WAIT: u64 = 13;
 const NR_EXIT: u64 = 12;
 const NR_READDIR: u64 = 34;
 
@@ -139,12 +141,19 @@ fn split(line: []const u8) struct { word: []const u8, rest: []const u8 } {
 var ran: u64 = 0;
 var unknown: u64 = 0;
 
-/// run PATH — hand this process over to the program at PATH.
+/// run PATH — start the program at PATH *beside* this shell, and wait.
 ///
-/// It only returns when the kernel refused, and then it says why. There is
-/// no fork, so this is exec and nothing else: the program takes the shell's
-/// place. A shell that could start a program *beside* itself needs a second
-/// process, which needs fork.
+/// This used to be exec and nothing else, and the comment here used to say
+/// why: "the program takes the shell's place. A shell that could start a
+/// program beside itself needs a second process, which needs fork." It has
+/// one now. Three calls, in the order every shell has made them since 1975:
+/// fork, exec in the child, wait in the parent.
+///
+/// The child must not come back here under any circumstance. `exec` returns
+/// only when it failed, and a child that returned into the loop below would
+/// be a *second shell* reading the same keyboard — two prompts, every line
+/// going to whichever process happened to be in `read` first. So the child's
+/// only ways out of this function are becoming another program and exiting.
 fn run(path: []const u8) void {
     if (path.len == 0) {
         write("run: which program?\n");
@@ -160,11 +169,46 @@ fn run(path: []const u8) void {
     for (path, 0..) |c, i| buf[i] = c;
     buf[path.len] = 0;
 
-    const rc = syscall3(NR_EXEC, @intFromPtr(&buf), 0, 0);
-    // exec does not return when it works, so anything here is a refusal.
-    write("run: cannot run ");
+    const pid = syscall3(NR_FORK, 0, 0, 0);
+    if (pid < 0) {
+        write("run: cannot start another process\n");
+        return;
+    }
+
+    if (pid == 0) {
+        const rc = syscall3(NR_EXEC, @intFromPtr(&buf), 0, 0);
+        write("run: cannot run ");
+        write(path);
+        if (rc == -2) write(" — no such file\n") else write(" — refused\n");
+        // 127 is what a shell has always answered for a command it could not
+        // run, and exiting rather than returning is what keeps there being
+        // one shell.
+        exit(127);
+    }
+
+    var status: i32 = -1;
+    const got = syscall3(NR_WAIT, @intFromPtr(&status), @bitCast(pid), 0);
+    if (got != pid) {
+        write("run: lost track of it\n");
+        return;
+    }
+    const code = @as(*volatile i32, &status).*;
+    write("run: ");
     write(path);
-    if (rc == -2) write(" — no such file\n") else write(" — refused\n");
+    if (code == 0) {
+        write(" finished\n");
+    } else {
+        write(" exited ");
+        // Negative is how the kernel reports a program that faulted or was
+        // killed, and it is worth not printing as four billion.
+        if (code < 0) {
+            write("-");
+            write_dec(@intCast(-@as(i64, code)));
+        } else {
+            write_dec(@intCast(code));
+        }
+        write("\n");
+    }
 }
 
 fn help() void {
@@ -175,12 +219,11 @@ fn help() void {
         \\  count TEXT    how many characters TEXT is
         \\  cat PATH      write out a file
         \\  ls [PATH]     list a directory, / if none is named
-        \\  run PATH      replace this shell with the program at PATH
+        \\  run PATH      run the program at PATH and wait for it
         \\  exit [N]      leave, with status N
         \\
-        \\`run` is exec: the program takes this shell's place rather than
-        \\starting beside it, because there is no fork yet. Nothing comes
-        \\back here afterwards.
+        \\`run` forks: the program starts beside this shell rather than in
+        \\its place, and the prompt comes back with what it exited.
         \\
     );
 }
