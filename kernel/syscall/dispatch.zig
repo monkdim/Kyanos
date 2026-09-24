@@ -119,7 +119,7 @@ pub fn dispatch(nr: u64, args: Args) i64 {
         .mmap => return sys_mmap(args),
         .brk => return sys_brk(args),
         .exit => return sys_exit(args),
-        .fork => return sys_fork(),
+        .fork => return sys_fork(args),
         .exec => return sys_exec(args),
         .wait => return sys_wait(args),
         .kill => return sys_kill(args),
@@ -140,6 +140,16 @@ pub const Args = struct {
     a3: u64,
     a4: u64,
     a5: u64,
+
+    /// The whole of what the trampoline saved, for the one system call that
+    /// needs more than its arguments. `fork` has to give the child the
+    /// parent's resume point, and that lives here rather than in a0-a5.
+    ///
+    /// Passed down the call chain rather than parked in a global on purpose:
+    /// a timer that preempted one thread mid-call and let another reach this
+    /// same code would leave a global naming the wrong frame, and the failure
+    /// would be a child resuming inside another process.
+    user: *const arch_syscall.UserFrame,
 };
 
 fn errno(e: Errno) i64 {
@@ -407,8 +417,8 @@ fn sys_clock_gettime(args: Args) i64 {
 
 // ── Process syscalls ─────────────────────────────
 
-fn sys_fork() i64 {
-    return sched.fork() catch |err| switch (err) {
+fn sys_fork(args: Args) i64 {
+    return sched.fork(args.user) catch |err| switch (err) {
         error.OutOfMemory => -@as(i64, @intFromEnum(Errno.enomem)),
         else => -@as(i64, @intFromEnum(Errno.eagain)),
     };

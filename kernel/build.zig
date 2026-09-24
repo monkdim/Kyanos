@@ -84,6 +84,20 @@ pub fn build(b: *std.Build) void {
         .root_source_file = init_prog.getEmittedBin(),
     });
 
+    // /bin/clarity-forkprobe: the first program to call fork(2).
+    const fork_prog = b.addExecutable(.{
+        .name = "clarity-forkprobe",
+        .root_source_file = b.path("user/forkprobe.zig"),
+        .target = user_target,
+        .optimize = .ReleaseSmall,
+    });
+    fork_prog.setLinkerScript(b.path("user/user.ld"));
+    fork_prog.entry = .{ .symbol_name = "_start" };
+    fork_prog.pie = false;
+    kernel.root_module.addAnonymousImport("forkprobe_elf", .{
+        .root_source_file = fork_prog.getEmittedBin(),
+    });
+
     // /bin/clarity-regprobe: a program that reads the registers it was
     // started with, before anything else can write to them.
     const reg_prog = b.addExecutable(.{

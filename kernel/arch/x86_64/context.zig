@@ -181,12 +181,134 @@ pub const IretFrame = extern struct {
 /// says a program starts in. It goes before the CR3 load only because it is
 /// tidier to read that way — the area is an HHDM address, which every address
 /// space maps, so either side would work.
-pub fn enter_userland(cr3: u64, frame_rsp: u64, fpu_area: u64) noreturn {
+/// Enter ring 3 with a register file taken from somewhere, rather than a
+/// blank one.
+///
+/// `enter_userland` gives a program zeroes, which is what a program starting
+/// at its ELF entry point is entitled to and all it can use. A forked child is
+/// not starting: it is resuming, in the middle of a function, and the System V
+/// ABI says a system call destroys %rcx and %r11 *and nothing else* — so the
+/// program may be keeping live values in any other register across its call to
+/// fork(2). Handing it zeroes would be the same bug this kernel fixed on the
+/// AArch64 side, in the other direction.
+///
+/// %rax is not taken from the frame. It is the one register fork(2) is defined
+/// to change, and zero is the child's answer.
+///
+/// %rcx and %r11 are zeroed rather than restored, because the ABI says a
+/// system call is entitled to destroy them and the saved values are the
+/// trampoline's own (the return address and RFLAGS `syscall` put there).
+///
+/// `regs` is reached after CR3 has changed, which is safe because it is a
+/// kernel heap address and every address space maps the upper half.
+pub fn enter_userland_regs(cr3: u64, frame_rsp: u64, fpu_area: u64, regs: *const Regs, gs_kernel_base: u64) noreturn {
     asm volatile (
         \\ cli
-        \\ fxrstor (%%rdx)
-        \\ movq %%rax, %%cr3
-        \\ movq %%rcx, %%rsp
+        // The GS bases, written rather than swapped. See enter_userland.
+        \\ mov %%r10, %%rax
+        \\ mov %%r10, %%rdx
+        \\ shr $32, %%rdx
+        \\ mov $0xC0000101, %%ecx
+        \\ wrmsr
+        \\ mov %%r10, %%rax
+        \\ mov %%r10, %%rdx
+        \\ shr $32, %%rdx
+        \\ mov $0xC0000102, %%ecx
+        \\ wrmsr
+        \\ fxrstor (%%r8)
+        \\ movq %%rdi, %%cr3
+        \\ movq %%rsi, %%rsp
+        \\ movq 0(%%r9), %%rbx
+        \\ movq 8(%%r9), %%rbp
+        \\ movq 16(%%r9), %%r12
+        \\ movq 24(%%r9), %%r13
+        \\ movq 32(%%r9), %%r14
+        \\ movq 40(%%r9), %%r15
+        \\ movq 48(%%r9), %%rdi
+        \\ movq 56(%%r9), %%rsi
+        \\ movq 64(%%r9), %%rdx
+        \\ movq 72(%%r9), %%r10
+        \\ movq 80(%%r9), %%r8
+        \\ movq 88(%%r9), %%r9
+        \\ xor %%eax, %%eax
+        \\ xor %%ecx, %%ecx
+        \\ xor %%r11d, %%r11d
+        \\ iretq
+        :
+        : [cr3] "{rdi}" (cr3),
+          [frame] "{rsi}" (frame_rsp),
+          [fpu] "{r8}" (fpu_area),
+          [regs] "{r9}" (regs),
+          [gsk] "{r10}" (gs_kernel_base),
+        : "memory"
+    );
+    unreachable;
+}
+
+/// The twelve registers a forked child is owed, in the order
+/// `syscall_entry` pushes them — so a pointer to the saved frame is a
+/// pointer to this. The offsets are hard-coded in the assembly above.
+pub const Regs = extern struct {
+    rbx: u64,
+    rbp: u64,
+    r12: u64,
+    r13: u64,
+    r14: u64,
+    r15: u64,
+    rdi: u64,
+    rsi: u64,
+    rdx: u64,
+    r10: u64,
+    r8: u64,
+    r9: u64,
+};
+
+/// Save the live floating-point state into `area`, which must be 16-byte
+/// aligned. Used when forking: the parent is mid-call with its own values in
+/// the register file, and the child is owed a copy of them.
+pub fn fxsave_into(area: *[512]u8) void {
+    asm volatile ("fxsave (%[a])"
+        :
+        : [a] "r" (area),
+        : "memory"
+    );
+}
+
+pub fn enter_userland(cr3: u64, frame_rsp: u64, fpu_area: u64, gs_kernel_base: u64) noreturn {
+    asm volatile (
+        \\ cli
+        // The GS bases, written rather than swapped.
+        //
+        // `swapgs` exchanges GS.base with IA32_KERNEL_GS_BASE, so what it
+        // leaves behind depends on which way round they already were — and
+        // getting here does not guarantee that. An interrupt taken in ring 3
+        // does no swapgs, so the handler runs with the *user* base; if it
+        // then switches threads and the new one enters ring 3 through here, a
+        // swap would put the per-CPU pointer in ring 3's GS and zero in the
+        // shadow. The next system call would swap back to zero and store the
+        // user stack at address 8.
+        //
+        // That is not hypothetical: it is a page fault at cr2=0x8, in ring 0,
+        // with %rsp still holding a user address, on one boot in three, as
+        // soon as two processes existed at once to be switched between.
+        //
+        // Writing both explicitly costs two wrmsr and cannot be got wrong by
+        // arriving from somewhere unexpected. Both get the per-CPU pointer —
+        // see syscall.zig's init for why this kernel keeps them equal rather
+        // than keeping a separate user value.
+        \\ mov %%r10, %%rax
+        \\ mov %%r10, %%rdx
+        \\ shr $32, %%rdx
+        \\ mov $0xC0000101, %%ecx
+        \\ wrmsr
+        \\ mov %%r10, %%rax
+        \\ mov %%r10, %%rdx
+        \\ shr $32, %%rdx
+        \\ mov $0xC0000102, %%ecx
+        \\ wrmsr
+        \\ fxrstor (%%r8)
+        \\ movq %%rdi, %%cr3
+        \\ movq %%rsi, %%rsp
         // Every general register, because the register file is not the
         // kernel's to leave lying around. `iretq` pops RIP, CS, RFLAGS, RSP
         // and SS and nothing else, so without this rax through r15 reach
@@ -222,12 +344,12 @@ pub fn enter_userland(cr3: u64, frame_rsp: u64, fpu_area: u64) noreturn {
         \\ xor %%r13d, %%r13d
         \\ xor %%r14d, %%r14d
         \\ xor %%r15d, %%r15d
-        \\ swapgs
         \\ iretq
         :
-        : [cr3] "{rax}" (cr3),
-          [frame] "{rcx}" (frame_rsp),
-          [fpu] "{rdx}" (fpu_area),
+        : [cr3] "{rdi}" (cr3),
+          [frame] "{rsi}" (frame_rsp),
+          [fpu] "{r8}" (fpu_area),
+          [gsk] "{r10}" (gs_kernel_base),
         : "memory"
     );
     unreachable;
