@@ -212,6 +212,24 @@ pub fn build(b: *std.Build) void {
         .root_source_file = sh_prog_arm.getEmittedBin(),
     });
 
+    // /bin/clarity-exec for aarch64: a program that asks to be replaced.
+    //
+    // Small on purpose. It is the only way the *plain* boot — no keyboard,
+    // nothing to type with — can show exec working end to end: a gate that
+    // went through the shell would run only in the headless serial job.
+    const exec_prog_arm = b.addExecutable(.{
+        .name = "clarity-exec-aarch64",
+        .root_source_file = b.path("user/exectest_aarch64.zig"),
+        .target = user_arm_target,
+        .optimize = .ReleaseSmall,
+    });
+    exec_prog_arm.setLinkerScript(b.path("user/user.ld"));
+    exec_prog_arm.entry = .{ .symbol_name = "_start" };
+    exec_prog_arm.pie = false;
+    kernel_arm.root_module.addAnonymousImport("exec_elf_aarch64", .{
+        .root_source_file = exec_prog_arm.getEmittedBin(),
+    });
+
     // /bin/clarity-demo for aarch64: the same generated C as the x86_64 one,
     // linked against the same C library. Nothing in user/clarity_demo.c knows
     // which machine it is for — `clarity cc --freestanding` emits portable C

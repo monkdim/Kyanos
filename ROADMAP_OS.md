@@ -66,8 +66,9 @@ every pull request; anything not gated is called out as unverified.
 
   This is no longer "the start of the Apple Silicon track". It is not parity
   either: there is a thread scheduler and a process table on this side now,
-  but no `exec`, so a program still cannot start another one. See
-  **Outstanding on aarch64** below.
+  and `exec`, so a program can replace itself with another — but no `fork`,
+  so it cannot start one *beside* itself. See **Outstanding on aarch64**
+  below.
 - **The kernel reaches userspace.** It writes a small ELF to
   `/bin/clarity-init`, and `spawn_user` reads it back off the VFS, parses it,
   maps its segments into a fresh address space, switches CR3 and enters ring
@@ -367,12 +368,38 @@ What is left, in rough order:
   "not a directory" rather than printing nothing. Driven over the serial line
   by `tools/serial_check.py` on every PR: `ls /`, `ls /bin`, and `ls` on a
   file.
-- **`exec`, so the shell can start a program.** Every program on this machine
-  is loaded by the boot path from an ELF embedded in the kernel image and run
-  to completion in a fixed order. The shell can run its own built-in commands and
-  nothing else. The process table it needed first exists now, so this is the
-  next thing on this architecture: a PID, an address space and a break are
-  all there to be replaced — what is missing is the call that replaces them.
+- **`exec`, so a program can start a program.** ✅ The syscall number and the
+  userspace contract already existed — `exec = 11` in `syscall/dispatch.zig`
+  and `SYS_EXEC` in `stdlib/kernel_abi.clarity`, implemented on x86_64 — and
+  this architecture simply did not dispatch it.
+  **It could not mean the same thing here.** On x86_64 `exec` never returns
+  because a process is a scheduled thread and the call can just not come
+  back. On this side a program is a *nested call* the kernel makes:
+  `enter_user` returns a status when the program is done. So exec leaves EL0
+  with a third status, `EXIT_EXEC`, and the loop that runs programs loads the
+  named image into the same process and enters again — exec is an iteration
+  of that loop rather than a jump that unwinds nothing.
+  **Everything a program could have handled is checked before the leave.**
+  Once the kernel has unwound out of EL0 there is no instruction after the
+  `svc` to return to, so an unreadable pointer (EFAULT) and a path naming
+  nothing (ENOENT) are both answered *in* the system call, and the caller
+  carries on with the image it has. Past that point failure is fatal, which
+  is also what a real kernel does: the old image is gone.
+  The `/bin` entries are real paths now. The embedded ELFs are written into
+  tmpfs at boot, so `exec` resolves a path through the VFS rather than
+  reaching for a constant by name — the bytes still come from the kernel
+  image, because there is still no disk, but nothing downstream knows that.
+  Gated twice. `/bin/clarity-exec` is a program whose whole job is to stop
+  being itself: it speaks, is refused a path that names nothing, carries on,
+  and then becomes `/bin/clarity-demo`, which runs to completion. That is on
+  the **plain** boot, where there is no keyboard and so no shell to type at.
+  The shell's own `run PATH` is exercised over the serial line by
+  `tools/serial_check.py`, in the case that can be tested from there — a
+  refusal, which comes back to the shell rather than taking it with it. The
+  successful case cannot be typed at that shell, because it replaces it.
+  What is still missing is `fork`. `run` hands the process over; a shell that
+  could start a program *beside* itself and wait for it needs a second
+  process, and that is the next thing.
 - **Preemption stops at the kernel's door.** System calls run with interrupts
   on, so devices are serviced during one, but a time slice that expires inside
   a system call is ignored rather than taken: suspending a half-finished call

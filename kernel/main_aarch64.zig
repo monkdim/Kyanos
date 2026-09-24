@@ -161,6 +161,11 @@ export fn kernel_main_aarch64(dtb_phys: u64) callconv(.C) noreturn {
     // assembled into this image.
     init_program();
 
+    // A program that stops being itself. Everything above runs to completion
+    // or is stopped; this one asks the kernel to put a different image in
+    // its place and keep its identity.
+    exec_program();
+
     // And then a Clarity program, through the same path.
     demo_program();
 
@@ -542,6 +547,10 @@ const INIT_ELF = @embedFile("init_elf_aarch64");
 const DEMO_ELF = @embedFile("demo_elf_aarch64");
 const SH_ELF = @embedFile("sh_elf_aarch64");
 
+/// /bin/clarity-exec: a program that asks to be replaced. See
+/// `user/exectest_aarch64.zig`.
+const EXEC_ELF = @embedFile("exec_elf_aarch64");
+
 /// Load that ELF into a fresh address space and run it.
 ///
 /// Everything the probe above proves, this proves again without the kernel
@@ -650,16 +659,18 @@ fn shell_program() void {
     };
     const sh_proc = begin_process("shell", proc.space, proc.brk_start);
 
-    paging.activate(&proc.space);
-    trap.reset();
-    trap.set_heap(&proc.space, proc.brk_start);
-    const status = trap.enter_user(proc.entry, proc.user_sp);
-    const code = trap.exit_status;
-    const wrote = trap.bytes_written;
-    const heap_end = trap.heap_end();
-    trap.clear_heap();
-    paging.deactivate();
-    loader.release(&proc, heap_end);
+    const ran = run_until_done(&proc, sh_asid);
+    const status = ran.status;
+    const code = ran.code;
+    const wrote = ran.wrote;
+    loader.release(&proc, ran.heap_end);
+    if (ran.exec_failed) {
+        console.println("  [FAIL] shell: an exec got past its own check and could not be loaded");
+    } else if (ran.execs > 0) {
+        console.print("  [ok] exec: the shell was replaced ");
+        console.print_dec(ran.execs);
+        console.println(" time(s) by a program it was told to run, and that program's output is above");
+    }
     if (sh_proc) |sp| sched.exit_process(sp, @intCast(code)) else sched.free_asid(sh_asid);
 
     if (status == trap.EXIT_DONE and wrote > 0) {
@@ -729,6 +740,156 @@ fn demo_program() void {
         console.print_dec(wrote);
         console.println("");
         if (trap.last_fault) |f| trap.report_fault(f);
+    }
+}
+
+/// A program that replaces itself, run end to end.
+///
+/// This is the only exec the *plain* boot can exercise: the shell's `run`
+/// needs somebody to type it, and a machine with no keyboard has nobody. So
+/// a program does it on its own, and everything the shell's path would use —
+/// the syscall, the check before the leave, the loop below, the address
+/// space swap — is the same code.
+///
+/// Three things have to be true and the boot says so: the first image spoke,
+/// a path naming nothing came *back* with an error rather than killing it,
+/// and the second image spoke afterwards. The last is what says the exec
+/// happened at all; the first is what says it was one process and not two.
+fn exec_program() void {
+    if (pmm.stats().total_pages == 0) return;
+
+    const image = vfs.read_file_into_heap("/bin/clarity-exec", heap.allocator()) catch {
+        console.println("  [FAIL] exec: /bin/clarity-exec is not in the filesystem");
+        return;
+    };
+    defer heap.allocator().free(image);
+
+    const asid = claim_asid("exec") orelse return;
+    var proc = loader.load(image, asid, heap.allocator()) catch |e| {
+        console.print("  [FAIL] exec: could not load /bin/clarity-exec: ");
+        console.println(@errorName(e));
+        sched.free_asid(asid);
+        return;
+    };
+    const p = begin_process("exec", proc.space, proc.brk_start);
+
+    const before = trap.execs;
+    const ran = run_until_done(&proc, asid);
+    loader.release(&proc, ran.heap_end);
+    if (p) |pp| sched.exit_process(pp, @intCast(ran.code)) else sched.free_asid(asid);
+
+    const asked = trap.execs - before;
+    // Two asks: the one that was refused and the one that was honoured. One
+    // replacement: only the second got past the check.
+    if (!ran.exec_failed and ran.status == trap.EXIT_DONE and ran.code == 0 and
+        ran.execs == 1 and asked == 2)
+    {
+        console.print("  [ok] exec: one process, two images — ");
+        console.print_dec(asked);
+        console.println(" asks, a missing path refused and returned to, the other replaced it");
+    } else {
+        console.print("  [FAIL] exec: status=");
+        console.print_dec(ran.status);
+        console.print(" code=");
+        console.print_dec(ran.code);
+        console.print(" replacements=");
+        console.print_dec(ran.execs);
+        console.print(" asks=");
+        console.print_dec(asked);
+        console.print(" load_failed=");
+        console.print_dec(@intFromBool(ran.exec_failed));
+        console.println("");
+        if (trap.last_fault) |f| trap.report_fault(f);
+    }
+}
+
+/// What one run of a program came to, however many images it went through.
+const Ran = struct {
+    status: u64 = 0,
+    code: u64 = 0,
+    wrote: u64 = 0,
+    heap_end: u64 = 0,
+    /// How many times it replaced itself while it ran.
+    execs: u64 = 0,
+    /// An exec that got past the point of no return and then could not be
+    /// loaded. Fatal to the process, because the image it had is gone.
+    exec_failed: bool = false,
+};
+
+/// Enter a program, and keep entering it for as long as it asks to be
+/// replaced.
+///
+/// A program on this architecture is a nested call: `enter_user` returns
+/// when the program is done. `exec` therefore cannot be a call that never
+/// returns, the way it is on x86_64 where a process is a scheduled thread —
+/// it leaves EL0 with a third status, and this loop is what "replacing the
+/// image" actually means.
+///
+/// **On the order at the bottom, and what measuring it showed.** The new
+/// address space is built before the old one is released. I first wrote that
+/// the other order would hand the new image pages the old one was still
+/// mapped through — and that is wrong: the old space is deactivated before
+/// either happens, so there is no live mapping left to disturb, and the new
+/// load simply reuses the freed frames. Swapping the two boots and passes,
+/// measured, with the exec selftest below still green.
+///
+/// The order stays because `loader.release` is irreversible: doing it before
+/// the replacement exists throws away the only image the process has. That
+/// costs nothing today, because a load that fails here is fatal anyway — but
+/// it is the difference between "fatal because the design says so" and
+/// "fatal because the old image was already gone", and the second one cannot
+/// be improved later without finding this line first.
+fn run_until_done(proc: *loader.Loaded, asid: u16) Ran {
+    var out = Ran{};
+    while (true) {
+        paging.activate(&proc.space);
+        trap.reset();
+        trap.set_heap(&proc.space, proc.brk_start);
+        const status = trap.enter_user(proc.entry, proc.user_sp);
+        out.status = status;
+        out.code = trap.exit_status;
+        out.wrote += trap.bytes_written;
+        out.heap_end = trap.heap_end();
+        trap.clear_heap();
+
+        if (status != trap.EXIT_EXEC) {
+            paging.deactivate();
+            return out;
+        }
+
+        // Past the point of no return: sys_exec already checked the path
+        // resolves, so anything that fails from here leaves the process with
+        // no image at all.
+        const path = trap.exec_path();
+        console.print("  exec: ");
+        console.println(path);
+
+        const image = vfs.read_file_into_heap(path, heap.allocator()) catch {
+            paging.deactivate();
+            out.exec_failed = true;
+            return out;
+        };
+        defer heap.allocator().free(image);
+
+        const next = loader.load(image, asid, heap.allocator()) catch {
+            paging.deactivate();
+            out.exec_failed = true;
+            return out;
+        };
+
+        // The new space exists; the old one can go now, and not before.
+        paging.deactivate();
+        loader.release(proc, out.heap_end);
+        // Same process, same ASID — but a wholly different address space, so
+        // everything the hardware cached under that tag is now a lie.
+        //
+        // This boot cannot show that it is needed: QEMU under TCG does not
+        // model a tagged TLB faithfully enough, and the selftest below passes
+        // with this line removed, which was measured rather than assumed. It
+        // is here because the architecture requires it.
+        sched.flush_asid(asid);
+        proc.* = next;
+        out.execs += 1;
     }
 }
 
@@ -964,6 +1125,45 @@ fn filesystem_selftest() void {
         console.println(@errorName(e));
         return;
     };
+    install_programs();
+}
+
+/// Write the embedded ELFs into /bin, so a program has a *path* rather than
+/// a name in this file.
+///
+/// The bytes still come from the kernel image — there is no disk to read one
+/// from, which `ROADMAP_OS.md` says under "a filesystem with something under
+/// it". What changes is that nothing downstream knows that. `exec` is handed
+/// a path by a program that typed it, resolves it through the VFS, and gets
+/// an image; when there is a disk, the same call finds the same file
+/// somewhere else. A kernel that reached for `DEMO_ELF` by name instead
+/// would have to be rewritten at that point.
+fn install_programs() void {
+    const O_CREAT_WRONLY: u32 = 0x40 | 0x1;
+    const files = [_]struct { path: []const u8, bytes: []const u8 }{
+        .{ .path = "/bin/clarity-init", .bytes = INIT_ELF },
+        .{ .path = "/bin/clarity-demo", .bytes = DEMO_ELF },
+        .{ .path = "/bin/clarity-sh", .bytes = SH_ELF },
+        .{ .path = "/bin/clarity-exec", .bytes = EXEC_ELF },
+    };
+    var written: usize = 0;
+    for (files) |f| {
+        const fd = vfs.open(f.path, O_CREAT_WRONLY, 0o755) catch continue;
+        const n = vfs.write(@intCast(fd), f.bytes) catch 0;
+        vfs.close(@intCast(fd)) catch {};
+        if (n == f.bytes.len) written += 1;
+    }
+    if (written == files.len) {
+        console.print("  [ok] /bin: ");
+        console.print_dec(written);
+        console.println(" programs installed, each with a path to be found by");
+    } else {
+        console.print("  [FAIL] /bin: only ");
+        console.print_dec(written);
+        console.print(" of ");
+        console.print_dec(files.len);
+        console.println(" programs were installed");
+    }
 }
 
 /// The next character from anything that can produce one.

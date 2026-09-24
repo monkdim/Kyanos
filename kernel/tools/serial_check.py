@@ -73,6 +73,14 @@ SHELL_SESSION = [
     ("ls /bin", "hello.txt"),
     ("ls /bin/hello.txt", "clarity-sh: ls: not a directory: /bin/hello.txt"),
     ("frobnicate", "clarity-sh: unknown command: frobnicate"),
+    # exec, refused. The successful case cannot be tested from here: it
+    # replaces this shell, and everything after it in this list would be
+    # typed at a program that does not read. The plain boot exercises that
+    # half — /bin/clarity-exec replaces itself and the kernel says so — and
+    # what this adds is the other half: the shell's own call reaches the
+    # kernel, and a path that names nothing comes *back* as an error rather
+    # than taking the shell with it.
+    ("run /nope", "run: cannot run /nope"),
 ]
 SHELL_EXIT_STATUS = 5
 

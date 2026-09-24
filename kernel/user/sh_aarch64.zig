@@ -42,6 +42,7 @@ const NR_READ: u64 = 0;
 const NR_WRITE: u64 = 1;
 const NR_OPEN: u64 = 2;
 const NR_CLOSE: u64 = 3;
+const NR_EXEC: u64 = 11;
 const NR_EXIT: u64 = 12;
 const NR_READDIR: u64 = 34;
 
@@ -138,6 +139,34 @@ fn split(line: []const u8) struct { word: []const u8, rest: []const u8 } {
 var ran: u64 = 0;
 var unknown: u64 = 0;
 
+/// run PATH — hand this process over to the program at PATH.
+///
+/// It only returns when the kernel refused, and then it says why. There is
+/// no fork, so this is exec and nothing else: the program takes the shell's
+/// place. A shell that could start a program *beside* itself needs a second
+/// process, which needs fork.
+fn run(path: []const u8) void {
+    if (path.len == 0) {
+        write("run: which program?\n");
+        return;
+    }
+    var buf: [128]u8 = undefined;
+    if (path.len + 1 > buf.len) {
+        write("run: that path is too long\n");
+        return;
+    }
+    // The kernel reads a NUL-terminated path; a slice's length does not
+    // survive the call.
+    for (path, 0..) |c, i| buf[i] = c;
+    buf[path.len] = 0;
+
+    const rc = syscall3(NR_EXEC, @intFromPtr(&buf), 0, 0);
+    // exec does not return when it works, so anything here is a refusal.
+    write("run: cannot run ");
+    write(path);
+    if (rc == -2) write(" — no such file\n") else write(" — refused\n");
+}
+
 fn help() void {
     write(
         \\clarity-sh — the commands that exist
@@ -146,10 +175,12 @@ fn help() void {
         \\  count TEXT    how many characters TEXT is
         \\  cat PATH      write out a file
         \\  ls [PATH]     list a directory, / if none is named
+        \\  run PATH      replace this shell with the program at PATH
         \\  exit [N]      leave, with status N
         \\
-        \\There is still no way to run a program: nothing can exec. That is
-        \\why this list is short rather than an oversight.
+        \\`run` is exec: the program takes this shell's place rather than
+        \\starting beside it, because there is no fork yet. Nothing comes
+        \\back here afterwards.
         \\
     );
 }
@@ -333,6 +364,8 @@ export fn _start() callconv(.C) noreturn {
         } else if (eql(parts.word, "count")) {
             write_dec(parts.rest.len);
             write("\n");
+        } else if (eql(parts.word, "run")) {
+            run(split(parts.rest).word);
         } else if (eql(parts.word, "exit")) {
             const parsed = split(parts.rest);
             var status: u64 = 0;

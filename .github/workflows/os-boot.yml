@@ -450,6 +450,8 @@ jobs:
              && grep -q "\[ok\] scheduler window:" serial-arm.log \
              && grep -q "\[ok\] process table:" serial-arm.log \
              && grep -q "\[ok\] processes: every program that ran gave back" serial-arm.log \
+             && grep -q "\[ok\] /bin: 4 programs installed" serial-arm.log \
+             && grep -q "\[ok\] exec: one process, two images" serial-arm.log \
              && grep -q "hello from /bin/clarity-init on aarch64" serial-arm.log \
              && grep -q "\[ok\] user .bss zeroed" serial-arm.log \
              && grep -q "\[ok\] user .data came from the file" serial-arm.log \
