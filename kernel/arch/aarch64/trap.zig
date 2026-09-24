@@ -113,10 +113,12 @@ const SYS_BRK: u64 = 9;
 const SYS_FORK: u64 = 10;
 const SYS_EXEC: u64 = 11;
 const SYS_EXIT: u64 = 12;
+const SYS_WAIT: u64 = 13;
 const SYS_READDIR: u64 = 34;
 
 /// Negative errno, the way the x86_64 dispatcher returns them.
 const EBADF: i64 = -9;
+const ECHILD: i64 = -10;
 const EAGAIN: i64 = -11;
 const ENOMEM: i64 = -12;
 const EFAULT: i64 = -14;
@@ -257,7 +259,7 @@ pub fn enter_user_full(entry: u64, user_sp: u64, arg: u64) Exit {
     // Whatever the process was doing, it is not doing it any more. A call it
     // left through — `exit`, or a fault — never ran the code that undoes the
     // depth, so this is where it is undone.
-    syscall_depth = 0;
+    syscall_depth().* = 0;
     return .{ .status = status, .code = save.exit_code };
 }
 
@@ -282,7 +284,7 @@ pub fn enter_user_frame(frame: *const Frame, user_sp: u64) Exit {
     var save: UserSave = undefined;
     save.exit_code = 0;
     const status = aarch64_enter_user_frame(&aligned, &save, user_sp);
-    syscall_depth = 0;
+    syscall_depth().* = 0;
     return .{ .status = status, .code = save.exit_code };
 }
 
@@ -352,21 +354,53 @@ fn read_far() u64 {
     );
 }
 
-/// How deep the kernel is inside a system call.
+/// How deep the kernel is inside a system call, **on the calling thread**.
 ///
 /// Not a lock and not a count of anything reentrant — a system call cannot
-/// nest, so this is 0 or 1. It exists so the interrupt handler can tell "the
-/// CPU was in the kernel on this thread's behalf" from "the CPU was in
-/// userspace", which is the difference between a time slice it may end and
-/// one it may not: switching threads out of a half-finished system call
-/// would leave its frame on a stack nobody returns to until that thread is
-/// picked again, and the kernel has no way yet to say what a system call
-/// interrupted halfway through should do.
-var syscall_depth: u32 = 0;
+/// nest, so this is 0 or 1 per thread. It exists so the interrupt handler can
+/// tell "the CPU was in the kernel on this thread's behalf" from "the CPU was
+/// in userspace", which is the difference between a time slice it may end and
+/// one it may not: switching threads out of a half-finished system call would
+/// leave its frame on a stack nobody returns to until that thread is picked
+/// again, and the kernel has no way yet to say what a system call interrupted
+/// halfway through should do.
+///
+/// It was a module variable, which stopped being an answer the moment two
+/// threads could be inside `enter_user` at once. Two things go wrong with one
+/// counter, and the second is the dangerous one:
+///
+///   - two overlapping system calls on two threads count as one, so the
+///     first to finish says nobody is in a system call while the other still
+///     is.
+///
+///   - `enter_user_full` and `enter_user_frame` *set it to zero* when their
+///     program leaves EL0, because a program that left through `exit` or a
+///     fault never ran the decrement. With one counter that zeroing lands on
+///     whichever thread happens to be mid-call, and its `-= 1` then takes an
+///     unsigned zero below zero. Measured, by putting the one counter back:
+///     `KERNEL PANIC (aarch64): integer overflow`, the moment the parent's
+///     `wait` returns. That is this build, which has the safety checks on;
+///     with them off it wraps to 0xFFFFFFFF instead, `in_syscall()` stays
+///     true for the rest of the boot, EL0 is never preempted again and
+///     nothing anywhere reports it.
+///
+///     Reachable from any program that forks — the child's exit need only
+///     land while the parent is inside some other call — and unavoidable once
+///     a parent can *block* in `wait`, because then it is inside a call for
+///     the whole of its child's life.
+///
+/// The boot path has no Thread, so it has a slot of its own rather than
+/// borrowing whichever thread was last current.
+var boot_syscall_depth: u32 = 0;
 
-/// Whether a system call is in flight on this core.
+fn syscall_depth() *u32 {
+    if (sched.current_thread()) |t| return &t.syscall_depth;
+    return &boot_syscall_depth;
+}
+
+/// Whether a system call is in flight on the thread that was interrupted.
 pub fn in_syscall() bool {
-    return @as(*const volatile u32, &syscall_depth).* != 0;
+    return @as(*const volatile u32, syscall_depth()).* != 0;
 }
 
 /// Let interrupts in. Returns the previous DAIF so it can be put back.
@@ -407,7 +441,7 @@ export fn aarch64_sync_lower(frame: *Frame) callconv(.C) void {
     const ec = esr >> 26;
 
     if (ec == EC_SVC64) {
-        syscall_depth += 1;
+        syscall_depth().* += 1;
         const daif = irq_unmask();
         dispatch(frame);
         // Not reached when `dispatch` leaves through `aarch64_leave_user` —
@@ -417,7 +451,7 @@ export fn aarch64_sync_lower(frame: *Frame) callconv(.C) void {
         // one for the rest of the boot and preemption would quietly never
         // happen again.
         irq_restore(daif);
-        syscall_depth -= 1;
+        syscall_depth().* -= 1;
         return;
     }
 
@@ -457,6 +491,9 @@ fn dispatch(frame: *Frame) void {
         },
         SYS_FORK => {
             frame.x[0] = @bitCast(sys_fork(frame));
+        },
+        SYS_WAIT => {
+            frame.x[0] = @bitCast(sys_wait(frame.x[0], frame.x[1]));
         },
         SYS_EXEC => {
             frame.x[0] = @bitCast(sys_exec(frame.x[0]));
@@ -500,6 +537,45 @@ fn dispatch(frame: *Frame) void {
 fn sys_fork(frame: *const Frame) i64 {
     const pid = sched.fork(frame, read_sp_el0()) orelse return EAGAIN;
     return @intCast(pid);
+}
+
+/// wait(wstatus, pid) — sleep until a child has exited, then reap it.
+///
+/// The argument order is the x86_64 dispatcher's, which is stdlib's: the
+/// status pointer first and the PID second. Deliberately the same rather than
+/// the more natural way round, because a program built against this table
+/// should make the same call on either machine.
+///
+/// `pid` of 0 or -1 means any child. `wstatus` may be null, for a caller that
+/// only wants to know a child finished.
+///
+/// The first thing this does is the *last* thing that could be got wrong: the
+/// status pointer is checked before the wait, not after. A child reaped and
+/// then unreported because the pointer turned out to be bad would be gone —
+/// the zombie is consumed by the reap and there is no way to put it back.
+///
+/// Four-byte alignment is required rather than handled. An i32 across a page
+/// boundary is two translations of two unrelated frames for one store, and
+/// refusing is both honest and what every caller already does.
+fn sys_wait(wstatus: u64, pid_arg: u64) i64 {
+    const target: i32 = @bitCast(@as(u32, @truncate(pid_arg)));
+
+    if (wstatus != 0) {
+        if (wstatus & 3 != 0) return EINVAL;
+        if (mmu.translate_user_write(wstatus) == null) return EFAULT;
+    }
+
+    const w = sched.waitpid(target) orelse return ECHILD;
+
+    if (wstatus != 0) {
+        // Translated again rather than remembered. The wait slept, and while
+        // it slept this process could have been preempted any number of
+        // times; the mapping is re-asked for at the moment it is used.
+        const phys = mmu.translate_user_write(wstatus) orelse return EFAULT;
+        const dst: *u32 = @ptrFromInt(vm.phys_to_virt(phys));
+        dst.* = @bitCast(w.exit_code);
+    }
+    return w.pid;
 }
 
 fn read_sp_el0() u64 {

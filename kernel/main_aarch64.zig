@@ -39,6 +39,7 @@ const proctest = @import("proctest_aarch64.zig");
 const clonetest = @import("clonetest_aarch64.zig");
 const userpreempt = @import("userpreempt_aarch64.zig");
 const forkprobe = @import("forkprobe_aarch64.zig");
+const waitprobe = @import("waitprobe_aarch64.zig");
 const heap = @import("mm/heap.zig");
 const loader = @import("loader/load_aarch64.zig");
 const fb = @import("graphics/fb.zig");
@@ -193,6 +194,11 @@ export fn kernel_main_aarch64(dtb_phys: u64) callconv(.C) noreturn {
     // the register file its parent was stopped in rather than from an entry
     // point.
     forkprobe.run();
+
+    // And a parent that waits for it. The first system call on this machine
+    // that does not return on the spot: the calling thread sleeps, something
+    // else runs, and the child's exit is what wakes it.
+    waitprobe.run();
 
     // And then a Clarity program, through the same path.
     demo_program();
