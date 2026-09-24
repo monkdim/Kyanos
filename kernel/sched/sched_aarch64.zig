@@ -154,21 +154,33 @@ pub fn current_thread() ?*Thread {
     return current;
 }
 
-/// The process the running thread is running at EL0, if any.
+/// The process the boot path is running at EL0.
 ///
-/// Null on the boot path, which has no Thread, and on a kernel thread that
-/// was never given a process. A `fork` from either is refused rather than
+/// The boot path is not a Thread — it is the kernel's initial stack, running
+/// before and between the run queue's turns — so it has a slot of its own,
+/// exactly as it has one for the system-call depth. Most of the programs on
+/// this machine still run from there.
+var boot_proc: ?*Process = null;
+
+/// The process whoever is asking is running at EL0, if any.
+///
+/// Null on a kernel thread that was never given a process, and on the boot
+/// path before it loads one. A `fork` from either is refused rather than
 /// guessed at: a child with an invented parent would be reparented to init
 /// the moment anything exited, and nothing would say why.
 pub fn current_process() ?*Process {
-    const t = current orelse return null;
-    return t.proc;
+    if (current) |t| return t.proc;
+    return boot_proc;
 }
 
-/// Say whose program this thread is about to run. Called by whatever loaded
-/// the image, beside `trap.set_heap`, and cleared when the program is done.
+/// Say whose program is about to run here.
+///
+/// The one call that says it. It used to be two — this and `trap.set_heap`,
+/// which said the same thing in different words and could disagree — and the
+/// heap is a field of the Process now, so there is nothing left for the
+/// second one to carry.
 pub fn set_current_process(p: ?*Process) void {
-    if (current) |t| t.proc = p;
+    if (current) |t| t.proc = p else boot_proc = p;
 }
 
 pub fn queue_len(p: Priority) usize {

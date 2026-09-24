@@ -56,7 +56,6 @@ fn run_parent(arg: u64) callconv(.C) noreturn {
     _ = arg;
     paging.activate(&proc.space);
     sched.set_current_process(proc_p);
-    trap.set_heap(&proc.space, proc.brk_start);
 
     const out = trap.enter_user_full(proc.entry, proc.user_sp, 0);
     // Asked here and on this thread, which is the only place it means
@@ -152,10 +151,14 @@ pub fn run() void {
         ok = false;
     }
 
+    // Read while there is still a Process to read it from: `loader.release`
+    // needs the break to know how many heap pages to give back, and the lines
+    // below are what end the process.
+    const heap_end = if (proc_p) |p| p.brk else proc.brk_start;
+
     if (proc_p) |p| sched.exit_process(p, @intCast(parent_code)) else sched.free_asid(asid);
     proc_p = null;
-    loader.release(&proc, trap.heap_end());
-    trap.clear_heap();
+    loader.release(&proc, heap_end);
 
     const asids_after = sched.asids_in_use();
     if (asids_after != asids_before) {
