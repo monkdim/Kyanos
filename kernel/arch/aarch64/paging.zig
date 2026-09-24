@@ -207,6 +207,103 @@ pub fn map_page(space: *AddressSpace, virt: u64, phys: u64, flags: u32) Error!vo
     invalidate(space, virt);
 }
 
+/// Copy every page one space has into another, each into a page of its own,
+/// with exactly the attributes the source gave it.
+///
+/// Driven by the tables rather than by any record of what was mapped, which
+/// is the lesson the x86_64 side paid for twice: a list of regions is
+/// bookkeeping kept for something else, and it is incomplete — the user stack
+/// is mapped there with no region to its name, so a clone driven by that list
+/// handed a child its code and no stack. What a process has is what its
+/// tables say it has.
+///
+/// The destination leaf is the source leaf with the frame address swapped.
+/// Not flags re-derived from somewhere: every attribute bit — the access
+/// permissions, the execute-never bits, the shareability, the memory type,
+/// the not-global bit — comes across unchanged, because the copy is supposed
+/// to be the same memory and the only thing about it that differs is where it
+/// physically lives.
+///
+/// The destination must be empty. Nothing here merges into an existing space.
+pub fn clone_user(src: *const AddressSpace, dst: *AddressSpace) Error!void {
+    const l1 = table(src.root_phys);
+    // `top`, `mid`, `low` rather than i1/i2/i3: those are Zig's one-, two-
+    // and three-bit integer types, and a loop index may not shadow a type.
+    for (l1, 0..) |e1, top| {
+        if (!is_table(e1)) continue;
+        const l2 = table(e1 & ADDR_MASK);
+        for (l2, 0..) |e2, mid| {
+            if (!is_table(e2)) continue;
+            const l3 = table(e2 & ADDR_MASK);
+            for (l3, 0..) |leaf, low| {
+                if (leaf == 0) continue;
+                const virt = (@as(u64, top) << 30) | (@as(u64, mid) << 21) | (@as(u64, low) << 12);
+                const copy = pmm.alloc_page() orelse return Error.OutOfMemory;
+                copy_page(copy, leaf & ADDR_MASK);
+                try put_leaf(dst, virt, (copy & ADDR_MASK) | (leaf & ~ADDR_MASK));
+            }
+        }
+    }
+}
+
+/// Write one leaf descriptor into a space, allocating the tables on the way
+/// down. Like `map_page` except that the descriptor is given rather than
+/// built, which is what lets `clone_user` carry the source's attributes
+/// across untouched.
+fn put_leaf(space: *AddressSpace, virt: u64, descriptor: u64) Error!void {
+    if (virt >= USER_VA_END) return Error.BadAddress;
+    const idx = indices(virt);
+    var current = space.root_phys;
+    var level: usize = 0;
+    while (level < 2) : (level += 1) {
+        const t = table(current);
+        const entry = &t[idx[level]];
+        if (entry.* == 0) {
+            const next = pmm.alloc_page() orelse return Error.OutOfMemory;
+            zero_table(next);
+            entry.* = (next & ADDR_MASK) | DESC_VALID | DESC_TABLE_OR_PAGE;
+        } else if (!is_table(entry.*)) {
+            return Error.AlreadyMapped;
+        }
+        current = entry.* & ADDR_MASK;
+    }
+    const leaf = &table(current)[idx[2]];
+    if (leaf.* != 0) return Error.AlreadyMapped;
+    leaf.* = descriptor;
+    invalidate(space, virt);
+}
+
+/// Copy 4 KiB from one physical page to another through the direct map.
+///
+/// Through the direct map and not through either process's own addresses:
+/// PSTATE.PAN makes an EL1 access to an EL0-accessible address fault on any
+/// core that implements it, so a kernel that copied a page through the
+/// mapping it belongs to would work on some machines and fault on others.
+fn copy_page(dst_phys: u64, src_phys: u64) void {
+    const d = vm.ptr_to_phys(*[pmm.PAGE_SIZE]u8, dst_phys);
+    const s = vm.ptr_to_phys(*const [pmm.PAGE_SIZE]u8, src_phys);
+    @memcpy(d, s);
+}
+
+/// The raw leaf descriptor at `virt`, or null if nothing is mapped there.
+///
+/// `lookup` answers where a page lives; this answers what it is allowed to
+/// do, which is the half a copy needs and nothing could ask for before.
+pub fn lookup_entry(space: *const AddressSpace, virt: u64) ?u64 {
+    if (virt >= USER_VA_END) return null;
+    const idx = indices(virt);
+    var current = space.root_phys;
+    var level: usize = 0;
+    while (level < 2) : (level += 1) {
+        const entry = table(current)[idx[level]];
+        if (!is_table(entry)) return null;
+        current = entry & ADDR_MASK;
+    }
+    const leaf = table(current)[idx[2]];
+    if (leaf == 0) return null;
+    return leaf;
+}
+
 /// Remove a mapping. Silent about an address that was never mapped: the
 /// caller unmapping a range does not have to know which pages in it existed.
 pub fn unmap_page(space: *AddressSpace, virt: u64) void {
