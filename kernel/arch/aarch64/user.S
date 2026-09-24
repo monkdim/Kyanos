@@ -84,15 +84,94 @@ aarch64_enter_user:
     // this a test that passes or fails depending on when it was started.
     msr     spsr_el1, xzr
 
-    // Last, because it overwrites the entry point this read it from.
-    //
-    // Everything else the program starts with is whatever the kernel happened
-    // to leave in the registers, which is a thing worth saying out loud: a
-    // program can read kernel addresses out of x1-x18 at its first
-    // instruction. That is not made worse by this line and is not fixed by
-    // it either; it wants its own change, which zeroes the file and proves
-    // the zeroes with a program that looks.
+    // The argument first, because it is read out of a register the clearing
+    // below is about to take away.
     mov     x0, x3
+
+    // And then everything else, because the register file is not the
+    // kernel's to leave lying around.
+    //
+    // What used to be in these at the `eret` was whatever the kernel was
+    // last holding: the pointer to this thread's UserSave, addresses the ELF
+    // loader had just walked, whatever the heap allocator had in hand. A
+    // program's first instruction could read all of it, and none of it cost
+    // a fault to obtain. Nothing on this machine did read it — the programs
+    // here are written by the same people as the kernel — which is the
+    // reason to close it now and not when something arrives that was not.
+    //
+    // x0 is the exception and the only one: it is what the program is told
+    // on purpose. SP_EL0 and ELR_EL1 are already set above, and PSTATE comes
+    // from SPSR_EL1, so between them and these the whole of what EL0 can see
+    // at its first instruction is now something this file chose.
+    mov     x1, xzr
+    mov     x2, xzr
+    mov     x3, xzr
+    mov     x4, xzr
+    mov     x5, xzr
+    mov     x6, xzr
+    mov     x7, xzr
+    mov     x8, xzr
+    mov     x9, xzr
+    mov     x10, xzr
+    mov     x11, xzr
+    mov     x12, xzr
+    mov     x13, xzr
+    mov     x14, xzr
+    mov     x15, xzr
+    mov     x16, xzr
+    mov     x17, xzr
+    mov     x18, xzr
+    mov     x19, xzr
+    mov     x20, xzr
+    mov     x21, xzr
+    mov     x22, xzr
+    mov     x23, xzr
+    mov     x24, xzr
+    mov     x25, xzr
+    mov     x26, xzr
+    mov     x27, xzr
+    mov     x28, xzr
+    mov     x29, xzr
+    mov     x30, xzr
+
+    // The vector file too, both halves of each register. `clarity_switch_to`
+    // saves only the low halves of v8-v15, because that is all AAPCS64 makes
+    // callee-saved — so the upper halves and the whole of the rest hold
+    // whatever last ran, which for a kernel that computes in floating point
+    // is kernel data.
+    movi    v0.2d, #0
+    movi    v1.2d, #0
+    movi    v2.2d, #0
+    movi    v3.2d, #0
+    movi    v4.2d, #0
+    movi    v5.2d, #0
+    movi    v6.2d, #0
+    movi    v7.2d, #0
+    movi    v8.2d, #0
+    movi    v9.2d, #0
+    movi    v10.2d, #0
+    movi    v11.2d, #0
+    movi    v12.2d, #0
+    movi    v13.2d, #0
+    movi    v14.2d, #0
+    movi    v15.2d, #0
+    movi    v16.2d, #0
+    movi    v17.2d, #0
+    movi    v18.2d, #0
+    movi    v19.2d, #0
+    movi    v20.2d, #0
+    movi    v21.2d, #0
+    movi    v22.2d, #0
+    movi    v23.2d, #0
+    movi    v24.2d, #0
+    movi    v25.2d, #0
+    movi    v26.2d, #0
+    movi    v27.2d, #0
+    movi    v28.2d, #0
+    movi    v29.2d, #0
+    movi    v30.2d, #0
+    movi    v31.2d, #0
+
     eret
 
 // void aarch64_leave_user(u64 return_value) — never returns to its caller.

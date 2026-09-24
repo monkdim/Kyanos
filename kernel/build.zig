@@ -230,6 +230,21 @@ pub fn build(b: *std.Build) void {
         .root_source_file = exec_prog_arm.getEmittedBin(),
     });
 
+    // /bin/clarity-regprobe for aarch64: a program that reads the registers
+    // it was started with, before anything else can write to them.
+    const reg_prog_arm = b.addExecutable(.{
+        .name = "clarity-regprobe-aarch64",
+        .root_source_file = b.path("user/regprobe_aarch64.zig"),
+        .target = user_arm_target,
+        .optimize = .ReleaseSmall,
+    });
+    reg_prog_arm.setLinkerScript(b.path("user/user.ld"));
+    reg_prog_arm.entry = .{ .symbol_name = "_start" };
+    reg_prog_arm.pie = false;
+    kernel_arm.root_module.addAnonymousImport("regprobe_elf_aarch64", .{
+        .root_source_file = reg_prog_arm.getEmittedBin(),
+    });
+
     // /bin/clarity-spin for aarch64: a program that spends time at EL0.
     //
     // Two copies of it run at once, one per kernel thread, which is the whole

@@ -162,6 +162,11 @@ export fn kernel_main_aarch64(dtb_phys: u64) callconv(.C) noreturn {
     // assembled into this image.
     init_program();
 
+    // What a program can see of the kernel before it has done anything. The
+    // answer used to be "most of the register file"; this requires it to be
+    // nothing the kernel did not choose.
+    regprobe_program();
+
     // A program that stops being itself. Everything above runs to completion
     // or is stopped; this one asks the kernel to put a different image in
     // its place and keep its identity.
@@ -558,6 +563,11 @@ const SH_ELF = @embedFile("sh_elf_aarch64");
 /// `user/exectest_aarch64.zig`.
 const EXEC_ELF = @embedFile("exec_elf_aarch64");
 
+/// A program that reads the registers it was started with. See
+/// user/regprobe_aarch64.zig, and the clearing it exists to hold in place at
+/// the end of `aarch64_enter_user`.
+const REGPROBE_ELF = @embedFile("regprobe_elf_aarch64");
+
 /// Load that ELF into a fresh address space and run it.
 ///
 /// Everything the probe above proves, this proves again without the kernel
@@ -898,6 +908,50 @@ fn run_until_done(proc: *loader.Loaded, asid: u16) Ran {
         proc.* = next;
         out.execs += 1;
     }
+}
+
+/// Run the register probe and require it to find nothing.
+///
+/// A program's first instruction used to be able to read kernel virtual
+/// addresses straight out of x1-x18 and the vector file — the pointer to its
+/// own `UserSave`, addresses the ELF loader had just walked, whatever the
+/// heap allocator was holding. Nothing here exploited it, which is the reason
+/// to close it now rather than when something arrives that was not written by
+/// the same people as the kernel.
+///
+/// The probe is the only program on this machine whose entry point is naked:
+/// a Zig prologue is allowed to write to the registers under test, so a
+/// normal function cannot answer the question at all. It folds every register
+/// but x0 together with `orr` and reports the result, which is zero exactly
+/// when all of them were.
+fn regprobe_program() void {
+    if (pmm.stats().total_pages == 0) return;
+
+    const asid = claim_asid("regprobe") orelse return;
+    var proc = loader.load(REGPROBE_ELF, asid, heap.allocator()) catch |e| {
+        console.print("  [FAIL] regprobe: could not load: ");
+        console.println(@errorName(e));
+        sched.free_asid(asid);
+        return;
+    };
+    const p = begin_process("regprobe", proc.space, proc.brk_start);
+
+    paging.activate(&proc.space);
+    trap.reset();
+    const out = trap.enter_user_full(proc.entry, proc.user_sp, 0);
+    paging.deactivate();
+    loader.release(&proc, proc.brk_start);
+    if (p) |pp| sched.exit_process(pp, @intCast(out.code)) else sched.free_asid(asid);
+
+    if (out.status == trap.EXIT_DONE and out.code == 0) {
+        console.println("  [ok] registers: EL0 starts with a register file the kernel chose");
+        return;
+    }
+    console.print("  [FAIL] registers: the probe came back status=");
+    console.print_dec(out.status);
+    console.print(" code=");
+    console.print_dec(out.code);
+    console.println(" — it wanted status=0 code=0, and says above what it found");
 }
 
 /// Claim an ASID for a program about to be loaded, and say so if there is
