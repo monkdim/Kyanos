@@ -430,6 +430,7 @@ jobs:
              && grep -q "\[ok\] EL0: and when it wrote to its read-only text" serial-arm.log \
              && grep -q "\[ok\] context switch: ABABABa" serial-arm.log \
              && grep -q "\[ok\] preemption: B ran" serial-arm.log \
+             && grep -q "\[ok\] allocator under two threads" serial-arm.log \
              && grep -q "hello from /bin/clarity-init on aarch64" serial-arm.log \
              && grep -q "\[ok\] user .bss zeroed" serial-arm.log \
              && grep -q "\[ok\] user .data came from the file" serial-arm.log \

@@ -10,6 +10,32 @@
 //! easy to reason about.
 
 const std = @import("std");
+const irqlock = @import("../sync/irqlock.zig");
+
+/// How long to sit between testing a page's bit and setting it, in spins.
+///
+/// Zero everywhere except inside the selftest that exists to catch a missing
+/// lock. The window this widens is real and about five instructions long, and
+/// at 100 Hz a timer tick lands in five instructions out of a slice's half a
+/// million roughly once in 1e5 slices — so a test that just ran two threads
+/// against the allocator passed with and without the lock alike (57,605
+/// allocations, no collision), which is a test that proves nothing.
+///
+/// Widening it is what makes the difference observable: with this set and the
+/// guard below removed, two preempted threads are handed the same page within
+/// a few thousand allocations. With the guard in place, interrupts are masked
+/// across the whole of `alloc_page`, so the delay cannot be preempted and
+/// there is nothing to observe — which is the result the selftest asserts.
+///
+/// A branch on the success path of an allocation is the cost, so that the
+/// shipped binary is the one the test exercises rather than a debug build of
+/// something adjacent to it.
+pub var race_window_spins: u32 = 0;
+
+fn widen_race_window() void {
+    var i: u32 = 0;
+    while (i < race_window_spins) : (i += 1) asm volatile ("" ::: "memory");
+}
 
 pub const PAGE_SIZE: usize = 4096;
 pub const PAGE_SHIFT: u6 = 12;
@@ -93,12 +119,26 @@ pub fn finish() void {
     next_hint = 0;
 }
 
+/// One page, or null.
+///
+/// Interrupts are masked across the whole of this. `is_set` and `set_bit` are
+/// a test and a separate store, and `free_pages` and `next_hint` are both
+/// read-modify-written after them: a timer tick anywhere in that sequence
+/// hands the same page to two threads, and the two of them then write over
+/// each other. Nothing allocated from a thread when this was written — every
+/// spawn happened on the boot path, where preemption is a no-op — so the race
+/// was unreachable rather than absent, and a scheduler is exactly the thing
+/// that reaches it.
 pub fn alloc_page() ?u64 {
+    const guard = irqlock.acquire();
+    defer guard.release();
+
     var i = next_hint;
     var scanned: usize = 0;
     while (scanned < max_page) : (scanned += 1) {
         if (i >= max_page) i = 0;
         if (!is_set(i)) {
+            if (race_window_spins != 0) widen_race_window();
             set_bit(i);
             free_pages -= 1;
             next_hint = i + 1;
@@ -109,9 +149,20 @@ pub fn alloc_page() ?u64 {
     return null;
 }
 
+/// `count` contiguous pages, or null.
+///
+/// Worse than `alloc_page` unguarded: the run is found in one loop and
+/// claimed in a second, so the window between deciding and taking is as long
+/// as the run. The guard nests — the `count == 1` case below calls
+/// `alloc_page`, which takes it again — and that is safe by construction; see
+/// sync/irqlock.zig.
 pub fn alloc_pages(count: usize) ?u64 {
     if (count == 0) return null;
     if (count == 1) return alloc_page();
+
+    const guard = irqlock.acquire();
+    defer guard.release();
+
     // Linear scan for `count` contiguous free pages.
     var run: usize = 0;
     var run_start: usize = 0;
@@ -133,7 +184,15 @@ pub fn alloc_pages(count: usize) ?u64 {
     return null;
 }
 
+/// Give a page back.
+///
+/// Guarded for the same reason as the two above: `free_pages` and `next_hint`
+/// are read-modify-written, and the double-free check is a test followed by a
+/// separate clear.
 pub fn free_page(phys_addr: u64) void {
+    const guard = irqlock.acquire();
+    defer guard.release();
+
     const page = phys_addr >> PAGE_SHIFT;
     if (page >= max_page) return;
     if (!is_set(page)) return; // double-free; ignore

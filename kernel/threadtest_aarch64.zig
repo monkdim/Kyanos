@@ -169,6 +169,129 @@ pub fn on_tick() void {
     }
 }
 
+// ── The allocator under two threads ─────────────────────────────────────
+//
+// The page allocator's test-and-set was unguarded, and nothing could reach
+// it: every allocation happened on the boot path, where preemption is a
+// no-op. A scheduler is what reaches it, so the guard had to exist before
+// the scheduler did — and a guard nothing can demonstrate the need for is
+// indistinguishable from one that does nothing.
+//
+// So this runs the allocator from the two threads above, which the timer
+// switches between, and looks for the failure itself rather than a proxy for
+// it: each thread stamps its own byte into the page it was given, holds it,
+// and reads it back. The other thread's byte means both were handed the same
+// page while both still held it.
+//
+// **With pmm.race_window_spins at zero this test cannot fail, and that is
+// measured, not assumed.** Two threads against the real allocator managed
+// 57,605 allocations with no collision, because the window between the test
+// and the set is about five instructions and a tick lands in it roughly once
+// in 1e5 slices. A test built that way passes with the guard and without it.
+// So the window is widened deliberately while the test runs, which makes the
+// difference plain: with the widening and no guard, 24 pages out of 33,998
+// allocations went to both threads at once.
+
+/// Long enough that a tick lands in the window nearly every time, short
+/// enough that the threads still get through thousands of allocations inside
+/// the tick limit.
+const RACE_WINDOW_SPINS: u32 = 3000;
+
+var race_allocs: u64 = 0;
+var race_collisions: u64 = 0;
+var race_refused: u64 = 0;
+
+/// Allocate, stamp, hold, check, free — forever, until the timer stops us.
+fn racer(id: u8, mine: u64, counter: *volatile u64) noreturn {
+    const w: *volatile u64 = &who;
+    const total: *volatile u64 = &race_allocs;
+    const bad: *volatile u64 = &race_collisions;
+    const refused: *volatile u64 = &race_refused;
+    while (true) {
+        w.* = mine;
+        counter.* +%= 1;
+        const phys = pmm.alloc_page() orelse {
+            refused.* +%= 1;
+            continue;
+        };
+        const cell: *volatile u8 = @ptrFromInt(vm.phys_to_virt(phys));
+        cell.* = id;
+        // Holding the page is what gives the *other* thread's allocation time
+        // to collide with this one. Without it the two would have to be
+        // inside alloc_page simultaneously, which is a far narrower target.
+        var k: usize = 0;
+        while (k < 400) : (k += 1) asm volatile ("" ::: "memory");
+        if (cell.* != id) bad.* +%= 1;
+        pmm.free_page(phys);
+        total.* +%= 1;
+    }
+}
+
+fn race_a(_: u64) callconv(.C) noreturn {
+    racer(0xA1, 1, &spins_a);
+}
+
+fn race_b(_: u64) callconv(.C) noreturn {
+    racer(0xB2, 2, &spins_b);
+}
+
+fn allocator_race() void {
+    const stack_a = alloc_stack() orelse {
+        console.println("  [FAIL] allocator race: no stack");
+        return;
+    };
+    const stack_b = alloc_stack() orelse {
+        free_stack(stack_a);
+        console.println("  [FAIL] allocator race: no stack");
+        return;
+    };
+
+    spins_a = 0;
+    spins_b = 0;
+    who = 1;
+    mismatches = 0;
+    preemptions = 0;
+    ticks_used = 0;
+    gave_up = false;
+    race_allocs = 0;
+    race_collisions = 0;
+    race_refused = 0;
+
+    context.init_kernel_thread(&ctx_pa, stack_a, &race_a, 0);
+    context.init_kernel_thread(&ctx_pb, stack_b, &race_b, 0);
+
+    pmm.race_window_spins = RACE_WINDOW_SPINS;
+    current = 1;
+    running = true;
+    context.switch_to(&ctx_main, &ctx_pa);
+    // The timer handler switched back here.
+    pmm.race_window_spins = 0;
+
+    const allocs = race_allocs;
+    const bad = race_collisions;
+
+    // A run that allocated almost nothing would report zero collisions and
+    // mean nothing, so the count it managed is part of the pass.
+    const MIN_ALLOCS: u64 = 2000;
+    if (bad == 0 and allocs >= MIN_ALLOCS) {
+        console.print("  [ok] allocator under two threads: ");
+        console.print_dec(allocs);
+        console.print(" alloc/free pairs with the race window held open, ");
+        console.println("no page handed to two threads");
+    } else {
+        console.print("  [FAIL] allocator under two threads: ");
+        console.print_dec(bad);
+        console.print(" of ");
+        console.print_dec(allocs);
+        console.print(" allocations handed the same page to both (");
+        console.print_dec(race_refused);
+        console.println(" refused) — the page allocator is missing its lock");
+    }
+
+    free_stack(stack_a);
+    free_stack(stack_b);
+}
+
 // ── Running them ────────────────────────────────────────────────────────
 
 fn alloc_stack() ?u64 {
@@ -191,6 +314,7 @@ pub fn run() void {
 
     cooperative();
     preemptive();
+    allocator_race();
 
     const after = pmm.stats();
     if (after.free_pages != before.free_pages) {
