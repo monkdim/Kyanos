@@ -35,6 +35,7 @@ const trap = @import("arch/aarch64/trap.zig");
 const threadtest = @import("threadtest_aarch64.zig");
 const sched = @import("sched/sched_aarch64.zig");
 const schedtest = @import("schedtest_aarch64.zig");
+const proctest = @import("proctest_aarch64.zig");
 const heap = @import("mm/heap.zig");
 const loader = @import("loader/load_aarch64.zig");
 const fb = @import("graphics/fb.zig");
@@ -104,6 +105,12 @@ export fn kernel_main_aarch64(dtb_phys: u64) callconv(.C) noreturn {
     // needed one until something had to parse an ELF.
     heap.init();
 
+    // A process table, over that heap. Nothing on this architecture had one:
+    // a program was loaded, entered and released, and the ASID it ran under
+    // was a literal at the call site. From here a program is a process with
+    // a PID, a parent and an ASID that was allocated rather than chosen.
+    sched.init_processes();
+
     // A filesystem. The first subsystem to arrive here already written:
     // fs/vfs.zig and fs/tmpfs.zig import std, the heap, and each other, and
     // needed no change at all to run on this machine. The selftest below is
@@ -131,6 +138,10 @@ export fn kernel_main_aarch64(dtb_phys: u64) callconv(.C) noreturn {
     // switches between two contexts that the test itself names; from here
     // on, which thread runs next is a decision the kernel makes.
     schedtest.run();
+
+    // And the other half of "what is running": a process table. The
+    // scheduler above says which thread has the CPU; this says whose it is.
+    proctest.run();
 
     // A screen, and then a console on it.
     //
@@ -165,6 +176,14 @@ export fn kernel_main_aarch64(dtb_phys: u64) callconv(.C) noreturn {
     // and at the shell — and a count taken before it would say nothing about
     // the case this is here for.
     keyboard_report();
+
+    // Every program the boot ran was a process, and every one of them has
+    // ended. What should be left is init and nothing else, with no ASID
+    // outstanding — which is the check that makes those PIDs mean something
+    // rather than decorate a log line. A program that exits without giving
+    // its ASID back is invisible until the 256th one is refused; here it is
+    // one line.
+    proctest.check_drained();
 
     console.println("KyanOS aarch64: EL1 boot ok");
 
@@ -554,9 +573,9 @@ fn init_program() void {
     // And a loader that works once is not a loader. The second run gets its
     // own address space with its own ASID, over frames the first one just
     // returned, which is what every load after the first will be.
-    const first = run_init(3, true);
+    const first = run_init(true);
     const before = pmm.stats();
-    const second = run_init(4, false);
+    const second = run_init(false);
     const after = pmm.stats();
 
     const balanced = after.free_pages == before.free_pages;
@@ -622,11 +641,14 @@ fn shell_program() void {
     console.print_dec(SH_ELF.len);
     console.println(" bytes; it ends when the input does");
 
-    var proc = loader.load(SH_ELF, 7, heap.allocator()) catch |e| {
+    const sh_asid = claim_asid("shell") orelse return;
+    var proc = loader.load(SH_ELF, sh_asid, heap.allocator()) catch |e| {
         console.print("  [FAIL] shell: could not load: ");
         console.println(@errorName(e));
+        sched.free_asid(sh_asid);
         return;
     };
+    const sh_proc = begin_process("shell", proc.space, proc.brk_start);
 
     paging.activate(&proc.space);
     trap.reset();
@@ -638,6 +660,7 @@ fn shell_program() void {
     trap.clear_heap();
     paging.deactivate();
     loader.release(&proc, heap_end);
+    if (sh_proc) |sp| sched.exit_process(sp, @intCast(code)) else sched.free_asid(sh_asid);
 
     if (status == trap.EXIT_DONE and wrote > 0) {
         console.print("  [ok] shell: ran at EL0, read its own input, wrote ");
@@ -669,11 +692,14 @@ fn demo_program() void {
     console.print_dec(DEMO_ELF.len);
     console.println(" bytes of Clarity, compiled to C and then to this machine");
 
-    var proc = loader.load(DEMO_ELF, 5, heap.allocator()) catch |e| {
+    const demo_asid = claim_asid("demo") orelse return;
+    var proc = loader.load(DEMO_ELF, demo_asid, heap.allocator()) catch |e| {
         console.print("  [FAIL] demo: could not load: ");
         console.println(@errorName(e));
+        sched.free_asid(demo_asid);
         return;
     };
+    const demo_proc = begin_process("demo", proc.space, proc.brk_start);
 
     paging.activate(&proc.space);
     trap.reset();
@@ -686,6 +712,7 @@ fn demo_program() void {
     trap.clear_heap();
     paging.deactivate();
     loader.release(&proc, heap_end);
+    if (demo_proc) |dp| sched.exit_process(dp, @intCast(code)) else sched.free_asid(demo_asid);
 
     if (status == trap.EXIT_DONE and code == 0 and wrote > 0) {
         console.print("  [ok] demo: a Clarity program ran on aarch64, printed ");
@@ -705,6 +732,42 @@ fn demo_program() void {
     }
 }
 
+/// Claim an ASID for a program about to be loaded, and say so if there is
+/// none left.
+///
+/// Every program on this machine used to be loaded under a number written at
+/// the call site — 3 and 4 for the two init runs, 5 for the demo, 7 for the
+/// shell. They did not collide, but nothing made them not collide: the
+/// numbers were chosen by whoever added the line, and two programs alive at
+/// once under one ASID each see the other's cached translations.
+fn claim_asid(what: []const u8) ?u16 {
+    return sched.alloc_asid() orelse {
+        console.print("  [FAIL] ");
+        console.print(what);
+        console.println(": no ASID left — the pool is 255 deep");
+        return null;
+    };
+}
+
+/// Register a loaded image as a process whose parent is init, and print what
+/// it was given. Returns null having said so if the table refused.
+fn begin_process(name: []const u8, space: paging.AddressSpace, brk_start: u64) ?*sched.Process {
+    const p = sched.register_process(name, space, 1, brk_start) orelse {
+        console.print("  [FAIL] ");
+        console.print(name);
+        console.println(": the process table refused it");
+        return null;
+    };
+    console.print("  ");
+    console.print(name);
+    console.print(": pid ");
+    console.print_dec(@intCast(p.pid));
+    console.print(", asid ");
+    console.print_dec(space.asid);
+    console.println("");
+    return p;
+}
+
 const InitRun = struct {
     ok: bool = false,
     status: u64 = 0,
@@ -714,12 +777,15 @@ const InitRun = struct {
 
 /// One load, run and teardown. `announce` prints where the linker put things,
 /// which is worth seeing once and not twice.
-fn run_init(asid: u16, announce: bool) InitRun {
+fn run_init(announce: bool) InitRun {
+    const asid = claim_asid("init") orelse return .{};
     var proc = loader.load(INIT_ELF, asid, heap.allocator()) catch |e| {
         console.print("  [FAIL] init: could not load the ELF: ");
         console.println(@errorName(e));
+        sched.free_asid(asid);
         return .{};
     };
+    const ip = begin_process("init", proc.space, proc.brk_start);
 
     if (announce) {
         console.print("  init: entry ");
@@ -743,6 +809,7 @@ fn run_init(asid: u16, announce: bool) InitRun {
     trap.clear_heap();
     paging.deactivate();
     loader.release(&proc, heap_end);
+    if (ip) |p| sched.exit_process(p, @intCast(code)) else sched.free_asid(asid);
 
     // 42 is what init_aarch64.zig exits with, and it only reaches that line
     // after its own .bss, .data and floating-point checks. Those print their
