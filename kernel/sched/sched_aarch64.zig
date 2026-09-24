@@ -46,6 +46,7 @@ const heap = @import("../mm/heap.zig");
 const vm = @import("../arch/aarch64/vm.zig");
 const console = @import("../arch/aarch64/console.zig");
 const paging = @import("../arch/aarch64/paging.zig");
+const trap = @import("../arch/aarch64/trap.zig");
 
 pub const Priority = enum(u8) {
     high = 0,
@@ -88,6 +89,17 @@ pub const Thread = struct {
     next: ?*Thread = null,
     ticks_run: u64 = 0,
     exit_code: i32 = 0,
+
+    /// The process running at EL0 on this thread, if there is one.
+    ///
+    /// Per-thread and not a module variable, for the reason every other
+    /// piece of this got moved onto the thread before it: two threads can be
+    /// inside `enter_user` at once, so "the current process" is only a
+    /// question with an answer once it is asked of a thread. `fork` is the
+    /// first caller that needs it — a child has to know whose child it is,
+    /// and the only thing that knows is the thread the parent's `svc` was
+    /// serviced on.
+    proc: ?*Process = null,
 };
 
 const Queues = runqueue.MultiQueue(Thread, 3);
@@ -121,6 +133,23 @@ pub fn init() void {
 
 pub fn current_thread() ?*Thread {
     return current;
+}
+
+/// The process the running thread is running at EL0, if any.
+///
+/// Null on the boot path, which has no Thread, and on a kernel thread that
+/// was never given a process. A `fork` from either is refused rather than
+/// guessed at: a child with an invented parent would be reparented to init
+/// the moment anything exited, and nothing would say why.
+pub fn current_process() ?*Process {
+    const t = current orelse return null;
+    return t.proc;
+}
+
+/// Say whose program this thread is about to run. Called by whatever loaded
+/// the image, beside `trap.set_heap`, and cleared when the program is done.
+pub fn set_current_process(p: ?*Process) void {
+    if (current) |t| t.proc = p;
 }
 
 pub fn queue_len(p: Priority) usize {
@@ -623,4 +652,188 @@ pub fn exit_process(p: *Process, code: i32) void {
     }
     free_asid(p.address_space.asid);
     processes.remove(p.pid);
+}
+
+// ── fork ────────────────────────────────────────────────────────────────
+//
+// A child is not a program that starts. It is a process that was already
+// running and now exists twice, and everything here follows from that.
+//
+// Three things make the second one: a copy of every page the first has
+// (`paging.clone_user`), a copy of the register file it was stopped in
+// (`trap.Frame`, handed over by the system call), and a kernel thread to run
+// it on — because on this architecture a process at EL0 is a nested call some
+// kernel thread is inside, so a second process needs a second thread to be
+// inside that call.
+//
+// The only difference the kernel writes between the two is the saved x0: the
+// child's `fork` returns zero and the parent's returns the child's PID. That
+// one value is the entire mechanism by which a program can tell which half of
+// itself it is.
+
+/// What a forked child needs in order to start being itself, waiting on the
+/// kernel heap for the thread that will run it.
+///
+/// The frame is first on purpose: `enter_user_frame` copies it to an aligned
+/// stack local before the assembly touches it, so nothing here depends on
+/// what the heap happens to return, but a reader looking for the vector file
+/// should find it at a round offset.
+const ForkChild = struct {
+    frame: trap.Frame,
+    user_sp: u64,
+    proc: *Process,
+};
+
+/// fork(2): the calling process, twice. Returns the child's PID, or null if
+/// the kernel could not make one.
+///
+/// Refused rather than guessed at when the caller has no process — the boot
+/// path, or a kernel thread nobody told. A child invented with init for a
+/// parent would be reparented the moment anything exited and nothing would
+/// ever say why.
+pub fn fork(frame: *const trap.Frame, user_sp: u64) ?Pid {
+    if (!processes_ready) return null;
+    const parent = current_process() orelse return null;
+
+    const asid = alloc_asid() orelse return null;
+    var space = paging.create(asid) orelse {
+        free_asid(asid);
+        return null;
+    };
+    paging.clone_user(parent.address_space, &space) catch {
+        // Whatever was copied before it ran out. `free_user` frees by walking
+        // the tables, so a half-built space gives back exactly the half it
+        // has.
+        paging.free_user(&space);
+        free_asid(asid);
+        return null;
+    };
+
+    const raw = heap.alloc(@sizeOf(ForkChild)) orelse {
+        paging.free_user(&space);
+        free_asid(asid);
+        return null;
+    };
+    const c: *ForkChild = @ptrCast(@alignCast(raw));
+
+    // `register_process` copies the space into storage the Process owns, so
+    // from here on `child.address_space` is the one that counts and the local
+    // is stale. Freeing through the local after this point would leave the
+    // Process holding freed pages.
+    const child = register_process(parent.name, space, parent.pid, parent.brk_start) orelse {
+        heap.free(raw, @sizeOf(ForkChild));
+        paging.free_user(&space);
+        free_asid(asid);
+        return null;
+    };
+
+    c.* = .{ .frame = frame.*, .user_sp = user_sp, .proc = child };
+    // The whole of what makes the two processes distinguishable.
+    c.frame.x[0] = 0;
+
+    // Spawning and finishing the thread off are one step, with interrupts
+    // held down across both.
+    //
+    // `spawn_kthread` puts the thread on a run queue, and the next tick can
+    // pick it. If that happened before the two lines below, the child would
+    // be resumed by `clarity_switch_to` with a Context whose `ttbr0` is still
+    // zero — which means "leave TTBR0 alone", so the child would go back to
+    // EL0 in *its parent's* address space and read its parent's memory
+    // instead of faulting. A handful of instructions wide, and the kind of
+    // wrong that does not announce itself.
+    const guard = irqlock.acquire();
+    defer guard.release();
+
+    const t = spawn_kthread(fork_child_entry, @intFromPtr(c), "[fork]", .normal) orelse {
+        unregister(child);
+        heap.free(raw, @sizeOf(ForkChild));
+        return null;
+    };
+    // The address space rides in the Context, so the child comes back into
+    // its own tables after every preemption and not into whichever process
+    // ran last.
+    t.context.ttbr0 = paging.ttbr_value(child.address_space);
+    t.proc = child;
+
+    return child.pid;
+}
+
+/// Undo `register_process` for a child that never ran.
+///
+/// Not `exit_process`: that records a zombie against the parent, and a fork
+/// that failed produced no process for the parent to reap. The parent is told
+/// by the return value of `fork` and by nothing else.
+fn unregister(p: *Process) void {
+    const gpa = processes.gpa;
+    if (processes.lookup(p.parent_pid)) |parent| _ = parent.remove_child(p.pid);
+    processes.remove(p.pid);
+    paging.free_user(p.address_space);
+    free_asid(p.address_space.asid);
+    gpa.destroy(p.address_space);
+    gpa.destroy(p);
+}
+
+/// One forked child's whole life on its own kernel thread.
+fn fork_child_entry(arg: u64) callconv(.C) noreturn {
+    const c: *ForkChild = @ptrFromInt(arg);
+    const p = c.proc;
+
+    if (current) |t| t.proc = p;
+    paging.activate(p.address_space);
+    p.state = .running;
+
+    const out = trap.enter_user_frame(&c.frame, c.user_sp);
+
+    // What the child left behind. A fault is -1 and so is an `exec`, which is
+    // a limitation and is stated rather than hidden: `exec` leaves EL0 with a
+    // path and expects its caller to load the image into the same process,
+    // and the only caller that can do that is the boot path's run loop, which
+    // this thread is not. A forked child that calls `exec` therefore ends
+    // instead of being replaced. fork-then-exec is the next thing this needs.
+    const code: i32 = switch (out.status) {
+        trap.EXIT_DONE => @bitCast(@as(u32, @truncate(out.code))),
+        else => -1,
+    };
+
+    // The pages go back without a `paging.deactivate()` first, and that is
+    // the one thing about this function that is not obvious.
+    //
+    // Deactivating sets TCR_EL1.EPD0 as well as clearing TTBR0, and
+    // `clarity_switch_to` restores TTBR0 and nothing else — so a thread that
+    // deactivates on its way out takes the low half away from every process
+    // that is merely *preempted*, and the next one to be resumed faults on
+    // its own text. Measured, not reasoned about: with the deactivate here
+    // the parent came back from its spin to an instruction abort at
+    // pc=0x40100134 touching 0x40100134, which is the spin loop itself. The
+    // comment on `paging.ttbr_value` says exactly this, and `run_copy` in
+    // userpreempt_aarch64.zig already declined to deactivate for the same
+    // reason. It is the boot path's business, once nothing is runnable.
+    //
+    // What is left behind is a TTBR0 naming tables that have just been freed,
+    // until the next switch overwrites it. Nothing walks it in between: the
+    // kernel lives in TTBR1 and never dereferences a user address — PSTATE.PAN
+    // makes sure of it — and no EL0 runs on this thread again.
+    paging.free_user(p.address_space);
+
+    // The Process becomes a zombie its parent can reap, which is why the
+    // pages go first: a zombie holds an exit code and a PID and no memory.
+    const gpa = processes.gpa;
+    exit_process(p, code);
+
+    // And then the Process struct itself, because after `exit_process` there
+    // is nothing left that can reach it: `record_zombie` copies the PID, the
+    // exit code and the name into the parent's list *by value*, and
+    // `Table.remove` drops the only other pointer. The thread's own is
+    // cleared just below. Freed here rather than left for a reaper because a
+    // fork that leaks one of these per child leaks it forever — the boot
+    // path's own exit does the same and is a separate thing to fix.
+    if (current) |t| t.proc = null;
+    p.children.deinit(gpa);
+    p.zombies.deinit(gpa);
+    p.fd_table.deinit(gpa);
+    gpa.destroy(p.address_space);
+    gpa.destroy(p);
+
+    heap.free(@as([*]u8, @ptrCast(c)), @sizeOf(ForkChild));
+    thread_exit(0);
 }

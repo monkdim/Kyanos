@@ -38,6 +38,7 @@ const schedtest = @import("schedtest_aarch64.zig");
 const proctest = @import("proctest_aarch64.zig");
 const clonetest = @import("clonetest_aarch64.zig");
 const userpreempt = @import("userpreempt_aarch64.zig");
+const forkprobe = @import("forkprobe_aarch64.zig");
 const heap = @import("mm/heap.zig");
 const loader = @import("loader/load_aarch64.zig");
 const fb = @import("graphics/fb.zig");
@@ -186,6 +187,12 @@ export fn kernel_main_aarch64(dtb_phys: u64) callconv(.C) noreturn {
     // runs one program to completion before the next one starts; this one is
     // two, on two kernel threads, with the timer moving the CPU between them.
     userpreempt.run();
+
+    // And one program that becomes two. Everything above this is a process
+    // the kernel started; this is a process that started itself, resumed from
+    // the register file its parent was stopped in rather than from an entry
+    // point.
+    forkprobe.run();
 
     // And then a Clarity program, through the same path.
     demo_program();
