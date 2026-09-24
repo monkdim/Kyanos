@@ -65,8 +65,9 @@ every pull request; anything not gated is called out as unverified.
     filesystem
 
   This is no longer "the start of the Apple Silicon track". It is not parity
-  either: there is no scheduler on this side. See **Outstanding on aarch64**
-  below.
+  either: there is a thread scheduler on this side now — run queues,
+  priorities, threads that finish — but no process table, so `exec` has
+  nothing to put a new image into. See **Outstanding on aarch64** below.
 - **The kernel reaches userspace.** It writes a small ELF to
   `/bin/clarity-init`, and `spawn_user` reads it back off the VFS, parses it,
   maps its segments into a fresh address space, switches CR3 and enters ring
@@ -301,10 +302,24 @@ per-process address spaces, EL0, system calls, the ELF loader, a framebuffer
 console and a keyboard are all done and gated — see **Where we are** above.
 What is left, in rough order:
 
-- **A scheduler.** The switching primitive works, cooperatively and
-  preemptively, and the boot selftest drives it directly. Nothing keeps run
-  queues, priorities or a process table, so programs run one after another
-  rather than at the same time.
+- **A scheduler — threads, not processes yet.** ✅ `sched/sched_aarch64.zig`:
+  three priority levels, a `yield` that picks a successor and switches to it,
+  a `preempt` the timer calls, threads that can finish and have their stacks
+  reclaimed. The ordering itself is `sched/runqueue.zig`, shared with the
+  x86_64 scheduler, because two copies of a scheduling policy are two
+  policies that agree today.
+  Three boot checks, each one the hand-wired pair of contexts could not have
+  passed, and each negative-tested: **three threads rotate** (the old test's
+  "which thread next" was a hard-coded `if`, and a third thread had nowhere
+  to go — with `preempt` taken off the tick, thread one spins 335,597,199
+  times and the other two never run); **priority means something** (a `.high`
+  thread runs to completion while a `.normal` one stays at zero — with the
+  level ordering removed, the normal one reaches 1000 while the high one is
+  still runnable); and **the window between choosing a thread and switching
+  to it** (widened 120,000-fold, 500 switches and 52–63 ticks, every tick on
+  the stack the scheduler named — with the guard removed, a data abort).
+  What is still missing is the *process* half: no process table on this
+  architecture, so `exec` has nothing to put a new image into.
 - **A filesystem with something under it.** tmpfs and the VFS run here now,
   unchanged from the x86_64 side, and `cat` reads through them. There is
   still no disk, so the root is tmpfs and programs are still loaded from ELFs

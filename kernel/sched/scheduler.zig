@@ -20,6 +20,7 @@ const elf = @import("../loader/elf.zig");
 const loader = @import("../loader/load.zig");
 const process = @import("process.zig");
 const irqlock = @import("../sync/irqlock.zig");
+const runqueue = @import("runqueue.zig");
 const vfs = @import("../fs/vfs.zig");
 const console = @import("../arch/x86_64/console.zig");
 
@@ -75,65 +76,20 @@ pub const Thread = struct {
 /// for why that is not a separate call any more.
 pub var process_table: process.Table = undefined;
 
-const Queue = struct {
-    head: ?*Thread = null,
-    tail: ?*Thread = null,
+/// The queues themselves are `sched/runqueue.zig`, shared with the AArch64
+/// scheduler. There was a private copy of exactly this here, and the AArch64
+/// side was about to grow a second one — three priority FIFOs and "take the
+/// head of the highest non-empty" written out twice, which is two scheduling
+/// policies that agree today.
+const Queues = runqueue.MultiQueue(Thread, Priority.count());
 
-    fn enqueue(self: *Queue, t: *Thread) void {
-        t.next = null;
-        if (self.tail) |tail| {
-            tail.next = t;
-            self.tail = t;
-        } else {
-            self.head = t;
-            self.tail = t;
-        }
-    }
-
-    fn is_empty(self: *const Queue) bool {
-        return self.head == null;
-    }
-
-    fn dequeue(self: *Queue) ?*Thread {
-        const t = self.head orelse return null;
-        self.head = t.next;
-        if (self.head == null) self.tail = null;
-        t.next = null;
-        return t;
-    }
-
-    fn remove(self: *Queue, target: *Thread) bool {
-        var prev: ?*Thread = null;
-        var cur = self.head;
-        while (cur) |t| : ({
-            prev = t;
-            cur = t.next;
-        }) {
-            if (t == target) {
-                if (prev) |p| p.next = t.next else self.head = t.next;
-                if (self.tail == t) self.tail = prev;
-                t.next = null;
-                return true;
-            }
-        }
-        return false;
-    }
-
-    pub fn len(self: *const Queue) usize {
-        var n: usize = 0;
-        var cur = self.head;
-        while (cur) |t| : (cur = t.next) n += 1;
-        return n;
-    }
-};
-
-var queues: [Priority.count()]Queue = .{ .{}, .{}, .{} };
+var queues: Queues = .{};
 var current: ?*Thread = null;
 var next_tid: Tid = 1;
 var frozen: bool = false;
 
 pub fn init() void {
-    for (&queues) |*q| q.* = .{};
+    queues.clear();
     current = null;
     frozen = false;
     // The process table needs its allocator before anything can register a
@@ -194,7 +150,7 @@ pub fn spawn_kthread(
     t.kernel_stack_top = stack_top;
     t.kernel_stack_bytes = stack_pages * pmm.PAGE_SIZE;
 
-    queues[@intFromEnum(priority)].enqueue(t);
+    queues.enqueue(t, @intFromEnum(priority));
     return t;
 }
 
@@ -265,7 +221,7 @@ pub fn spawn_user(path: []const u8) !*Thread {
     // window where the stack under our feet is about to be unmapped.
     context.init_kernel_thread(&t.context, t.kernel_stack_top - context.IRET_FRAME_RESERVE, user_entry, 0);
 
-    queues[@intFromEnum(Priority.normal)].enqueue(t);
+    queues.enqueue(t, @intFromEnum(Priority.normal));
     return t;
 }
 
@@ -308,16 +264,13 @@ pub fn schedule() void {
     if (prev) |p| {
         if (p.state == .running) {
             p.state = .runnable;
-            queues[@intFromEnum(p.priority)].enqueue(p);
+            queues.enqueue(p, @intFromEnum(p.priority));
         }
     }
-    var i: usize = 0;
-    while (i < Priority.count()) : (i += 1) {
-        if (queues[i].dequeue()) |next| {
-            next.state = .running;
-            current = next;
-            return;
-        }
+    if (queues.pick()) |next| {
+        next.state = .running;
+        current = next;
+        return;
     }
     // Nothing runnable — leave `current` null and the caller halts.
     current = null;
@@ -405,23 +358,20 @@ pub fn yield() void {
     if (prev) |p| {
         if (p.state == .running) {
             p.state = .runnable;
-            queues[@intFromEnum(p.priority)].enqueue(p);
+            queues.enqueue(p, @intFromEnum(p.priority));
         }
     }
 
-    var i: usize = 0;
-    while (i < Priority.count()) : (i += 1) {
-        if (queues[i].dequeue()) |next| {
-            next.state = .running;
-            current = next;
-            // The CPU takes an interrupt in ring 3 onto the stack named by the
-            // TSS, so RSP0 has to follow whichever thread is running — a stale
-            // one would push the frame onto a stack another thread is using.
-                if (next.kernel_stack_top != 0) gdt.set_kernel_stack(next.kernel_stack_top);
-            if (preempt_window_spins != 0) widen_preempt_window();
-            context.switch_to(prev_ctx, &next.context);
-            return;
-        }
+    if (queues.pick()) |next| {
+        next.state = .running;
+        current = next;
+        // The CPU takes an interrupt in ring 3 onto the stack named by the
+        // TSS, so RSP0 has to follow whichever thread is running — a stale
+        // one would push the frame onto a stack another thread is using.
+        if (next.kernel_stack_top != 0) gdt.set_kernel_stack(next.kernel_stack_top);
+        if (preempt_window_spins != 0) widen_preempt_window();
+        context.switch_to(prev_ctx, &next.context);
+        return;
     }
     // Nothing else is runnable.
     if (prev) |p| {
@@ -460,15 +410,7 @@ pub fn thread_exit(code: i32) noreturn {
 /// Hand control to the run queue and come back when it drains. Used by the
 /// boot path to run kernel threads to completion before carrying on.
 pub fn run_queued() void {
-    while (true) {
-        var any = false;
-        var i: usize = 0;
-        while (i < Priority.count()) : (i += 1) {
-            if (!queues[i].is_empty()) any = true;
-        }
-        if (!any) break;
-        yield();
-    }
+    while (queues.any()) yield();
     // The boot context is a resume point on *this* frame, and it stops being
     // one the moment this call returns. Left set, a thread that exits later
     // would find it, "switch back to boot", and resume inside a run_queued
@@ -525,7 +467,7 @@ pub fn wake(t: *Thread) void {
     if (t.state != .blocked) return;
     t.state = .runnable;
     t.wait = .none;
-    queues[@intFromEnum(t.priority)].enqueue(t);
+    queues.enqueue(t, @intFromEnum(t.priority));
 }
 
 pub fn exit(code: i32) noreturn {
@@ -562,7 +504,7 @@ pub fn current_thread() ?*Thread {
 }
 
 pub fn queue_len(p: Priority) usize {
-    return queues[@intFromEnum(p)].len();
+    return queues.len(@intFromEnum(p));
 }
 
 // ── Process syscalls ─────────────────────────────
@@ -608,7 +550,7 @@ pub fn fork() !Pid {
     t.context.cr3 = child_space.pml4_phys;
     next_tid += 1;
     child.main_thread_tid = t.tid;
-    queues[@intFromEnum(Priority.normal)].enqueue(t);
+    queues.enqueue(t, @intFromEnum(Priority.normal));
     return child.pid;
 }
 

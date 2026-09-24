@@ -33,6 +33,8 @@ const vm = @import("arch/aarch64/vm.zig");
 const paging = @import("arch/aarch64/paging.zig");
 const trap = @import("arch/aarch64/trap.zig");
 const threadtest = @import("threadtest_aarch64.zig");
+const sched = @import("sched/sched_aarch64.zig");
+const schedtest = @import("schedtest_aarch64.zig");
 const heap = @import("mm/heap.zig");
 const loader = @import("loader/load_aarch64.zig");
 const fb = @import("graphics/fb.zig");
@@ -123,6 +125,12 @@ export fn kernel_main_aarch64(dtb_phys: u64) callconv(.C) noreturn {
     // More than one thread. Cooperatively first, then with the timer taking
     // the CPU away from a thread that never offers it.
     threadtest.run();
+
+    // And then a scheduler over the top of that primitive: run queues,
+    // priorities, threads that finish and are reclaimed. Everything above
+    // switches between two contexts that the test itself names; from here
+    // on, which thread runs next is a decision the kernel makes.
+    schedtest.run();
 
     // A screen, and then a console on it.
     //
@@ -1313,7 +1321,17 @@ export fn aarch64_irq() callconv(.C) void {
     // one, and switching threads there would suspend a half-finished call on
     // a stack frame nothing comes back to until that thread runs again —
     // with no way yet to say what the call should do when it does.
-    if (tick and !trap.in_syscall()) threadtest.on_tick();
+    if (tick and !trap.in_syscall()) {
+        // Two supervisors and then the scheduler. The first two are boot
+        // selftests that are inert unless their own test is running, and
+        // they are mutually exclusive with each other and with the
+        // scheduler: while `threadtest` drives its own pair of contexts the
+        // scheduler has no current thread, and while the scheduler is
+        // running threads `threadtest` is not.
+        threadtest.on_tick();
+        schedtest.on_tick();
+        sched.tick();
+    }
 }
 
 fn install_vectors() void {
