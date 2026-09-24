@@ -251,6 +251,13 @@ a bigger surface than the one measured here and pins the ABI to Linux's.
   reads it back, which catches the corruption rather than a proxy for it.
   Measured both ways: **24 collisions in 31,827 allocations with the guard
   removed, 0 in ~30,000 with it**, on GICv2 and GICv3 alike.
+  That test shipped leaking two pages a boot, and the leak check in the same
+  file reported it every time. A racer spends most of its loop between
+  `alloc_page` and `free_page` — holding the page is what gives the other
+  thread time to collide with it — so stopping it where it stood left a page
+  out, one per racer. It is asked to stop now and parks at the top of its own
+  loop, the one point where it holds nothing. Why that was not caught is the
+  more useful half, and it is the gate entry below.
 - **User pointers are validated on both architectures now.** x86_64 had
   none of it: `sys_read`, `sys_write` and `sys_open` cast the argument to a
   pointer and used it, so a bad one was a page fault in ring 0. x86 has no
@@ -383,6 +390,15 @@ Both OS gates are live in `.github/workflows/os-boot.yml`:
     what the kernel read and what ended up on screen — including a line
     typed wrong and corrected with backspace, which those two disagree about
     if the console echoes without erasing
+- **Every boot assertion also requires that nothing printed `[FAIL]`.** The
+  checks above ask whether the lines a working boot prints are present, and
+  nothing asked whether a line a broken one prints is absent — so a selftest
+  that ran, failed, and said so passed the gate in silence. That is measured,
+  not hypothetical: the aarch64 boot printed
+  `[FAIL] thread stacks leaked: 129232 -> 129230` on **every** run for a
+  whole pull request, and no grep was looking for it. Each of the six boots
+  now fails if `[FAIL]` appears anywhere in its log. `[--]` lines, which mark
+  a check skipped because the machine cannot run it, are untouched.
 - **`zig build check`** runs beside the x86 kernel build, compiling the
   modules no kernel imports (`drivers/tty.zig`, `fs/devfs.zig`,
   `fs/procfs.zig`, `boot/uefi.zig`). Zig never parses a file nothing
