@@ -134,6 +134,23 @@ aarch64_enter_user:
     mov     x29, xzr
     mov     x30, xzr
 
+    // FPSR and FPCR, which are one pair for the whole core and not part of
+    // the file the loop below clears.
+    //
+    // FPCR holds the rounding mode. A program that sets one and exits leaves
+    // it set, and every program after it computes different numbers —
+    // measured, and not hypothetically: /bin/clarity-fpprobe sets rounding
+    // toward minus infinity to check that FPCR survives a system call, and
+    // the Clarity demo that ran after it printed the square root of two as
+    // 1.414213562373095 instead of 1.4142135623730951. The boot gate asserts
+    // that digit precisely because a floating-point path that is subtly
+    // wrong still prints something plausible.
+    //
+    // Zero is the reset state: round to nearest, no exceptions trapped, no
+    // flags raised. What a program is entitled to assume it starts with.
+    msr     fpcr, xzr
+    msr     fpsr, xzr
+
     // The vector file too, both halves of each register. `clarity_switch_to`
     // saves only the low halves of v8-v15, because that is all AAPCS64 makes
     // callee-saved — so the upper halves and the whole of the rest hold
