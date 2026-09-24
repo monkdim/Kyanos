@@ -51,6 +51,20 @@ pub const Context = extern struct {
     /// kernel threads from turning the low half back on while the kernel is
     /// deliberately running with it off.
     ttbr0: u64 = 0,
+
+    /// TPIDR_EL1, which on this kernel points at the `UserSave` the thread's
+    /// own `enter_user` laid down on its kernel stack — where the kernel goes
+    /// back to when the process it is running stops being the kernel's
+    /// problem. Zero for a thread that is not inside `enter_user`.
+    ///
+    /// It rides in the Context for the same reason `ttbr0` does, and the
+    /// reason is worth stating plainly: a thread resumed with someone else's
+    /// user save area would, at its process's next `exit`, unwind onto
+    /// *another thread's* stack. Putting it anywhere the scheduler has to
+    /// remember to swap by hand would mean every switch site has to remember
+    /// — `yield`, the exit path, the way back to the boot context — and the
+    /// one that forgot would be the one that only fails with two processes.
+    tpidr: u64 = 0,
 };
 
 comptime {
@@ -64,6 +78,7 @@ comptime {
     std.debug.assert(@offsetOf(Context, "x29") == 88);
     std.debug.assert(@offsetOf(Context, "d") == 104);
     std.debug.assert(@offsetOf(Context, "ttbr0") == 168);
+    std.debug.assert(@offsetOf(Context, "tpidr") == 176);
 }
 
 /// Switch from `prev` to `next`. Saves `prev`'s callee-saved state and the

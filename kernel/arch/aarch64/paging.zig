@@ -264,13 +264,31 @@ fn invalidate(space: *const AddressSpace, virt: u64) void {
     );
 }
 
+/// This space as a TTBR0_EL1 value: the root table's physical address with
+/// the ASID in the top sixteen bits.
+///
+/// `activate` installs it now; this is for putting it somewhere that installs
+/// it later — a thread's Context, so that a thread resumed after a preemption
+/// comes back to its own address space rather than to whichever one happened
+/// to be in the register.
+///
+/// It does not touch TCR_EL1.EPD0, and `clarity_switch_to` does not either.
+/// Walking the low half has to have been enabled by an `activate` somewhere
+/// before a context switch can mean anything, and it has to stay enabled
+/// while any process is still runnable: a `deactivate` while another process
+/// is only preempted, not finished, takes that process's translations away
+/// and the next thing it touches faults.
+pub fn ttbr_value(space: *const AddressSpace) u64 {
+    return (@as(u64, space.asid) << 48) | (space.root_phys & ADDR_MASK);
+}
+
 /// Install this space as the low half and start translating it.
 ///
 /// Two writes, in this order and not the other: TTBR0 first, then clearing
 /// TCR_EL1.EPD0. Enabling walks before the register they walk from would
 /// point the hardware at whatever TTBR0 happened to hold.
 pub fn activate(space: *const AddressSpace) void {
-    const ttbr = (@as(u64, space.asid) << 48) | (space.root_phys & ADDR_MASK);
+    const ttbr = ttbr_value(space);
     asm volatile (
         \\msr ttbr0_el1, %[ttbr]
         \\isb

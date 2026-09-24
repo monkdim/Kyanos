@@ -9,13 +9,12 @@
 //
 // That is a context switch with the general registers left out, and it is
 // deliberately the smaller thing: nothing here resumes a *different* thread,
-// only the one that went down. Preemptive switching between processes needs
-// the trap frame the vector entry already builds, and lands with the
-// scheduler.
-
-.section .bss
-.align 4
-// Where the kernel's state waits while EL0 runs.
+// only the one that went down. Which thread runs next is the scheduler's
+// decision, and it is taken in the vector entry's handler, on the kernel
+// stack this file's caller is standing on.
+//
+// Where the kernel's state waits while EL0 runs — `struct UserSave` in
+// trap.zig, which asserts this layout:
 //
 //    0..95   x19-x30, the callee-saved set AAPCS64 requires a function to
 //            preserve — exactly what `enter_user`'s caller is entitled to
@@ -29,33 +28,52 @@
 // lost its timer the first time a process exited would look completely
 // healthy right up until it needed to schedule something.
 //
-// One save area, so `enter_user` does not nest. Nothing needs it to: a
-// process re-entering the kernel arrives through the vector table, not
-// through here.
-aarch64_user_save:
-    .space 112
+// The caller supplies the area, and TPIDR_EL1 says which one is the current
+// thread's. It used to be one static block, with a comment saying "so
+// `enter_user` does not nest. Nothing needs it to". Something does now: two
+// threads each running a program are each inside `enter_user`, and a single
+// block would mean whichever entered second wrote over the first's way home
+// — so the first program to exit would unwind onto the other thread's stack.
+// `clarity_switch_to` carries TPIDR_EL1 from thread to thread, which is what
+// makes "the current thread's" true after a preemption as well as before it.
 
 .section .text
 
-// u64 aarch64_enter_user(u64 entry, u64 user_sp)
+
+// u64 aarch64_enter_user(u64 entry, u64 user_sp, UserSave *save, u64 arg)
 //
 // Returns the value handed to aarch64_leave_user. Does not return any other
 // way: an EL0 program that never traps never comes back.
+//
+// `save` is 112 bytes the caller owns for as long as the process runs, which
+// in practice means a local in the frame this is about to leave behind — the
+// frame `leave_user` restores SP to.
+//
+// `arg` arrives in the program's x0. It is the first thing this kernel has
+// ever told a program about itself, and it exists because two copies of one
+// image running side by side are otherwise indistinguishable — to each other
+// and to anyone reading the boot log. It is not argv: argv is a stack the
+// kernel builds and a contract about what is on it, and none of that is here
+// yet. It is one number, in the register the ABI already passes a first
+// argument in, so the day there is an argv it goes in the same place.
 .global aarch64_enter_user
 .type aarch64_enter_user, %function
 aarch64_enter_user:
-    adrp    x2, aarch64_user_save
-    add     x2, x2, #:lo12:aarch64_user_save
+    // This thread's way home, where the exception handler can find it
+    // whichever thread was running when the process trapped.
+    msr     tpidr_el1, x2
     stp     x19, x20, [x2, #0]
     stp     x21, x22, [x2, #16]
     stp     x23, x24, [x2, #32]
     stp     x25, x26, [x2, #48]
     stp     x27, x28, [x2, #64]
     stp     x29, x30, [x2, #80]
-    mov     x3, sp
-    str     x3, [x2, #96]
-    mrs     x4, daif
-    str     x4, [x2, #104]
+    // x5 and x6 rather than x3 and x4: x3 is the argument the program is
+    // about to be given, and must still be there at the `eret`.
+    mov     x5, sp
+    str     x5, [x2, #96]
+    mrs     x6, daif
+    str     x6, [x2, #104]
 
     msr     sp_el0, x1              // the process's stack
     msr     elr_el1, x0             // where it starts
@@ -65,14 +83,25 @@ aarch64_enter_user:
     // report-and-halt. A timer tick landing in a reporting vector would make
     // this a test that passes or fails depending on when it was started.
     msr     spsr_el1, xzr
+
+    // Last, because it overwrites the entry point this read it from.
+    //
+    // Everything else the program starts with is whatever the kernel happened
+    // to leave in the registers, which is a thing worth saying out loud: a
+    // program can read kernel addresses out of x1-x18 at its first
+    // instruction. That is not made worse by this line and is not fixed by
+    // it either; it wants its own change, which zeroes the file and proves
+    // the zeroes with a program that looks.
+    mov     x0, x3
     eret
 
 // void aarch64_leave_user(u64 return_value) — never returns to its caller.
 .global aarch64_leave_user
 .type aarch64_leave_user, %function
 aarch64_leave_user:
-    adrp    x2, aarch64_user_save
-    add     x2, x2, #:lo12:aarch64_user_save
+    // The running thread's own save area, not a global one: with two threads
+    // in EL0 the difference is which stack this returns onto.
+    mrs     x2, tpidr_el1
     ldp     x19, x20, [x2, #0]
     ldp     x21, x22, [x2, #16]
     ldp     x23, x24, [x2, #32]
@@ -84,6 +113,10 @@ aarch64_leave_user:
     // Interrupts last, so nothing arrives while SP is in flight.
     ldr     x4, [x2, #104]
     msr     daif, x4
+    // Nothing is in EL0 on this thread any more, and nothing may find a
+    // stale way home through TPIDR_EL1 — a `leave_user` with no matching
+    // `enter_user` would otherwise return onto a frame that has been reused.
+    msr     tpidr_el1, xzr
     // x30 now holds enter_user's return address, and x0 the value to return
     // through it. This `ret` returns from a function whose frame was
     // abandoned two exception levels ago.
