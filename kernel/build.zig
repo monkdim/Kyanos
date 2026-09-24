@@ -260,6 +260,22 @@ pub fn build(b: *std.Build) void {
         .root_source_file = reg_prog_arm.getEmittedBin(),
     });
 
+    // /bin/clarity-fpprobe for aarch64: does a program get its
+    // floating-point registers back? Runs alone, so it asks about the system
+    // call path with nothing else able to be the explanation.
+    const fp_prog_arm = b.addExecutable(.{
+        .name = "clarity-fpprobe-aarch64",
+        .root_source_file = b.path("user/fpprobe_aarch64.zig"),
+        .target = user_arm_target,
+        .optimize = .ReleaseSmall,
+    });
+    fp_prog_arm.setLinkerScript(b.path("user/user.ld"));
+    fp_prog_arm.entry = .{ .symbol_name = "_start" };
+    fp_prog_arm.pie = false;
+    kernel_arm.root_module.addAnonymousImport("fpprobe_elf_aarch64", .{
+        .root_source_file = fp_prog_arm.getEmittedBin(),
+    });
+
     // /bin/clarity-spin for aarch64: a program that spends time at EL0.
     //
     // Two copies of it run at once, one per kernel thread, which is the whole

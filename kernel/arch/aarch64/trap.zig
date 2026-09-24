@@ -36,12 +36,44 @@ const vfs = @import("../../fs/vfs.zig");
 
 /// The interrupted process's state, as the vector entry laid it out.
 /// `extern` because the offsets are shared with assembly and must not be
-/// reordered: x0-x30 at 0..248, ELR at 248, SPSR at 256.
+/// reordered: x0-x30 at 0..248, ELR at 248, SPSR at 256, FPSR and FPCR at
+/// 264 and 272, and the vector file at 288. The asserts below are what stops
+/// this and vectors.S drifting apart.
 pub const Frame = extern struct {
     x: [31]u64,
     elr: u64,
     spsr: u64,
+
+    /// The floating-point status and control registers. One pair for the
+    /// whole core, so they belong to whoever was interrupted: FPCR holds the
+    /// rounding mode a program chose, FPSR the exception flags it has
+    /// accumulated.
+    fpsr: u64,
+    fpcr: u64,
+
+    /// So `v` lands 16-byte aligned, which `stp q0, q1` requires.
+    _pad: u64,
+
+    /// q0-q31, two words each, in register order.
+    ///
+    /// All of them, not the eight the context switch keeps. `clarity_switch_to`
+    /// saves the low halves of d8-d15 because that is the whole of what
+    /// AAPCS64 makes callee-saved — which is the right answer for a *call*,
+    /// and an exception is not one. A program interrupted halfway through an
+    /// expression has live values everywhere in here.
+    v: [64]u64,
 };
+
+comptime {
+    // vectors.S hard-codes every one of these.
+    std.debug.assert(@offsetOf(Frame, "x") == 0);
+    std.debug.assert(@offsetOf(Frame, "elr") == 248);
+    std.debug.assert(@offsetOf(Frame, "spsr") == 256);
+    std.debug.assert(@offsetOf(Frame, "fpsr") == 264);
+    std.debug.assert(@offsetOf(Frame, "fpcr") == 272);
+    std.debug.assert(@offsetOf(Frame, "v") == 288);
+    std.debug.assert(@sizeOf(Frame) == 800);
+}
 
 /// Exception class, ESR_EL1 bits [31:26].
 const EC_SVC64: u64 = 0x15; // `svc` from AArch64
