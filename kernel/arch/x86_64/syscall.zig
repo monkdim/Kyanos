@@ -66,10 +66,36 @@ pub fn init() void {
     // the `syscall` and the stack switch would run on the user stack.
     write_msr(IA32_FMASK, 0x0000_0700);
 
-    // While in the kernel, GS points at per_cpu and the shadow holds the
-    // user's value; `swapgs` on each boundary keeps that true.
+    // Both bases hold per_cpu, so `swapgs` cannot get it wrong.
+    //
+    // The textbook arrangement is GS = per_cpu in the kernel and the user's
+    // own value in the shadow, with `swapgs` at every boundary keeping the
+    // two straight. That depends on the boundaries being symmetric, and here
+    // they are not: an interrupt taken in ring 3 does no `swapgs` at all, so
+    // the handler runs with whatever base ring 3 had. That was harmless while
+    // only one process ever existed, because the handler always returned to
+    // the same ring-3 context it interrupted.
+    //
+    // With two processes it stops being harmless. A thread preempted in ring
+    // 3 can be resumed from a context that is *in the kernel*, and its `iretq`
+    // then carries the kernel's base back into ring 3 — after which that
+    // process's next system call swaps to the shadow's zero and stores the
+    // user stack pointer at address 8. Measured: a page fault at cr2=0x8, in
+    // ring 0, on the instruction after `swapgs`, one boot in three.
+    //
+    // This kernel has no user GS. It set the shadow to zero and no program
+    // has ever read %gs. So the two values are made the same, `swapgs`
+    // becomes a swap of one value for itself, and every path into the kernel
+    // finds per_cpu whichever way it arrived. Ring 3 holding the pointer
+    // costs nothing it can spend: reaching kernel memory through it faults,
+    // and reading the base needs FSGSBASE, which is not enabled.
+    //
+    // The day userspace wants a GS of its own, this has to go back to the
+    // textbook arrangement — and the interrupt stubs have to `swapgs` on
+    // entry from ring 3 and on the way back, which is what would have made
+    // the original arrangement correct in the first place.
     write_msr(IA32_GS_BASE, @intFromPtr(&per_cpu));
-    write_msr(IA32_KERNEL_GS_BASE, 0);
+    write_msr(IA32_KERNEL_GS_BASE, @intFromPtr(&per_cpu));
 }
 
 fn read_msr(msr: u32) u64 {

@@ -201,34 +201,45 @@ pub const IretFrame = extern struct {
 ///
 /// `regs` is reached after CR3 has changed, which is safe because it is a
 /// kernel heap address and every address space maps the upper half.
-pub fn enter_userland_regs(cr3: u64, frame_rsp: u64, fpu_area: u64, regs: *const Regs) noreturn {
+pub fn enter_userland_regs(cr3: u64, frame_rsp: u64, fpu_area: u64, regs: *const Regs, gs_kernel_base: u64) noreturn {
     asm volatile (
         \\ cli
-        \\ fxrstor (%%rdx)
-        \\ movq %%rax, %%cr3
+        // The GS bases, written rather than swapped. See enter_userland.
+        \\ mov %%r10, %%rax
+        \\ mov %%r10, %%rdx
+        \\ shr $32, %%rdx
+        \\ mov $0xC0000101, %%ecx
+        \\ wrmsr
+        \\ mov %%r10, %%rax
+        \\ mov %%r10, %%rdx
+        \\ shr $32, %%rdx
+        \\ mov $0xC0000102, %%ecx
+        \\ wrmsr
+        \\ fxrstor (%%r8)
+        \\ movq %%rdi, %%cr3
         \\ movq %%rsi, %%rsp
-        \\ movq 0(%%rcx), %%rbx
-        \\ movq 8(%%rcx), %%rbp
-        \\ movq 16(%%rcx), %%r12
-        \\ movq 24(%%rcx), %%r13
-        \\ movq 32(%%rcx), %%r14
-        \\ movq 40(%%rcx), %%r15
-        \\ movq 48(%%rcx), %%rdi
-        \\ movq 56(%%rcx), %%rsi
-        \\ movq 64(%%rcx), %%rdx
-        \\ movq 72(%%rcx), %%r10
-        \\ movq 80(%%rcx), %%r8
-        \\ movq 88(%%rcx), %%r9
+        \\ movq 0(%%r9), %%rbx
+        \\ movq 8(%%r9), %%rbp
+        \\ movq 16(%%r9), %%r12
+        \\ movq 24(%%r9), %%r13
+        \\ movq 32(%%r9), %%r14
+        \\ movq 40(%%r9), %%r15
+        \\ movq 48(%%r9), %%rdi
+        \\ movq 56(%%r9), %%rsi
+        \\ movq 64(%%r9), %%rdx
+        \\ movq 72(%%r9), %%r10
+        \\ movq 80(%%r9), %%r8
+        \\ movq 88(%%r9), %%r9
         \\ xor %%eax, %%eax
         \\ xor %%ecx, %%ecx
         \\ xor %%r11d, %%r11d
-        \\ swapgs
         \\ iretq
         :
-        : [cr3] "{rax}" (cr3),
+        : [cr3] "{rdi}" (cr3),
           [frame] "{rsi}" (frame_rsp),
-          [fpu] "{rdx}" (fpu_area),
-          [regs] "{rcx}" (regs),
+          [fpu] "{r8}" (fpu_area),
+          [regs] "{r9}" (regs),
+          [gsk] "{r10}" (gs_kernel_base),
         : "memory"
     );
     unreachable;
@@ -263,12 +274,41 @@ pub fn fxsave_into(area: *[512]u8) void {
     );
 }
 
-pub fn enter_userland(cr3: u64, frame_rsp: u64, fpu_area: u64) noreturn {
+pub fn enter_userland(cr3: u64, frame_rsp: u64, fpu_area: u64, gs_kernel_base: u64) noreturn {
     asm volatile (
         \\ cli
-        \\ fxrstor (%%rdx)
-        \\ movq %%rax, %%cr3
-        \\ movq %%rcx, %%rsp
+        // The GS bases, written rather than swapped.
+        //
+        // `swapgs` exchanges GS.base with IA32_KERNEL_GS_BASE, so what it
+        // leaves behind depends on which way round they already were — and
+        // getting here does not guarantee that. An interrupt taken in ring 3
+        // does no swapgs, so the handler runs with the *user* base; if it
+        // then switches threads and the new one enters ring 3 through here, a
+        // swap would put the per-CPU pointer in ring 3's GS and zero in the
+        // shadow. The next system call would swap back to zero and store the
+        // user stack at address 8.
+        //
+        // That is not hypothetical: it is a page fault at cr2=0x8, in ring 0,
+        // with %rsp still holding a user address, on one boot in three, as
+        // soon as two processes existed at once to be switched between.
+        //
+        // Writing both explicitly costs two wrmsr and cannot be got wrong by
+        // arriving from somewhere unexpected. Both get the per-CPU pointer —
+        // see syscall.zig's init for why this kernel keeps them equal rather
+        // than keeping a separate user value.
+        \\ mov %%r10, %%rax
+        \\ mov %%r10, %%rdx
+        \\ shr $32, %%rdx
+        \\ mov $0xC0000101, %%ecx
+        \\ wrmsr
+        \\ mov %%r10, %%rax
+        \\ mov %%r10, %%rdx
+        \\ shr $32, %%rdx
+        \\ mov $0xC0000102, %%ecx
+        \\ wrmsr
+        \\ fxrstor (%%r8)
+        \\ movq %%rdi, %%cr3
+        \\ movq %%rsi, %%rsp
         // Every general register, because the register file is not the
         // kernel's to leave lying around. `iretq` pops RIP, CS, RFLAGS, RSP
         // and SS and nothing else, so without this rax through r15 reach
@@ -304,12 +344,12 @@ pub fn enter_userland(cr3: u64, frame_rsp: u64, fpu_area: u64) noreturn {
         \\ xor %%r13d, %%r13d
         \\ xor %%r14d, %%r14d
         \\ xor %%r15d, %%r15d
-        \\ swapgs
         \\ iretq
         :
-        : [cr3] "{rax}" (cr3),
-          [frame] "{rcx}" (frame_rsp),
-          [fpu] "{rdx}" (fpu_area),
+        : [cr3] "{rdi}" (cr3),
+          [frame] "{rsi}" (frame_rsp),
+          [fpu] "{r8}" (fpu_area),
+          [gsk] "{r10}" (gs_kernel_base),
         : "memory"
     );
     unreachable;
