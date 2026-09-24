@@ -10,6 +10,7 @@
 
 const std = @import("std");
 const pmm = @import("pmm.zig");
+const irqlock = @import("../sync/irqlock.zig");
 
 /// Where physical memory appears in the kernel's address space.
 ///
@@ -84,7 +85,17 @@ fn vt_free(_: *anyopaque, buf: []u8, log2_align: u8, _: usize) void {
     free(buf.ptr, need_size(buf.len, log2_align));
 }
 
+/// A chunk of at least `size` bytes, or null.
+///
+/// Guarded for the same reason the page allocator is: pulling the head off a
+/// free list is a read of `slab.free_list`, a read of `node.next` and a store
+/// back, and two threads interrupted between them are handed the same chunk.
+/// `grow_slab` reaches the page allocator, which takes the guard again; that
+/// nests safely, see sync/irqlock.zig.
 pub fn alloc(size: usize) ?[*]u8 {
+    const guard = irqlock.acquire();
+    defer guard.release();
+
     if (size == 0) return null;
     if (size > 4096) {
         const pages = (size + pmm.PAGE_SIZE - 1) / pmm.PAGE_SIZE;
@@ -101,7 +112,14 @@ pub fn alloc(size: usize) ?[*]u8 {
     return @ptrCast(node);
 }
 
+/// Give a chunk back.
+///
+/// Pushing onto the free list is the mirror of the pull above — a read of the
+/// head, a store into the node, a store back — and races the same way.
 pub fn free(ptr: [*]u8, size: usize) void {
+    const guard = irqlock.acquire();
+    defer guard.release();
+
     if (size > 4096) {
         const pages = (size + pmm.PAGE_SIZE - 1) / pmm.PAGE_SIZE;
         var i: usize = 0;

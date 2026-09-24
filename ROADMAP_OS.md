@@ -31,8 +31,9 @@ every pull request; anything not gated is called out as unverified.
 - **The AArch64 (Apple-Silicon-class) kernel runs programs, draws a screen,
   reads a keyboard, and can be typed at over a serial line.** The
   `OS boot (aarch64, TCG)` gate boots it four ways — 512 MiB with 32 required
-  markers, then a PAN-capable CPU, a GICv3, and 4 GiB with the markers each of
-  those configurations exists to prove — then screenshots the display,
+  markers — one of them an allocator race the boot exercises deliberately —
+  then a PAN-capable CPU, a GICv3, and 4 GiB with the markers each of those
+  configurations exists to prove — then screenshots the display,
   types at the keyboard, and types at it again with no keyboard and no
   display at all. It has also been booted on an **Apple M5** and driven by
   hand through the shell; the transcript is in `kernel/RUNNING.md`. What is
@@ -230,10 +231,26 @@ a bigger surface than the one measured here and pins the ABI to Linux's.
   running process's image — shares its loader but has no caller yet, so it
   has never been analysed by the compiler, let alone run. Everything in this
   kernel that was in that state turned out to be broken, so assume it is.
-- **The kernel heap and page allocator are not preemption-safe.** Nothing
-  allocates from a thread today (every spawn happens on the boot path, where
-  preemption is a no-op), so it is not reachable — but it is the next lock
-  that has to exist, before anything that allocates runs as a thread.
+- **The kernel heap and page allocator are preemption-safe now.** ✅ Both had
+  the same shape of bug: `pmm.alloc_page` tested a bitmap bit and set it in a
+  separate store, with `free_pages` and `next_hint` read-modify-written after;
+  `alloc_pages` found a run in one loop and claimed it in a second; the slab
+  heap pulled a free-list head across three accesses. A timer tick anywhere in
+  those sequences hands the same page — or the same chunk — to two threads.
+  They take an interrupt-masking guard now (`sync/irqlock.zig`), which nests,
+  because `alloc_pages(1)` calls `alloc_page` and the heap calls both.
+  **On one core, masking interrupts is the lock; it is not a spinlock and will
+  not survive a second core**, which the file says at the top rather than
+  leaving for someone to find out.
+  The interesting part is the test. Two threads hammering the real allocator
+  managed **57,605 allocations with no collision** — the window is about five
+  instructions and a tick lands in it roughly once in 1e5 slices — so the
+  obvious test passes with the lock and without it, and proves nothing. So
+  `pmm.race_window_spins` widens the window on purpose while the boot selftest
+  runs, and each thread stamps its own byte into the page it was handed and
+  reads it back, which catches the corruption rather than a proxy for it.
+  Measured both ways: **24 collisions in 31,827 allocations with the guard
+  removed, 0 in ~30,000 with it**, on GICv2 and GICv3 alike.
 - **User pointers are validated on both architectures now.** x86_64 had
   none of it: `sys_read`, `sys_write` and `sys_open` cast the argument to a
   pointer and used it, so a bad one was a page fault in ring 0. x86 has no
