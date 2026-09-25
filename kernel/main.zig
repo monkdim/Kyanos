@@ -187,6 +187,7 @@ pub export fn kernel_main(mb_info_phys: u64) callconv(.C) noreturn {
         .poll = poll_input,
         .echo = console.echo,
         .ticks = timer.centiseconds,
+        .idle = idle_input,
     });
     conread.report_clock();
 
@@ -323,6 +324,46 @@ fn hang() noreturn {
 fn poll_input() ?u8 {
     if (kbd.poll()) |c| return c;
     return console.serial_poll();
+}
+
+/// Is IF set in the caller's own flags?
+///
+/// Asked rather than assumed, because the answer decides whether `hlt` is a
+/// pause or a hang: with interrupts masked nothing can wake the CPU and the
+/// machine stops there for good.
+fn interrupts_enabled() bool {
+    const flags = asm volatile (
+        \\ pushfq
+        \\ popq %[out]
+        : [out] "=r" (-> u64),
+    );
+    return (flags & 0x200) != 0;
+}
+
+/// What the console wait does instead of spinning.
+///
+/// Two steps, and they answer different questions. `yield` is about the rest
+/// of the machine: a thread waiting for a key should not hold the CPU away
+/// from one with work to do. `hlt` is about the CPU itself: with nothing else
+/// runnable, the right thing is to stop until an interrupt rather than to ask
+/// the keyboard four million times a second.
+///
+/// The keyboard and the serial port are both read by polling their hardware,
+/// so nothing has to arrive in a ring for this to work -- the timer tick is
+/// enough to wake the CPU and take the loop round again, and a keypress
+/// raises its own IRQ besides.
+fn idle_input() void {
+    sched.yield();
+    // Masked, `hlt` would never return. That does not happen on the paths
+    // that read the console -- `syscall_entry` sets IF once the frame is
+    // built, and the boot path runs with interrupts on -- but "does not
+    // happen" is a claim about today's callers, and hanging the machine is
+    // too expensive a way to find out it stopped being true.
+    if (interrupts_enabled()) {
+        asm volatile ("hlt");
+    } else {
+        asm volatile ("pause");
+    }
 }
 
 pub fn panic(msg: []const u8, _: ?*std.builtin.StackTrace, _: ?usize) noreturn {

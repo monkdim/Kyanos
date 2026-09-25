@@ -1326,6 +1326,39 @@ fn install_programs() void {
 /// a machine with no keyboard, and a serial port with nothing typed at it is
 /// indistinguishable from one nobody is connected to. That is the point —
 /// whoever is reading does not care which of them a character came from.
+/// How many polls per hundredth of a second a waiting read may cost.
+///
+/// The wait wakes on interrupts, and the timer is the one that is always
+/// there, so the natural answer is one poll per tick -- which is what both
+/// architectures measure: 300 polls over 300 hundredths on x86_64, 291 over
+/// 329 on aarch64. The bound is ten times that plus a hundred, because the
+/// thing it exists to catch is not a slow drift but a loop that stopped
+/// giving the CPU up at all, and that lands three to four orders of
+/// magnitude away: 11,882,275 and 2,922,091 respectively. A tight bound here
+/// would fail on a machine with a faster tick and catch nothing a loose one
+/// misses.
+const POLLS_PER_CENTI: u64 = 10;
+const POLLS_SLACK: u64 = 100;
+
+/// What the console wait does instead of spinning.
+///
+/// `wfi` and not a yield, and the asymmetry with x86_64 is deliberate rather
+/// than unfinished. read(2) is entered from EL0 with interrupts masked and
+/// stays that way -- the note on `.ticks` above is about the same fact -- so
+/// a cooperative switch from in here would hand the CPU to a thread while
+/// this one sits in a half-finished system call with nothing able to
+/// interrupt it. That is the "preemption stops at the kernel's door" entry in
+/// ROADMAP_OS.md, and it is a bigger thing than this.
+///
+/// `wfi` is safe where a yield is not: it stops the CPU until a wake-up
+/// event, and a physical interrupt is one whether or not PSTATE.I would let
+/// it be taken. So the counter the timeout is built on -- the physical
+/// counter, which keeps moving with interrupts masked -- has moved by the
+/// time this returns, and the loop goes round again.
+fn idle_input() void {
+    asm volatile ("wfi");
+}
+
 fn poll_input() ?u8 {
     if (keyboard.poll()) |c| return c;
     return console.poll_in();
@@ -1471,6 +1504,7 @@ fn read_some_lines() void {
         // interrupts masked, where the interrupt count does not move and a
         // timeout built on it never expires.
         .ticks = timer.hundredths,
+        .idle = idle_input,
     });
 
     // Bounded by the timer rather than by a spin count: how many times a loop
@@ -1492,6 +1526,8 @@ fn read_some_lines() void {
     var buf: [line.MAX_LINE + 1]u8 = undefined;
     var lines: usize = 0;
     var characters: usize = 0;
+    const polls_before = stdin.polls;
+    const ticks_before = timer.hundredths();
 
     console.print("  type at it; ");
     console.print_dec(cmdline.idle());
@@ -1533,6 +1569,27 @@ fn read_some_lines() void {
         console.print("  unfinished: \"");
         console.print(rest);
         console.println("\"");
+    }
+
+    // What the wait cost. Every other number this gate prints is about what
+    // arrived; this one is about what the CPU did while nothing was
+    // arriving, and it is the only one that would not change if the loop
+    // were a spin.
+    const polls = stdin.polls - polls_before;
+    const centis = timer.hundredths() - ticks_before;
+    console.print("  console input: ");
+    console.print_dec(polls);
+    console.print(" polls of the keyboard over ");
+    console.print_dec(centis);
+    console.println(" hundredths of a second of waiting");
+
+    const allowed = centis * POLLS_PER_CENTI + POLLS_SLACK;
+    if (polls > allowed) {
+        console.print("  [FAIL] console input: the wait spun — ");
+        console.print_dec(polls);
+        console.print(" polls where ");
+        console.print_dec(allowed);
+        console.println(" is the most a loop that gives the CPU up should need");
     }
 
     console.print("  [ok] console input: ");
