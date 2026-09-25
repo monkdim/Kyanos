@@ -95,7 +95,9 @@ pub fn run() void {
     };
     t.context.ttbr0 = paging.ttbr_value(&proc.space);
 
+    trap.writer_trace_reset();
     sched.run_queued();
+    const trace = trap.writer_trace_stop();
 
     var ok = true;
 
@@ -157,7 +159,43 @@ pub fn run() void {
         ok = false;
     }
 
+    if (!ok) report_writers(trace);
+
     if (ok) {
         console.println("  [ok] fork+exec: a process started another program and was still there afterwards");
+    }
+}
+
+/// Who said what, in the order they said it — printed only when this gate has
+/// already failed.
+///
+/// The failure this exists for was seen once, on a loaded host, and the whole
+/// of what it left behind was a console log in which
+/// `forkexec: one process so far` appeared **twice**. That log cannot say
+/// whether the line came from one process running its entry point again or
+/// from a second process running the parent's image, and those are different
+/// bugs. Nothing in the console output distinguishes them, because the bytes
+/// are identical either way — so the PID has to come from the kernel, which
+/// is the only party that knows it.
+///
+/// Three things per write, because fewer does not identify a line: the PID
+/// says who, the length says which of that program's lines it was (they all
+/// differ), and the first byte says which program's vocabulary it is in.
+///
+/// Printed on failure only. A passing boot has nothing to explain and the
+/// workflow greps these logs by exact string.
+fn report_writers(trace: []const u8) void {
+    console.print("  fork+exec: ");
+    console.print_dec(trace.len);
+    console.println(" writes reached the console, in this order:");
+    for (trace, 0..) |first, i| {
+        const who = trap.writer_trace_who[i];
+        console.print("    pid ");
+        console.print_dec(if (who.pid > 0) @intCast(who.pid) else 0);
+        console.print(" wrote ");
+        console.print_dec(who.len);
+        console.print(" bytes starting '");
+        console.print(&[_]u8{first});
+        console.println("'");
     }
 }

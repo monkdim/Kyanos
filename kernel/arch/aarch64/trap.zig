@@ -813,6 +813,20 @@ pub var writer_trace: [64]u8 = undefined;
 pub var writer_trace_len: usize = 0;
 pub var writer_trace_on: bool = false;
 
+/// Who wrote each of those bytes, and how much of it there was.
+///
+/// The first byte alone answers "in what order", which is what the
+/// two-programs test needs. It does not answer "who", and a test whose
+/// failure is a line appearing *twice* cannot be read without that: the same
+/// line from two processes and the same line twice from one process are
+/// different bugs and look identical in a console log.
+///
+/// A second array rather than a field, because `writer_trace_stop` hands the
+/// first bytes out as a `[]const u8` and two callers already read it that
+/// way. Same index, filled at the same moment, so the two cannot drift.
+pub const Writer = struct { pid: i32, len: usize };
+pub var writer_trace_who: [writer_trace.len]Writer = undefined;
+
 pub fn writer_trace_reset() void {
     writer_trace_len = 0;
     writer_trace_on = true;
@@ -850,10 +864,33 @@ fn sys_write(fd: u64, buf: u64, len: u64) i64 {
         if (mmu.translate_user_read(buf)) |phys| {
             const first: [*]const u8 = @ptrFromInt(vm.phys_to_virt(phys));
             writer_trace[writer_trace_len] = first[0];
+            writer_trace_who[writer_trace_len] = .{
+                .pid = if (sched.current_process()) |p| p.pid else 0,
+                .len = done,
+            };
             writer_trace_len += 1;
         }
     }
     return @intCast(done);
+}
+
+/// Why a `brk` came back short, in the terms that decide it.
+///
+/// The three numbers are the whole of the decision: what was asked for, where
+/// this process's heap begins, and where its break stands now. Printing the
+/// message without them says only what the caller already knew.
+fn report_refusal(why: []const u8, p: *sched.Process, requested: u64) void {
+    console.print("  brk: refused ");
+    console.print_hex(requested);
+    console.print(" for pid ");
+    console.print_dec(if (p.pid > 0) @intCast(p.pid) else 0);
+    console.print(" — ");
+    console.print(why);
+    console.print("; it starts at ");
+    console.print_hex(p.brk_start);
+    console.print(" and stands at ");
+    console.print_hex(p.brk);
+    console.println("");
 }
 
 /// brk(0) reports the current break; brk(addr) asks for it to move there and
@@ -871,13 +908,25 @@ fn sys_brk(requested: u64) i64 {
     // nothing in the table, or a program the boot path entered without
     // registering one — has no break and is told so, rather than being handed
     // somebody else's.
-    const p = sched.current_process() orelse return @bitCast(@as(u64, 0));
-    if (p.brk_start == 0) return @bitCast(@as(u64, 0));
+    const p = sched.current_process() orelse {
+        console.println("  brk: refused — the caller is not a process, so it has no break");
+        return @bitCast(@as(u64, 0));
+    };
+    if (p.brk_start == 0) {
+        console.println("  brk: refused — this process was entered without a break");
+        return @bitCast(@as(u64, 0));
+    }
     const space = p.address_space;
 
     if (requested == 0) return @intCast(p.brk);
-    if (requested < p.brk_start) return @intCast(p.brk);
-    if (requested > p.brk_start +| HEAP_MAX) return @intCast(p.brk);
+    if (requested < p.brk_start) {
+        report_refusal("below where this process's heap starts", p, requested);
+        return @intCast(p.brk);
+    }
+    if (requested > p.brk_start +| HEAP_MAX) {
+        report_refusal("past the end of the largest heap a process may have", p, requested);
+        return @intCast(p.brk);
+    }
 
     if (requested <= p.brk) {
         // Shrinking moves the break without unmapping. The pages stay until
