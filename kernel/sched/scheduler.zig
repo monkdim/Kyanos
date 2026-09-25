@@ -683,11 +683,31 @@ pub fn exec(path: []const u8) !void {
     defer elf.release(heap.allocator(), exe_obj);
     const loaded = try loader.load_into_new_space(exe_obj, image, heap.allocator());
 
-    // Tear down the old address space; the new one replaces it.
+    // The old address space goes back now, and not before: the load above can
+    // fail, and a process whose image was freed first would have nothing left
+    // to be refused with.
+    //
+    // This line used to be a comment saying "tear down the old address space"
+    // over code that only overwrote the pointer. Every image a process
+    // replaced stayed allocated for the life of the machine — and `exec` is
+    // the call whose whole purpose is to replace one.
+    //
+    // Nothing is running in it: this thread is about to enter the new one,
+    // and CR3 still holds the old until `enter_userland` swaps it, which is
+    // fine because freeing a page does not unmap it.
+    vmm.free_user_half(proc.address_space);
+
     proc.address_space = loaded.address_space;
     cur.context.cr3 = loaded.address_space.pml4_phys;
     cur.iret_rsp = context.build_iret_frame(cur.kernel_stack_top, loaded.entry_rip, loaded.user_rsp, 0x202, gdt.USER_CODE, gdt.USER_DATA);
     proc.name = path;
+
+    // And the heap, which belongs to the image and not to the process that
+    // used to be here. Without this the new image's break is wherever the old
+    // one's happened to be: too high and it starts past its own memory, too
+    // low and its first allocation lands inside its own .bss.
+    proc.brk_start = loaded.brk_start;
+    proc.brk = loaded.brk_start;
 
     // Re-enter user mode with the new image. CR3 goes in with it — see
     // enter_userland for why they cannot be separate statements.

@@ -84,6 +84,34 @@ pub fn build(b: *std.Build) void {
         .root_source_file = init_prog.getEmittedBin(),
     });
 
+    // /bin/clarity-hello: the smallest program that can be asked for by name,
+    // and /bin/clarity-forkexec, which asks for it from a forked child.
+    const hello_prog = b.addExecutable(.{
+        .name = "clarity-hello",
+        .root_source_file = b.path("user/hello.zig"),
+        .target = user_target,
+        .optimize = .ReleaseSmall,
+    });
+    hello_prog.setLinkerScript(b.path("user/user.ld"));
+    hello_prog.entry = .{ .symbol_name = "_start" };
+    hello_prog.pie = false;
+    kernel.root_module.addAnonymousImport("hello_elf", .{
+        .root_source_file = hello_prog.getEmittedBin(),
+    });
+
+    const forkexec_prog = b.addExecutable(.{
+        .name = "clarity-forkexec",
+        .root_source_file = b.path("user/forkexec.zig"),
+        .target = user_target,
+        .optimize = .ReleaseSmall,
+    });
+    forkexec_prog.setLinkerScript(b.path("user/user.ld"));
+    forkexec_prog.entry = .{ .symbol_name = "_start" };
+    forkexec_prog.pie = false;
+    kernel.root_module.addAnonymousImport("forkexec_elf", .{
+        .root_source_file = forkexec_prog.getEmittedBin(),
+    });
+
     // /bin/clarity-waitprobe: does wait(2) wait? Its parent asks before the
     // child has run, so a wait that only looks for an already-finished child
     // has nothing to find.

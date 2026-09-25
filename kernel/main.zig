@@ -27,6 +27,7 @@ const initprog = @import("initprog.zig");
 const regprobe = @import("regprobe.zig");
 const forkprobe = @import("forkprobe.zig");
 const waitprobe = @import("waitprobe.zig");
+const forkexec = @import("forkexec.zig");
 const clarityprog = @import("clarityprog.zig");
 const threadtest = @import("threadtest.zig");
 const fstest = @import("fstest.zig");
@@ -227,6 +228,10 @@ pub export fn kernel_main(mb_info_phys: u64) callconv(.C) noreturn {
     // first system call on this architecture that does not return on the
     // spot.
     waitprobe.run();
+
+    // And the two together: fork, become another program in the child, wait
+    // for it, and still be there. Untried on this architecture.
+    forkexec.run();
 
     // 12. A Clarity program. Everything above this ran code written for the
     //    kernel; this is a Clarity source file compiled to C by
