@@ -101,10 +101,26 @@ pub fn run() void {
     //   65  and `exec` also keeping the image it replaced
     //
     // The remaining 4 are the kernel-heap allocations behind a Thread, a
-    // Process and an AddressSpace, whose pages the heap does not hand back --
-    // and the Thread deliberately outlives its stack, because the list of
-    // stacks still to be freed is threaded through it. A heap that shrinks is
-    // somebody else's gap.
+    // Process and an AddressSpace.
+    //
+    // This used to say "whose pages the heap does not hand back... a heap
+    // that shrinks is somebody else's gap", which named the wrong thing. A
+    // slab allocator was written that gives a page back when its last chunk
+    // is freed, and then the question it answers was asked of this boot:
+    //
+    //     [probe] heap: 15 slab pages held, 0 ever returned
+    //
+    // Zero, over the whole boot. **Nothing on the heap is ever freed**, so a
+    // heap that could shrink would have nothing to shrink -- and per-page
+    // headers cost chunks per page, so the same gate reported 6 rather than 4
+    // with that allocator in place. The change was measured and dropped.
+    //
+    // What these four pages are waiting on is somebody freeing a Thread, a
+    // Process and an AddressSpace, and the Thread is the hard one twice over:
+    // it deliberately outlives its stack, because the list of stacks still to
+    // be freed is threaded through it, and every gate on this boot holds a
+    // `*Thread` across `run_queued` to read the exit code out of afterwards.
+    // Freeing it needs those two to stop being true first.
     //
     // The bound sits between 4 and 12 with room on each side, because a bound
     // that only just catches its own negative is a bound that will pass the
