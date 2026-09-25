@@ -165,10 +165,15 @@ pub var calls: u64 = 0;
 pub var bytes_written: u64 = 0;
 pub var exit_status: u64 = 0;
 
-/// What the last `exec` asked for, copied out of the process before its
-/// address space went away. Read through `exec_path()`.
-var exec_path_buf: [PATH_MAX]u8 = undefined;
-var exec_path_len: usize = 0;
+/// What the boot path's last `exec` asked for, copied out of the process
+/// before its address space went away.
+///
+/// A thread keeps its own, in `Thread.exec_path`, because the path is written
+/// inside the system call and read after the process has left EL0 — and a
+/// thread can be preempted in between. This is the slot for the boot path,
+/// which is not a thread, exactly as it has one for the system-call depth.
+var boot_exec_path: [PATH_MAX]u8 = undefined;
+var boot_exec_path_len: usize = 0;
 
 /// How many times a process *asked* to be replaced, whether or not it was.
 /// The boot compares this against the number of replacements that happened,
@@ -176,8 +181,20 @@ var exec_path_len: usize = 0;
 /// never attempted.
 pub var execs: u64 = 0;
 
+/// What the caller's own last `exec` asked for.
 pub fn exec_path() []const u8 {
-    return exec_path_buf[0..exec_path_len];
+    if (sched.current_thread()) |t| return t.exec_path[0..t.exec_path_len];
+    return boot_exec_path[0..boot_exec_path_len];
+}
+
+fn set_exec_path(path: []const u8) void {
+    if (sched.current_thread()) |t| {
+        @memcpy(t.exec_path[0..path.len], path);
+        t.exec_path_len = path.len;
+        return;
+    }
+    @memcpy(boot_exec_path[0..path.len], path);
+    boot_exec_path_len = path.len;
 }
 pub var bad_call: u64 = 0;
 
@@ -595,8 +612,7 @@ fn sys_exec(path_ptr: u64) i64 {
     execs += 1;
     const fd = vfs.open(path, 0, 0) catch return ENOENT;
     vfs.close(@intCast(fd)) catch {};
-    @memcpy(exec_path_buf[0..path.len], path);
-    exec_path_len = path.len;
+    set_exec_path(path);
     aarch64_leave_user(EXIT_EXEC);
 }
 
@@ -608,7 +624,7 @@ fn sys_exec(path_ptr: u64) i64 {
 /// Bounded because the string is copied into kernel memory before it is
 /// used: an unbounded copy from a pointer a process chose is how a kernel
 /// gets a stack overflow from userspace.
-const PATH_MAX: usize = 256;
+pub const PATH_MAX: usize = 256;
 
 /// Copy a NUL-terminated path out of the process's memory.
 ///

@@ -40,6 +40,7 @@ const clonetest = @import("clonetest_aarch64.zig");
 const userpreempt = @import("userpreempt_aarch64.zig");
 const forkprobe = @import("forkprobe_aarch64.zig");
 const waitprobe = @import("waitprobe_aarch64.zig");
+const forkexec = @import("forkexec_aarch64.zig");
 const heap = @import("mm/heap.zig");
 const loader = @import("loader/load_aarch64.zig");
 const fb = @import("graphics/fb.zig");
@@ -199,6 +200,10 @@ export fn kernel_main_aarch64(dtb_phys: u64) callconv(.C) noreturn {
     // that does not return on the spot: the calling thread sleeps, something
     // else runs, and the child's exit is what wakes it.
     waitprobe.run();
+
+    // And the two of them together, which is what a shell is: fork, become
+    // another program in the child, wait for it, and still be there.
+    forkexec.run();
 
     // And then a Clarity program, through the same path.
     demo_program();
@@ -584,6 +589,7 @@ const SH_ELF = @embedFile("sh_elf_aarch64");
 /// /bin/clarity-exec: a program that asks to be replaced. See
 /// `user/exectest_aarch64.zig`.
 const EXEC_ELF = @embedFile("exec_elf_aarch64");
+const HELLO_ELF = @embedFile("hello_elf_aarch64");
 
 /// A program that reads the registers it was started with. See
 /// user/regprobe_aarch64.zig, and the clearing it exists to hold in place at
@@ -1287,6 +1293,7 @@ fn install_programs() void {
         .{ .path = "/bin/clarity-demo", .bytes = DEMO_ELF },
         .{ .path = "/bin/clarity-sh", .bytes = SH_ELF },
         .{ .path = "/bin/clarity-exec", .bytes = EXEC_ELF },
+        .{ .path = "/bin/clarity-hello", .bytes = HELLO_ELF },
     };
     var written: usize = 0;
     for (files) |f| {

@@ -47,6 +47,13 @@ const vm = @import("../arch/aarch64/vm.zig");
 const console = @import("../arch/aarch64/console.zig");
 const paging = @import("../arch/aarch64/paging.zig");
 const trap = @import("../arch/aarch64/trap.zig");
+// The loader and the filesystem, because a thread running a user process has
+// to be able to replace that process's image: `exec` leaves EL0 with a path
+// and expects whoever is running the program to load what it names. On the
+// boot path that is `run_until_done` in main_aarch64.zig; for a forked child
+// it is `fork_child_entry` below, and there is nowhere else for it to be.
+const loader = @import("../loader/load_aarch64.zig");
+const vfs = @import("../fs/vfs.zig");
 
 pub const Priority = enum(u8) {
     high = 0,
@@ -71,6 +78,10 @@ pub const State = enum(u8) {
 };
 
 pub const Tid = i32;
+
+/// The longest path a process may hand `exec`. `trap.PATH_MAX`, kept here
+/// rather than imported to stop the Thread's size depending on a cycle.
+pub const EXEC_PATH_MAX: usize = 256;
 
 /// Sixteen kilobytes. A kernel thread here does very little, but a stack one
 /// page short of enough does not report anything: it runs into whatever is
@@ -113,6 +124,19 @@ pub const Thread = struct {
     /// Which child this thread is blocked in `wait` for: a PID, or 0 for
     /// "any", or 0 when it is not waiting at all. Meaningful only while the
     /// thread is on the `waiters` list.
+    /// What this thread's process last asked `exec` for.
+    ///
+    /// Per-thread for the same reason as everything else here: the path is
+    /// copied out of the process inside the system call and read by whatever
+    /// runs the process *after* it has left EL0, and a thread can be
+    /// preempted between those two points. One buffer for the kernel means
+    /// two processes exec'ing at once can each be handed the other's path,
+    /// which `fork` plus `exec` is exactly the arrangement for. Nothing has
+    /// been seen to do it; the buffer costs 264 bytes a thread and removes
+    /// the question.
+    exec_path: [EXEC_PATH_MAX]u8 = undefined,
+    exec_path_len: usize = 0,
+
     wait_for: Pid = 0,
     /// The next thread on the `waiters` list. Separate from `next`, which
     /// belongs to the run queues: a waiting thread is on neither queue, and
@@ -815,6 +839,36 @@ fn unregister(p: *Process) void {
     gpa.destroy(p);
 }
 
+/// Load what `exec` named, into a space of its own.
+///
+/// Returns null when the image cannot be had. `sys_exec` checked the path
+/// resolves before it left EL0, so by the time this fails the process has
+/// already asked to stop being what it was — but it has not been taken apart
+/// yet, which is why the caller frees the old image only after this returns
+/// something.
+fn load_exec_image(path: []const u8, asid: u16) ?loader.Loaded {
+    const image = vfs.read_file_into_heap(path, heap.allocator()) catch return null;
+    defer heap.allocator().free(image);
+    return loader.load(image, asid, heap.allocator()) catch null;
+}
+
+/// Give back whatever the process is currently running.
+///
+/// Two shapes, and they are freed differently. A forked child starts as a
+/// *clone*: a space whose pages were allocated one at a time by `clone_user`,
+/// with no loader behind them and no record of what they are except the
+/// tables themselves. After an `exec` it is a `loader.Loaded`, with ranges
+/// the loader wrote down and a heap that grew past them. Freeing one as if it
+/// were the other loses pages or frees pages twice.
+fn release_current_image(image: *?loader.Loaded, p: *Process) void {
+    if (image.*) |*l| {
+        loader.release(l, p.brk);
+        image.* = null;
+    } else {
+        paging.free_user(p.address_space);
+    }
+}
+
 /// One forked child's whole life on its own kernel thread.
 fn fork_child_entry(arg: u64) callconv(.C) noreturn {
     const c: *ForkChild = @ptrFromInt(arg);
@@ -824,14 +878,51 @@ fn fork_child_entry(arg: u64) callconv(.C) noreturn {
     paging.activate(p.address_space);
     p.state = .running;
 
-    const out = trap.enter_user_frame(&c.frame, c.user_sp);
+    // What the child is running. Null while it is still its parent's copy.
+    var image: ?loader.Loaded = null;
 
-    // What the child left behind. A fault is -1 and so is an `exec`, which is
-    // a limitation and is stated rather than hidden: `exec` leaves EL0 with a
-    // path and expects its caller to load the image into the same process,
-    // and the only caller that can do that is the boot path's run loop, which
-    // this thread is not. A forked child that calls `exec` therefore ends
-    // instead of being replaced. fork-then-exec is the next thing this needs.
+    var out = trap.enter_user_frame(&c.frame, c.user_sp);
+
+    // And the loop that makes `exec` mean something here.
+    //
+    // A process at EL0 on this architecture is a nested call, so `exec`
+    // cannot be a call that never returns the way it is on x86_64 — it leaves
+    // EL0 with a third status and expects whoever entered the program to load
+    // what it named and enter again. Until now the only such loop was the
+    // boot path's, so a forked child that exec'd simply ended: it asked to
+    // become something else and the kernel killed it instead. This is the
+    // same loop, on the thread that owns the child.
+    while (out.status == trap.EXIT_EXEC) {
+        const next = load_exec_image(trap.exec_path(), p.address_space.asid) orelse {
+            // Past the point of no return. The path resolved when `sys_exec`
+            // checked it and does not now, or there is no memory for the
+            // image; either way this process asked to stop being what it was
+            // and there is nothing to make it into.
+            out = .{ .status = trap.EXIT_FAULT, .code = 0 };
+            break;
+        };
+
+        // The old image goes now and not before, so a load that failed above
+        // still leaves a process to report on.
+        paging.deactivate();
+        release_current_image(&image, p);
+        // Same process and same ASID, a wholly different address space — so
+        // everything the hardware cached under that tag is a lie.
+        flush_asid(p.address_space.asid);
+
+        image = next;
+        // The Process's own copy of the space, and its break. Both, and this
+        // is where the boot path's loop got it wrong for as long as nothing
+        // read them: a Process left pointing at the image it just replaced
+        // maps its next heap page into freed tables.
+        p.address_space.* = next.space;
+        p.brk_start = next.brk_start;
+        p.brk = next.brk_start;
+
+        paging.activate(p.address_space);
+        out = trap.enter_user_full(next.entry, next.user_sp, 0);
+    }
+
     const code: i32 = switch (out.status) {
         trap.EXIT_DONE => @bitCast(@as(u32, @truncate(out.code))),
         else => -1,
@@ -855,7 +946,7 @@ fn fork_child_entry(arg: u64) callconv(.C) noreturn {
     // until the next switch overwrites it. Nothing walks it in between: the
     // kernel lives in TTBR1 and never dereferences a user address — PSTATE.PAN
     // makes sure of it — and no EL0 runs on this thread again.
-    paging.free_user(p.address_space);
+    release_current_image(&image, p);
 
     // The Process becomes a zombie its parent can reap, which is why the
     // pages go first: a zombie holds an exit code and a PID and no memory.
