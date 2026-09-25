@@ -342,6 +342,26 @@ fn sys_close(args: Args) i64 {
 /// and far below the user stack, so the two cannot meet.
 const HEAP_MAX: u64 = 256 * 1024 * 1024;
 
+/// Why a `brk` came back short, in the terms that decide it.
+///
+/// The three numbers are the whole of the decision: what was asked for, where
+/// this process's heap begins, and where its break stands now. Printing the
+/// message without them says only what the caller already knew — that it got
+/// less than it asked for.
+fn report_refusal(why: []const u8, proc: *sched.Process, requested: u64) void {
+    console.print("  brk: refused ");
+    console.print_hex(requested);
+    console.print(" for pid ");
+    console.print_dec(if (proc.pid > 0) @intCast(proc.pid) else 0);
+    console.print(" — ");
+    console.print(why);
+    console.print("; it starts at ");
+    console.print_hex(proc.brk_start);
+    console.print(" and stands at ");
+    console.print_hex(proc.brk);
+    console.println("");
+}
+
 fn sys_brk(args: Args) i64 {
     const cur = sched.current_thread() orelse return -@as(i64, @intFromEnum(Errno.esrch));
     const proc = sched.process_table.lookup(cur.pid) orelse return -@as(i64, @intFromEnum(Errno.esrch));
@@ -353,13 +373,19 @@ fn sys_brk(args: Args) i64 {
     // allocator calls it every 64 KiB, and a kernel that narrates each one
     // buries the output of the program it is running. The refusals below still
     // report, because a refused brk is a failure the log has to explain.
-    if (requested < proc.brk_start) return @intCast(proc.brk);
+    if (requested < proc.brk_start) {
+        report_refusal("below where this process's heap starts", proc, requested);
+        return @intCast(proc.brk);
+    }
     // A ceiling on the heap. Without one, a single wild request — a garbage
     // pointer, or a size computed from an unchecked length — walks up through
     // every physical page the machine has before it can fail, and takes the
     // whole system with it. Refusing up front costs nothing and the caller
     // sees the same "you got less than you asked for" it handles anyway.
-    if (requested > proc.brk_start +| HEAP_MAX) return @intCast(proc.brk);
+    if (requested > proc.brk_start +| HEAP_MAX) {
+        report_refusal("past the end of the largest heap a process may have", proc, requested);
+        return @intCast(proc.brk);
+    }
     if (requested <= proc.brk) {
         proc.brk = requested;
         return @intCast(proc.brk);

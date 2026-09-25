@@ -88,6 +88,11 @@ pub const Thread = struct {
     exit_code: i32 = 0,
 };
 
+/// The concrete Process this architecture's model produces, named here so
+/// that code outside the scheduler can hold one. `sched_aarch64.zig` exports
+/// its own the same way.
+pub const Process = process.Process;
+
 /// Per-CPU process table. Given its allocator by init(); see the note there
 /// for why that is not a separate call any more.
 pub var process_table: process.Table = undefined;
