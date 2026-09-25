@@ -172,6 +172,21 @@ pub fn build(b: *std.Build) void {
         .root_source_file = fork_prog.getEmittedBin(),
     });
 
+    // /bin/clarity-faultprobe: a program that faults on purpose, so the
+    // kernel can be asked what it does about one.
+    const fault_prog = b.addExecutable(.{
+        .name = "clarity-faultprobe",
+        .root_source_file = b.path("user/faultprobe.zig"),
+        .target = user_target,
+        .optimize = .ReleaseSmall,
+    });
+    fault_prog.setLinkerScript(b.path("user/user.ld"));
+    fault_prog.entry = .{ .symbol_name = "_start" };
+    fault_prog.pie = false;
+    kernel.root_module.addAnonymousImport("faultprobe_elf", .{
+        .root_source_file = fault_prog.getEmittedBin(),
+    });
+
     // /bin/clarity-regprobe: a program that reads the registers it was
     // started with, before anything else can write to them.
     const reg_prog = b.addExecutable(.{

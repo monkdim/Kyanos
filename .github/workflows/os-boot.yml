@@ -213,6 +213,12 @@ jobs:
             # boot would have exercised nothing.
             grep -q "\[ok\] swapgs:" "serial-$attempt.log" || missing="$missing swapgs"
             grep -q "\[ok\] thread stacks:" "serial-$attempt.log" || missing="$missing thread-stacks"
+            # A program that faults is killed, and the boot keeps going. This
+            # is the one marker on the x86_64 boot that is printed *after* a
+            # "CPU EXCEPTION" block, deliberately: before this, a ring 3 page
+            # fault halted the machine and nothing below it ever ran, so the
+            # absence of this line is also the absence of everything after it.
+            grep -q "\[ok\] fault:" "serial-$attempt.log" || missing="$missing fault-kills-only-the-program"
             # The clock read(2) stands on. Not the console *read*: on a boot
             # with nobody typing, fd 0 correctly gives end of input and the
             # gate says [--]. Typing is the serial step below.
@@ -282,6 +288,11 @@ jobs:
           grep -q "\[ok\] fork+exec:" serial-smap.log || missing="$missing fork-exec"
           grep -q "\[ok\] swapgs:" serial-smap.log || missing="$missing swapgs"
           grep -q "\[ok\] thread stacks:" serial-smap.log || missing="$missing thread-stacks"
+          # And that a faulting program is still only a faulting program with
+          # SMEP and SMAP on. The kill path runs in ring 0 on the faulting
+          # thread's own stack and hands the process's pages back, so it is
+          # exactly the kind of code SMAP exists to catch.
+          grep -q "\[ok\] fault:" serial-smap.log || missing="$missing fault-kills-only-the-program"
           grep -q "\[ok\] console clock:" serial-smap.log || missing="$missing console-clock"
           grep -q "\[ok\] shell: ran and exited" serial-smap.log || missing="$missing shell"
           grep -q "clarity-demo: all checks passed" serial-smap.log || missing="$missing clarity-program"

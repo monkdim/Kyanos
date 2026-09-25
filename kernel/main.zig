@@ -39,6 +39,7 @@ const stdin = @import("drivers/stdin.zig");
 const kbd = @import("drivers/kbd.zig");
 const conread = @import("conread.zig");
 const readprobe = @import("readprobe.zig");
+const faultprobe = @import("faultprobe.zig");
 const shell = @import("shell.zig");
 const fpu = @import("arch/x86_64/fpu.zig");
 const fputest = @import("fputest.zig");
@@ -263,6 +264,11 @@ pub export fn kernel_main(mb_info_phys: u64) callconv(.C) noreturn {
     //    like any other until now: it went to the filesystem, found no inode
     //    and answered EBADF, so nothing a person typed could reach a program.
     readprobe.run();
+
+    // 12a. And a program that does the worst thing it can. Everything above
+    //    behaves; this one writes through a null pointer, and what is being
+    //    measured is whether anything below it runs at all.
+    faultprobe.run();
 
     // 13. A Clarity program. Everything above this ran code written for the
     //    kernel; this is a Clarity source file compiled to C by
