@@ -229,10 +229,31 @@ a bigger surface than the one measured here and pins the ABI to Linux's.
 
 **Outstanding on x86_64:**
 
-- **`execve`.** `spawn_user` is exercised on every boot; `exec` — replacing a
-  running process's image — shares its loader but has no caller yet, so it
-  has never been analysed by the compiler, let alone run. Everything in this
-  kernel that was in that state turned out to be broken, so assume it is.
+- **`execve` runs, and the prediction here was right.** ✅ This entry used to
+  say `exec` "has no caller yet, so it has never been analysed by the
+  compiler, let alone run. Everything in this kernel that was in that state
+  turned out to be broken, so assume it is." It was, and it is worth leaving
+  the sentence that said so: a forked child that called `exec` was *killed*
+  by it, because `exec` leaves ring 3 expecting whoever entered the program
+  to load what it names, and the only loop that did was the boot path's own.
+  A child's thread has one now, and `/bin/clarity-forkexec` exercises the
+  whole shape on every boot — fork, exec in the child, wait in the parent —
+  with the page count checked around it so an exec that leaks or double-frees
+  is caught rather than merely tolerated.
+- **The serial line has its receive interrupt.** ✅ It was polled, while the
+  PS/2 keyboard has had IRQ1 since its driver landed, and the reason written
+  in `console.zig` was that `read(2)` "is entered with IF clear" — which
+  stopped being true when the syscall path began setting IF once the frame is
+  built. COM1 has IRQ4, a 256-byte ring and a handler that drains the FIFO;
+  `serial_poll` still reads the port when the ring is empty, so a machine
+  whose interrupt never arrives still works.
+  **The thing that nearly made it pointless is worth recording.** Enabling it
+  was not enough: `console.init()` is called twice — once first thing and
+  again from `drivers/init.zig` — and the second call rewrites the
+  interrupt-enable register with zero. So it was switched on early in the
+  boot and silently off later, every test passed, and the count of bytes
+  arriving through the interrupt was zero. `init` restores it now, and the
+  serial test fails if that count is ever zero again.
 - **The kernel heap and page allocator are preemption-safe now.** ✅ Both had
   the same shape of bug: `pmm.alloc_page` tested a bitmap bit and set it in a
   separate store, with `free_pages` and `next_hint` read-modify-written after;
