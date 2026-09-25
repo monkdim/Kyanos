@@ -11,6 +11,8 @@
 const std = @import("std");
 const console = @import("console.zig");
 const port = @import("port.zig");
+const trap_entry = @import("trap_entry.zig");
+const arch_syscall = @import("syscall.zig");
 
 const Entry = packed struct {
     offset_low: u16,
@@ -22,14 +24,10 @@ const Entry = packed struct {
     reserved: u32,
 };
 
-/// What the CPU pushes for an interrupt taken from ring 0.
-pub const InterruptFrame = extern struct {
-    rip: u64,
-    cs: u64,
-    rflags: u64,
-    rsp: u64,
-    ss: u64,
-};
+/// What a handler is given: every general register, the vector, the error
+/// code, and the five words the CPU pushed. See trap_entry.zig for why the
+/// entry path is written out rather than left to `callconv(.Interrupt)`.
+pub const TrapFrame = trap_entry.TrapFrame;
 
 var idt: [256]Entry align(8) = undefined;
 var idtr: packed struct { limit: u16, base: u64 } = undefined;
@@ -59,11 +57,6 @@ const EXCEPTION_NAMES = [_][]const u8{
     "control protection exception",
 };
 
-/// Vectors that push an error code before the interrupt frame.
-fn pushes_error_code(comptime vec: usize) bool {
-    return vec == 8 or (vec >= 10 and vec <= 14) or vec == 17 or vec == 21 or vec == 29 or vec == 30;
-}
-
 fn read_cr2() u64 {
     return asm volatile ("mov %%cr2, %[ret]"
         : [ret] "=r" (-> u64),
@@ -74,7 +67,7 @@ fn halt() noreturn {
     while (true) asm volatile ("cli; hlt");
 }
 
-fn report(vec: usize, err: ?u64, frame: *const InterruptFrame) noreturn {
+fn report(vec: usize, err: ?u64, frame: *const TrapFrame) noreturn {
     console.print("\n\nCPU EXCEPTION ");
     console.print_dec(vec);
     if (vec < EXCEPTION_NAMES.len) {
@@ -105,22 +98,54 @@ fn report(vec: usize, err: ?u64, frame: *const InterruptFrame) noreturn {
     halt();
 }
 
-fn ExceptionHandler(comptime vec: usize) type {
-    return struct {
-        fn with_error(frame: *InterruptFrame, err: u64) callconv(.Interrupt) void {
-            report(vec, err, frame);
+/// A handler installed against a vector. Plain C convention now: the stub
+/// owns the `iretq`, so a handler is an ordinary call and may return.
+pub const Handler = *const fn (*TrapFrame) callconv(.C) void;
+
+var handlers: [256]?Handler = [_]?Handler{null} ** 256;
+
+/// Where every vector arrives. Exceptions report and halt; everything else
+/// goes to whatever driver claimed the vector, or acknowledges the PIC and
+/// resumes -- a spurious or unclaimed IRQ must not be able to take the
+/// machine down.
+fn dispatch(frame: *TrapFrame) callconv(.C) void {
+    const vec = frame.vector;
+    check_gs(frame);
+    if (vec < 32) {
+        const err: ?u64 = if (has_error_code(vec)) frame.error_code else null;
+        report(vec, err, frame);
+    }
+    if (vec < handlers.len) {
+        if (handlers[vec]) |h| {
+            h(frame);
+            return;
         }
-        fn without_error(frame: *InterruptFrame) callconv(.Interrupt) void {
-            report(vec, null, frame);
-        }
-    };
+    }
+    end_of_interrupt(0xFF);
 }
 
-/// Anything not otherwise claimed: acknowledge the PIC and resume. A
-/// spurious or unclaimed IRQ must not be able to take the machine down.
-fn default_irq(frame: *InterruptFrame) callconv(.Interrupt) void {
-    _ = frame;
-    end_of_interrupt(0xFF);
+/// Was the per-CPU block reachable through %gs when this trap arrived?
+///
+/// It has to be, in ring 0, whichever ring the trap came from -- and the only
+/// thing that makes it true for a trap from ring 3 is the `swapgs` in the
+/// stub. Ring 3 runs with a GS base of the kernel's choosing that is *not*
+/// the per-CPU block (arch/x86_64/syscall.zig's `user_gs`), so a missing
+/// `swapgs` shows up as a wrong magic here rather than as a fault somewhere
+/// later with nothing to connect it to.
+fn check_gs(frame: *const TrapFrame) void {
+    // Not before the bases exist -- see `gs_ready`, which is where the one
+    // interrupt that arrives in that window is written down.
+    if (!arch_syscall.gs_ready) return;
+    if ((frame.cs & 3) != 0) arch_syscall.entries_from_ring3 += 1;
+    arch_syscall.entries_total += 1;
+    if (!arch_syscall.gs_is_kernel()) arch_syscall.gs_wrong += 1;
+}
+
+/// The runtime twin of trap_entry's comptime list, for reporting only: the
+/// frame always carries an `error_code` word, and this says whether the CPU
+/// put it there or the stub did.
+fn has_error_code(vec: u64) bool {
+    return vec == 8 or (vec >= 10 and vec <= 14) or vec == 17 or vec == 21 or vec == 29 or vec == 30;
 }
 
 /// Signal end-of-interrupt to the PIC(s). Vectors 0x28+ live on the slave.
@@ -133,18 +158,11 @@ pub fn init() void {
     @memset(std.mem.asBytes(&idt), 0);
     remap_pic();
 
-    // CPU exceptions: report and halt rather than triple-faulting silently.
-    inline for (0..32) |vec| {
-        const H = ExceptionHandler(vec);
-        if (comptime pushes_error_code(vec)) {
-            set_gate(@intCast(vec), @intFromPtr(&H.with_error));
-        } else {
-            set_gate(@intCast(vec), @intFromPtr(&H.without_error));
-        }
-    }
-    // Everything else: benign, PIC-acknowledging stub until a driver claims it.
-    inline for (32..256) |vec| {
-        set_gate(@intCast(vec), @intFromPtr(&default_irq));
+    trap_entry.dispatch = dispatch;
+    // Every gate points at its own stub. They differ only in the vector they
+    // name and whether they push a zero where the CPU pushed nothing.
+    inline for (0..256) |vec| {
+        set_gate(@intCast(vec), trap_entry.stub_address(vec));
     }
 
     idtr.limit = @sizeOf(@TypeOf(idt)) - 1;
@@ -167,11 +185,14 @@ fn set_gate(vector: u8, addr: u64) void {
     };
 }
 
-/// Install a device IRQ handler. Handlers use the interrupt calling
-/// convention so the CPU state is preserved and the return is an `iretq`;
-/// a plain function would return with `ret` and corrupt the stack.
-pub fn set_handler(vector: u8, handler: *const fn (*InterruptFrame) callconv(.Interrupt) void) void {
-    set_gate(vector, @intFromPtr(handler));
+/// Install a device IRQ handler.
+///
+/// It used to be the gate itself, which is why it had to carry the interrupt
+/// calling convention. The gate is the stub now and the handler is called
+/// from it, so this is an ordinary function that returns and the stub does
+/// the `iretq`.
+pub fn set_handler(vector: u8, handler: Handler) void {
+    handlers[vector] = handler;
 }
 
 fn remap_pic() void {

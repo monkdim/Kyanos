@@ -103,12 +103,11 @@ fn cmd(byte: u8) void {
     port.out8(PS2_CMD, byte);
 }
 
-// IRQ handlers use the interrupt calling convention: the CPU enters them
-// with an interrupt frame and they must leave via `iretq`. A callconv(.C)
-// handler would return with `ret`, popping the frame as if it were a return
-// address and corrupting the stack. Each also has to acknowledge the PIC,
-// or that IRQ line never fires again.
-fn kbd_irq(frame: *idt.InterruptFrame) callconv(.Interrupt) void {
+// Ordinary functions. The vector's stub saves the register file, calls the
+// handler and leaves by `iretq` -- see arch/x86_64/trap_entry.zig, which had
+// to take that over so a ring boundary could `swapgs`. Each handler still has
+// to acknowledge the PIC, or that IRQ line never fires again.
+fn kbd_irq(frame: *idt.TrapFrame) callconv(.C) void {
     _ = frame;
     const scancode = port.in8(PS2_DATA);
     const next = (kbd_head + 1) % KBD_BUF_SIZE;
@@ -119,7 +118,7 @@ fn kbd_irq(frame: *idt.InterruptFrame) callconv(.Interrupt) void {
     idt.end_of_interrupt(0x21);
 }
 
-fn mouse_irq(frame: *idt.InterruptFrame) callconv(.Interrupt) void {
+fn mouse_irq(frame: *idt.TrapFrame) callconv(.C) void {
     _ = frame;
     const byte = port.in8(PS2_DATA);
     const next = (mouse_head + 1) % MOUSE_BUF_SIZE;

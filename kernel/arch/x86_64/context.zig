@@ -201,17 +201,17 @@ pub const IretFrame = extern struct {
 ///
 /// `regs` is reached after CR3 has changed, which is safe because it is a
 /// kernel heap address and every address space maps the upper half.
-pub fn enter_userland_regs(cr3: u64, frame_rsp: u64, fpu_area: u64, regs: *const Regs, gs_kernel_base: u64) noreturn {
+pub fn enter_userland_regs(cr3: u64, frame_rsp: u64, fpu_area: u64, regs: *const Regs, gs_user_base: u64, gs_kernel_base: u64) noreturn {
     asm volatile (
         \\ cli
-        // The GS bases, written rather than swapped. See enter_userland.
+        // The GS bases: r10 is ring 3's, r11 the kernel's. See enter_userland.
         \\ mov %%r10, %%rax
         \\ mov %%r10, %%rdx
         \\ shr $32, %%rdx
         \\ mov $0xC0000101, %%ecx
         \\ wrmsr
-        \\ mov %%r10, %%rax
-        \\ mov %%r10, %%rdx
+        \\ mov %%r11, %%rax
+        \\ mov %%r11, %%rdx
         \\ shr $32, %%rdx
         \\ mov $0xC0000102, %%ecx
         \\ wrmsr
@@ -239,7 +239,8 @@ pub fn enter_userland_regs(cr3: u64, frame_rsp: u64, fpu_area: u64, regs: *const
           [frame] "{rsi}" (frame_rsp),
           [fpu] "{r8}" (fpu_area),
           [regs] "{r9}" (regs),
-          [gsk] "{r10}" (gs_kernel_base),
+          [gsu] "{r10}" (gs_user_base),
+          [gsk] "{r11}" (gs_kernel_base),
         : "memory"
     );
     unreachable;
@@ -274,35 +275,31 @@ pub fn fxsave_into(area: *[512]u8) void {
     );
 }
 
-pub fn enter_userland(cr3: u64, frame_rsp: u64, fpu_area: u64, gs_kernel_base: u64) noreturn {
+pub fn enter_userland(cr3: u64, frame_rsp: u64, fpu_area: u64, gs_user_base: u64, gs_kernel_base: u64) noreturn {
     asm volatile (
         \\ cli
         // The GS bases, written rather than swapped.
         //
-        // `swapgs` exchanges GS.base with IA32_KERNEL_GS_BASE, so what it
-        // leaves behind depends on which way round they already were — and
-        // getting here does not guarantee that. An interrupt taken in ring 3
-        // does no swapgs, so the handler runs with the *user* base; if it
-        // then switches threads and the new one enters ring 3 through here, a
-        // swap would put the per-CPU pointer in ring 3's GS and zero in the
-        // shadow. The next system call would swap back to zero and store the
-        // user stack at address 8.
+        // This is a boundary into ring 3 like any other, so ring 3 has to end
+        // up with the user base and the shadow with the kernel's. `swapgs`
+        // would say that in one instruction *if* the two were already the
+        // right way round, and arriving here does not guarantee it: this is
+        // reached from a thread that has never been in ring 3 as well as from
+        // one the scheduler is resuming. Two `wrmsr` cost a little more and
+        // cannot be got wrong by arriving from somewhere unexpected.
         //
-        // That is not hypothetical: it is a page fault at cr2=0x8, in ring 0,
-        // with %rsp still holding a user address, on one boot in three, as
-        // soon as two processes existed at once to be switched between.
-        //
-        // Writing both explicitly costs two wrmsr and cannot be got wrong by
-        // arriving from somewhere unexpected. Both get the per-CPU pointer —
-        // see syscall.zig's init for why this kernel keeps them equal rather
-        // than keeping a separate user value.
+        // r10 is ring 3's base and r11 is the kernel's. They used to be one
+        // value written twice: interrupt entry did no `swapgs` at all, and
+        // making the two bases equal was the only way to survive that. It
+        // does the `swapgs` now -- see arch/x86_64/trap_entry.zig -- so the
+        // two can differ again, which is what lets a missing one be seen.
         \\ mov %%r10, %%rax
         \\ mov %%r10, %%rdx
         \\ shr $32, %%rdx
         \\ mov $0xC0000101, %%ecx
         \\ wrmsr
-        \\ mov %%r10, %%rax
-        \\ mov %%r10, %%rdx
+        \\ mov %%r11, %%rax
+        \\ mov %%r11, %%rdx
         \\ shr $32, %%rdx
         \\ mov $0xC0000102, %%ecx
         \\ wrmsr
@@ -349,7 +346,8 @@ pub fn enter_userland(cr3: u64, frame_rsp: u64, fpu_area: u64, gs_kernel_base: u
         : [cr3] "{rdi}" (cr3),
           [frame] "{rsi}" (frame_rsp),
           [fpu] "{r8}" (fpu_area),
-          [gsk] "{r10}" (gs_kernel_base),
+          [gsu] "{r10}" (gs_user_base),
+          [gsk] "{r11}" (gs_kernel_base),
         : "memory"
     );
     unreachable;

@@ -255,11 +255,12 @@ fn user_entry(_: u64) callconv(.C) noreturn {
     // A forked child is resuming, not starting, so it gets the register file
     // its parent had. Everything else starts at an ELF entry point, where
     // zeroes are what the ABI promises and all the program can use.
+    const gs_user = @intFromPtr(&arch_syscall.user_gs);
     const gs_kernel = @intFromPtr(&arch_syscall.per_cpu);
     if (t.fork_regs) |regs| {
-        context.enter_userland_regs(t.context.cr3, t.iret_rsp, @intFromPtr(&t.context.fpu), regs, gs_kernel);
+        context.enter_userland_regs(t.context.cr3, t.iret_rsp, @intFromPtr(&t.context.fpu), regs, gs_user, gs_kernel);
     }
-    context.enter_userland(t.context.cr3, t.iret_rsp, @intFromPtr(&t.context.fpu), gs_kernel);
+    context.enter_userland(t.context.cr3, t.iret_rsp, @intFromPtr(&t.context.fpu), gs_user, gs_kernel);
 }
 
 /// The context the boot path is running on. `yield` needs somewhere to save
@@ -765,7 +766,7 @@ pub fn exec(path: []const u8) !void {
 
     // Re-enter user mode with the new image. CR3 goes in with it — see
     // enter_userland for why they cannot be separate statements.
-    context.enter_userland(cur.context.cr3, cur.iret_rsp, @intFromPtr(&cur.context.fpu), @intFromPtr(&arch_syscall.per_cpu));
+    context.enter_userland(cur.context.cr3, cur.iret_rsp, @intFromPtr(&cur.context.fpu), @intFromPtr(&arch_syscall.user_gs), @intFromPtr(&arch_syscall.per_cpu));
 }
 
 pub const WaitResult = struct { pid: Pid, exit_code: i32 };
