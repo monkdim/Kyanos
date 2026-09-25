@@ -77,6 +77,10 @@ pub const Thread = struct {
     /// *parent's* kernel stack, which is gone by the time the child runs.
     fork_regs: ?*context.Regs = null,
     next: ?*Thread = null,
+    /// The next thread on the `waiters` list — the ones asleep in `wait(2)`.
+    /// Separate from `next`, which belongs to the run queues: a waiting
+    /// thread is on neither queue, and one field cannot hold both lists.
+    wait_next: ?*Thread = null,
     ticks_run: u64 = 0,
     exit_code: i32 = 0,
 };
@@ -384,7 +388,38 @@ pub fn yield() void {
         // The CPU takes an interrupt in ring 3 onto the stack named by the
         // TSS, so RSP0 has to follow whichever thread is running — a stale
         // one would push the frame onto a stack another thread is using.
-        if (next.kernel_stack_top != 0) gdt.set_kernel_stack(next.kernel_stack_top);
+        if (next.kernel_stack_top != 0) {
+            gdt.set_kernel_stack(next.kernel_stack_top);
+            // And the stack `syscall` lands on, which is the same stack and
+            // for the same reason.
+            //
+            // It was one 16 KiB array for the whole machine — `syscall_stack`
+            // in arch/x86_64/syscall.zig, loaded from `per_cpu.kernel_rsp`,
+            // set once at boot. That is correct for exactly as long as no
+            // thread is ever *inside* a system call while another one runs,
+            // which was true until `wait` could block. It stopped being true
+            // the first time a parent slept in `wait(2)`: the child then made
+            // its own calls on the same stack, wrote over the parent's frames,
+            // and when the parent was resumed `clarity_switch_to` popped a
+            // return address that was no longer there.
+            //
+            // Measured, on the first program to do it:
+            //
+            //   CPU EXCEPTION 14 (page fault) error_code=0x0
+            //     rip=0xffffffff801750d0 cs=0x8 rflags=0x417
+            //     rsp=0xffffffff8037eab0 ss=0x10 cr2=0x413000
+            //
+            // rip resolves to `fputest.a_done`, a .bss symbol — the kernel
+            // jumped into data, because that is what the clobbered return
+            // address pointed at.
+            //
+            // A thread's kernel stack is free while it is in ring 3, so a
+            // system call starting at its top is right, and the two entries
+            // cannot collide: `syscall` masks IF through IA32_FMASK, and an
+            // interrupt from ring 3 lands on RSP0 of whichever thread was
+            // running, which is that thread's own stack.
+            arch_syscall.per_cpu.kernel_rsp = next.kernel_stack_top;
+        }
         if (preempt_window_spins != 0) widen_preempt_window();
         context.switch_to(prev_ctx, &next.context);
         return;
@@ -493,7 +528,12 @@ pub fn exit(code: i32) noreturn {
         if (current) |c| {
             c.state = .zombie;
             c.exit_code = code;
-            // Reaping is the parent's responsibility via waitpid.
+            // And the *process*, which nothing did until now: this marked the
+            // Thread dead and stopped, so a parent had nothing to reap and no
+            // way to learn how its child went. One thread per process today,
+            // so a thread ending is a process ending; the day a process has
+            // two, this becomes "the last one out".
+            end_process(c.pid, code);
         }
     }
     // Switch away for real. This used to be `while (true) schedule()`, which
@@ -656,13 +696,132 @@ pub fn exec(path: []const u8) !void {
 
 pub const WaitResult = struct { pid: Pid, exit_code: i32 };
 
+// ── Waiting for a child ─────────────────────────────────────────────────
+//
+// Two things were missing here, and the second hid the first.
+//
+// `wait(2)` did not wait. It reaped a zombie if one happened to be lying
+// about and answered ECHILD otherwise — so a parent that forked and waited,
+// which is what a parent does, was told it had no children. It passes any
+// test where the parent dawdles long enough for the child to finish first.
+//
+// And there was nothing to reap. `exit` marked the *Thread* a zombie and
+// stopped; the only thing that ever recorded a Process against its parent was
+// `kill`. So even a parent that dawdled found nothing: a child's exit status
+// could not be learned on this architecture by any route at all.
+//
+// The AArch64 side grew the same two (#197), and the shape here is the same:
+// a `waiters` list of threads asleep in the call, woken by the exit that
+// records the zombie they are waiting for.
+
+/// Threads asleep in `wait`, linked by `wait_next`.
+var waiters: ?*Thread = null;
+
+/// How many times a `wait` has actually gone to sleep. The difference between
+/// this call and the one it replaces: a boot where this stays zero is a boot
+/// where nothing ever waited, and every other check would still pass.
+pub var wait_sleeps: u64 = 0;
+
+fn reap_zombie(parent: *process.Process, target: i32) ?WaitResult {
+    const z = (if (target <= 0) parent.reap_any() else parent.reap_pid(target)) orelse return null;
+    return .{ .pid = z.pid, .exit_code = z.exit_code };
+}
+
+/// Does `p` still have a child worth waiting for? Asked only after
+/// `reap_zombie` has said no, so a child that has exited and been recorded is
+/// already out of this list.
+fn has_child(p: *const process.Process, target: i32) bool {
+    if (target <= 0) return p.children.items.len > 0;
+    for (p.children.items) |c| {
+        if (c == target) return true;
+    }
+    return false;
+}
+
+/// Wake every thread waiting for this child.
+///
+/// Every, rather than the first: two threads of one process may both be in
+/// `wait`, and only one of them will win the reap. The loser goes round its
+/// loop, finds nothing and sleeps again — which is what the caller's loop is
+/// for, and why a wake means "something happened" and never "your child is
+/// ready".
+fn wake_waiters_for(parent_pid: Pid, child_pid: Pid) void {
+    const guard = irqlock.acquire();
+    defer guard.release();
+
+    var prev: ?*Thread = null;
+    var it = waiters;
+    while (it) |t| {
+        const nxt = t.wait_next;
+        const matches = t.pid == parent_pid and switch (t.wait) {
+            .waitpid => |want| want <= 0 or want == child_pid,
+            else => false,
+        };
+        if (matches) {
+            if (prev) |pv| pv.wait_next = nxt else waiters = nxt;
+            t.wait_next = null;
+            wake(t);
+        } else {
+            prev = t;
+        }
+        it = nxt;
+    }
+}
+
+/// A process is over: record it against its parent, hand its children to
+/// init, and wake anybody waiting for it.
+///
+/// The Process is left in the table as the zombie its parent will reap;
+/// `waitpid` is what takes it out.
+fn end_process(pid: Pid, code: i32) void {
+    const p = process_table.lookup(pid) orelse return;
+    if (p.state == .zombie) return;
+    p.state = .zombie;
+    p.exit_code = code;
+    process_table.reparent_children(p) catch {};
+    if (process_table.lookup(p.parent_pid)) |parent| {
+        parent.record_zombie(p.*, process_table.gpa) catch {};
+        _ = parent.remove_child(p.pid);
+    }
+    // After the zombie is recorded, so a woken parent has something to find.
+    wake_waiters_for(p.parent_pid, p.pid);
+}
+
+/// wait(2) — sleep until a child of this process has exited, then reap it.
+///
+/// `target` names a child, or is 0 or -1 for any. Returns null when there is
+/// nothing to wait for, which the caller turns into ECHILD: a process with no
+/// children that waited would otherwise sleep for the life of the machine.
 pub fn waitpid(target: i32) ?WaitResult {
     const cur = current orelse return null;
     const parent = process_table.lookup(cur.pid) orelse return null;
-    const reaped = if (target <= 0) parent.reap_any() else parent.reap_pid(target);
-    const z = reaped orelse return null;
-    process_table.remove(z.pid);
-    return .{ .pid = z.pid, .exit_code = z.exit_code };
+
+    while (true) {
+        const guard = irqlock.acquire();
+
+        if (reap_zombie(parent, target)) |w| {
+            guard.release();
+            process_table.remove(w.pid);
+            return w;
+        }
+        if (!has_child(parent, target)) {
+            guard.release();
+            return null;
+        }
+
+        // Onto the waiters list, into the blocked state, and then `yield` —
+        // all three under the guard the whole way to the switch. Releasing
+        // before any of them leaves a window where a child exits, walks a
+        // list this thread is not on yet or finds it still `running`, and
+        // skips the wake that would ever get it back.
+        cur.wait_next = waiters;
+        waiters = cur;
+        cur.wait = .{ .waitpid = target };
+        cur.state = .blocked;
+        wait_sleeps +%= 1;
+        yield();
+        guard.release();
+    }
 }
 
 /// What a thread exited with, for a caller that is not its parent.

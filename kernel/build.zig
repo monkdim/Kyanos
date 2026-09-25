@@ -84,6 +84,22 @@ pub fn build(b: *std.Build) void {
         .root_source_file = init_prog.getEmittedBin(),
     });
 
+    // /bin/clarity-waitprobe: does wait(2) wait? Its parent asks before the
+    // child has run, so a wait that only looks for an already-finished child
+    // has nothing to find.
+    const wait_prog = b.addExecutable(.{
+        .name = "clarity-waitprobe",
+        .root_source_file = b.path("user/waitprobe.zig"),
+        .target = user_target,
+        .optimize = .ReleaseSmall,
+    });
+    wait_prog.setLinkerScript(b.path("user/user.ld"));
+    wait_prog.entry = .{ .symbol_name = "_start" };
+    wait_prog.pie = false;
+    kernel.root_module.addAnonymousImport("waitprobe_elf", .{
+        .root_source_file = wait_prog.getEmittedBin(),
+    });
+
     // /bin/clarity-forkprobe: the first program to call fork(2).
     const fork_prog = b.addExecutable(.{
         .name = "clarity-forkprobe",

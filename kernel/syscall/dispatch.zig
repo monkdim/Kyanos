@@ -441,7 +441,12 @@ fn sys_wait(args: Args) i64 {
     // Checked before the wait: a child reaped and then unreported because
     // the status pointer was bad would be lost for good.
     if (wstatus != 0 and !uaccess.user_range_writable(wstatus, @sizeOf(i32))) return errno(.efault);
-    const pid_arg: i32 = @bitCast(@as(i32, @intCast(args.a1)));
+    // Truncate and reinterpret rather than @intCast: -1 means "any child"
+    // and arrives as 0xFFFF_FFFF_FFFF_FFFF, which is not representable as an
+    // i32 and panics a safety-checked build. Measured, on the first program
+    // ever to make this call: "KERNEL PANIC: integer cast truncated bits",
+    // one line after the parent said it was waiting.
+    const pid_arg: i32 = @bitCast(@as(u32, @truncate(args.a1)));
     const result = sched.waitpid(pid_arg) orelse return -@as(i64, @intFromEnum(Errno.echild));
     if (wstatus != 0 and !uaccess.put_user(i32, wstatus, result.exit_code)) return errno(.efault);
     return result.pid;
