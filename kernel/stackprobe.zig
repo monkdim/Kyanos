@@ -9,6 +9,14 @@
 //! The fork+exec gate counts pages, but only inside its own window. This
 //! counts every thread, which is what says the list is drained rather than
 //! drained often enough for one measurement to come out right.
+//!
+//! The structure is counted as well as the stack. Freeing it does not move
+//! the fork+exec page count -- the heap reuses chunks and does not return
+//! pages, which was measured in its own right ("15 slab pages held, 0 ever
+//! returned") -- so a page count is the wrong instrument for it, and this
+//! counter is the right one: it says the Thread went back to the allocator,
+//! which is what stops a machine that runs programs for a week from holding
+//! one structure per program it has ever run.
 
 const console = @import("arch/x86_64/console.zig");
 const sched = @import("sched/scheduler.zig");
@@ -32,7 +40,18 @@ pub fn run() void {
         console.println(" still waiting");
         return;
     }
+    const freed = sched.threads_freed;
+    if (freed != exited) {
+        console.print("  [FAIL] thread stacks: ");
+        console.print_dec(exited);
+        console.print(" threads exited, ");
+        console.print_dec(reaped);
+        console.print(" stacks came back but only ");
+        console.print_dec(freed);
+        console.println(" Thread structures did");
+        return;
+    }
     console.print("  [ok] thread stacks: ");
     console.print_dec(exited);
-    console.println(" threads exited and every one gave its kernel stack back");
+    console.println(" threads exited and every one gave back its kernel stack and its own structure");
 }

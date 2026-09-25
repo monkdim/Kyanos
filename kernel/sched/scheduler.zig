@@ -390,6 +390,7 @@ var dead_stacks: ?*Thread = null;
 /// measurement to come out right.
 pub var threads_exited: u64 = 0;
 pub var stacks_reaped: u64 = 0;
+pub var threads_freed: u64 = 0;
 
 /// Threads still on the list. Zero at the end of a boot, or a stack was
 /// handed to a reap point that never came.
@@ -430,6 +431,14 @@ fn reap_dead_stacks() void {
             t.kernel_stack_bytes = 0;
             stacks_reaped += 1;
         }
+        // And the structure, now that nothing can reach it. It is off this
+        // list, it is not `current` (checked above), a zombie is never on a
+        // run queue or the waiters list, and the one thing outside the
+        // scheduler that used to hold a `*Thread` across `run_queued` -- a
+        // boot gate, reading the exit code afterwards -- holds a `Tid` now
+        // and asks `exit_code_of`.
+        heap.free(@as([*]u8, @ptrCast(t)), @sizeOf(Thread));
+        threads_freed += 1;
     }
     dead_stacks = keep;
 }
@@ -546,6 +555,7 @@ pub fn thread_exit(code: i32) noreturn {
         if (current) |c| {
             c.state = .zombie;
             c.exit_code = code;
+            record_exit(c.tid, code);
         }
     }
     yield();
@@ -683,6 +693,9 @@ pub fn exit(code: i32) noreturn {
         if (current) |c| {
             c.state = .zombie;
             c.exit_code = code;
+            // Written down where it outlives the Thread: a gate reads this
+            // after `run_queued`, by which time the Thread may be gone.
+            record_exit(c.tid, code);
             // The memory goes first, so the zombie the parent reaps holds an
             // exit code and a PID and nothing else.
             release_user_memory(c);
@@ -1010,16 +1023,43 @@ pub fn waitpid(target: i32) ?WaitResult {
 /// What a thread exited with, for a caller that is not its parent.
 ///
 /// `waitpid` is the real answer and cannot be used here: it reaps from
-/// `current`, and the boot path has no `current` — it is not a thread. A
-/// boot selftest that spawns a process and wants to know how it went has no
-/// other way to ask.
+/// `current`, and the boot path has no `current`.
 ///
-/// Safe to read after the thread is dead because nothing on this
-/// architecture frees a Thread: there is no dead list and no reap. The day
-/// there is one, this becomes a use-after-free and has to move into it.
-pub fn exit_code_of(t: *const Thread) ?i32 {
-    if (t.state != .zombie) return null;
-    return t.exit_code;
+/// **By thread id and not by pointer**, which is the whole of this change.
+/// The old signature took a `*const Thread`, and its own comment said why
+/// that had been safe: "nothing on this architecture frees a Thread: there is
+/// no dead list and no reap. The day there is one, this becomes a
+/// use-after-free and has to move into it." There is one now -- `dead_stacks`
+/// -- so it moved.
+///
+/// The record is a small ring rather than the Thread itself, because the
+/// Thread is the thing being freed. Bounded on purpose: a boot that ends more
+/// threads than this holds loses the oldest, and a caller asking about one
+/// then gets null, which reads the same as "it has not finished". So the size
+/// is chosen to be more than a boot creates rather than trusted to be enough
+/// -- this boot ends thirteen -- and the gate that would notice is every
+/// caller below, each of which fails loudly on null.
+const EXIT_RECORDS = 64;
+
+const ExitRecord = struct {
+    tid: Tid = 0,
+    code: i32 = 0,
+    used: bool = false,
+};
+
+var exits: [EXIT_RECORDS]ExitRecord = [_]ExitRecord{.{}} ** EXIT_RECORDS;
+var exits_at: usize = 0;
+
+fn record_exit(tid: Tid, code: i32) void {
+    exits[exits_at] = .{ .tid = tid, .code = code, .used = true };
+    exits_at = (exits_at + 1) % EXIT_RECORDS;
+}
+
+pub fn exit_code_of(tid: Tid) ?i32 {
+    for (exits) |e| {
+        if (e.used and e.tid == tid) return e.code;
+    }
+    return null;
 }
 
 pub fn kill(target_pid: Pid, sig: i32) bool {

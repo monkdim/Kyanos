@@ -32,14 +32,18 @@ pub fn run() void {
         return;
     };
 
-    const t = sched.spawn_user(PATH) catch |e| {
+    const started = sched.spawn_user(PATH) catch |e| {
         console.print("  [FAIL] shell: could not start it: ");
         console.println(@errorName(e));
         return;
     };
+    // The id and not the pointer: `run_queued` below can free the Thread now
+    // that its stack goes back, so what survives to be asked about afterwards
+    // has to be the number.
+    const tid = started.tid;
     sched.run_queued();
 
-    const code = sched.exit_code_of(t) orelse {
+    const code = sched.exit_code_of(tid) orelse {
         console.println("  [FAIL] shell: it never finished");
         return;
     };
