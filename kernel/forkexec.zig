@@ -90,34 +90,32 @@ pub fn run() void {
 
     // What one fork and one exec are allowed to cost.
     //
-    // Measured, not guessed. Four numbers, from four builds of this kernel:
+    // Measured, not guessed. Five numbers, from five builds of this kernel:
     //
-    //   12  both processes' pages given back at exit, which is this build
-    //   48  the images kept until the machine stopped, before `exit` freed
-    //       anything
+    //    4  the two processes' pages and the two threads' kernel stacks all
+    //       given back, which is this build
+    //    8  the stacks kept -- one of them, on the build where the dead-stack
+    //       list was a single slot
+    //   12  both stacks kept
+    //   48  the images kept too, before `exit` freed anything
     //   65  and `exec` also keeping the image it replaced
     //
-    // Not zero, and the 12 is accounted for rather than shrugged at. Eight of
-    // it is the two threads' kernel stacks -- 4 pages each, and a process's
-    // memory is not its thread's. That is measured too: with `kstack_pages`
-    // put up from 4 to 8 in both the spawn and the fork path, the same gate
-    // reports 20, which is the same 12 plus exactly the 8 extra pages the two
-    // stacks grew by. The remaining 4 are the kernel-heap allocations behind
-    // a Thread, a Process and an AddressSpace, whose pages the heap does not
-    // hand back; that one was not separated further and is not claimed to be.
+    // The remaining 4 are the kernel-heap allocations behind a Thread, a
+    // Process and an AddressSpace, whose pages the heap does not hand back --
+    // and the Thread deliberately outlives its stack, because the list of
+    // stacks still to be freed is threaded through it. A heap that shrinks is
+    // somebody else's gap.
     //
-    // Both are somebody else's gap: a reaper that frees a zombie thread, and
-    // a heap that shrinks. What the bound is for is the *process* memory, and
-    // it sits between 12 and 48 with room on each side, because a bound that
-    // only just catches its own negative is a bound that will pass the next
-    // one by accident.
-    const LEAK_MAX: u64 = 24;
+    // The bound sits between 4 and 12 with room on each side, because a bound
+    // that only just catches its own negative is a bound that will pass the
+    // next one by accident.
+    const LEAK_MAX: u64 = 8;
     if (free_before > free_after and free_before - free_after > LEAK_MAX) {
         console.print("  [FAIL] fork+exec: ");
         console.print_dec(free_before - free_after);
         console.print(" pages did not come back, more than the ");
         console.print_dec(LEAK_MAX);
-        console.println(" the threads' stacks and the kernel heap account for");
+        console.println(" the kernel heap accounts for");
         return;
     }
 
