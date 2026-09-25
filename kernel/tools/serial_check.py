@@ -73,16 +73,35 @@ SHELL_SESSION = [
     ("ls /bin", "hello.txt"),
     ("ls /bin/hello.txt", "clarity-sh: ls: not a directory: /bin/hello.txt"),
     ("frobnicate", "clarity-sh: unknown command: frobnicate"),
-    # exec, refused. The successful case cannot be tested from here: it
-    # replaces this shell, and everything after it in this list would be
-    # typed at a program that does not read. The plain boot exercises that
-    # half — /bin/clarity-exec replaces itself and the kernel says so — and
-    # what this adds is the other half: the shell's own call reaches the
-    # kernel, and a path that names nothing comes *back* as an error rather
-    # than taking the shell with it.
+    # A path that names nothing comes back as an error rather than taking the
+    # shell with it.
     ("run /nope", "run: cannot run /nope"),
+    # And the successful case, which could not be tested from here until
+    # `run` forked. The comment that used to sit above this said so: "it
+    # replaces this shell, and everything after it in this list would be
+    # typed at a program that does not read."
+    #
+    # The expected text is what the *shell* says once it has waited: the
+    # path it was given and the child's own exit code, which nothing else on
+    # this boot uses. Deliberately not the child's own line — the kernel's
+    # fork+exec gate runs /bin/clarity-hello earlier in the same boot and
+    # writes that line too, so looking for it here would pass on a shell
+    # whose `run` did nothing at all. That was not hypothetical: it is what
+    # this check did on its first draft. HELLO_LINE below is how the child's
+    # own voice is counted.
+    ("run /bin/clarity-hello", "run: /bin/clarity-hello exited 55"),
+    ("echo status check", "status check"),
+    # And the line that makes the whole change worth having: a command typed
+    # *after* a program has been run and finished. On the old shell there was
+    # nobody left to type it at.
+    ("count still-here", "10"),
 ]
 SHELL_EXIT_STATUS = 5
+
+# What /bin/clarity-hello writes. It has to appear twice in a boot: once from
+# the kernel's own fork+exec gate, and once because the shell was told to run
+# it. One appearance means the shell's `run` never started anything.
+HELLO_LINE = "hello: I am a different program than the one that asked for me"
 
 # Long enough that a slow TCG boot on a shared runner is not the thing being
 # measured, short enough that a hang is reported rather than waited out.
@@ -311,10 +330,38 @@ def main():
         if answer not in text:
             print("FAIL: sent %r to the shell, but %r is not in its output"
                   % (command, answer))
-            for candidate in text.splitlines():
-                if candidate.startswith("$ ") or "clarity-sh" in candidate:
-                    print("  " + candidate)
+            print("  --- the shell's whole transcript ---")
+            start = text.find(SHELL_BANNER.decode())
+            body = text[start:] if start >= 0 else text[-4000:]
+            for candidate in body.splitlines():
+                print("  " + candidate)
             return 1
+
+    # The child's own voice, from the shell's `run` as well as from the
+    # kernel's gate. The shell's line above says the shell waited and was
+    # told 55; this says something actually ran and said so.
+    if text.count(HELLO_LINE) < 2:
+        print("FAIL: /bin/clarity-hello spoke %d time(s); the kernel's gate "
+              "runs it once and the shell was told to run it too"
+              % text.count(HELLO_LINE))
+        return 1
+
+    # Exactly one shell.
+    #
+    # `run` forks, and a child whose `exec` failed must exit rather than
+    # return into the loop — a child that came back would be a *second* shell
+    # reading the same keyboard, and every line after it would go to whichever
+    # of the two happened to be inside read(2) first. Nothing else here can
+    # see that: both shells answer correctly, so every expected string is
+    # still present. What gives it away is the prompts, because there are
+    # twice as many of them.
+    prompts = sum(1 for line in text.splitlines() if line.startswith("$ "))
+    want_prompts = len(SHELL_SESSION) + 1
+    if prompts != want_prompts:
+        print("FAIL: %d shell prompts, wanted %d — more than one means `run` "
+              "left a child in the loop, and there are two shells sharing the "
+              "keyboard" % (prompts, want_prompts))
+        return 1
 
     if ("exited %d" % SHELL_EXIT_STATUS) not in text:
         print("FAIL: `exit %d` did not reach the kernel as the exit status"
