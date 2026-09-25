@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const port = @import("port.zig");
+const idt = @import("idt.zig");
 
 const VGA_BUF: [*]volatile u16 = @ptrFromInt(0xFFFF_8000_000B_8000);
 const VGA_W = 80;
@@ -27,6 +28,20 @@ pub fn init() void {
     port.out8(COM1 + 3, 0x03);
     port.out8(COM1 + 2, 0xC7);
     port.out8(COM1 + 4, 0x0B);
+    // And put back the receive interrupt, if it was ever turned on.
+    //
+    // This function is called *twice*: once as the first thing the kernel
+    // does, and again from `drivers/init.zig`, whose own comment says
+    // "Console first -- every other driver wants to print errors". The
+    // second call re-runs the whole sequence above, including the two writes
+    // of zero to the IER -- so anything enabled in between is silently
+    // switched off. That cost this file its receive interrupt, and the only
+    // symptom was a counter reading zero.
+    //
+    // Re-applying here rather than moving the caller: a third call would
+    // break it again, and a console that reinitialises itself should come
+    // back in the state it was in rather than the state it shipped in.
+    if (rx_interrupt_on) port.out8(COM1 + 1, 0x01);
 }
 
 // ── output atomicity ────────────────────────────────────
@@ -80,14 +95,91 @@ pub fn println(s: []const u8) void {
 // stays serial-only until a driver explicitly turns VGA on.
 var vga_enabled: bool = false;
 
+// ── COM1 receive ────────────────────────────────────────────────────────
+//
+// The keyboard has had an interrupt since its driver landed and the serial
+// line did not, and the reason written here was this:
+//
+//     Polled rather than interrupt-driven, which is what read(2) needs: it
+//     is entered with IF clear and an interrupt-filled ring would never fill
+//     while it waited.
+//
+// That stopped being true when `syscall_entry` began setting IF once the
+// frame is built, and it is not an argument either way now: the console
+// wait was measured taking the `hlt` branch of a test of RFLAGS.IF, which
+// only a caller with interrupts *on* can do. So the line can have its
+// interrupt, and needs one -- a reader that sleeps until input arrives has
+// nothing to wake it on this line otherwise.
+
+const SERIAL_VECTOR: u8 = 0x24; // IRQ4, the PIC's base of 0x20 plus four
+const SERIAL_RING = 256;
+
+/// Whether the receive interrupt has been turned on, so `init` can put it
+/// back when it is called a second time. See the note at the end of `init`.
+var rx_interrupt_on: bool = false;
+
+var rx: [SERIAL_RING]u8 = undefined;
+var rx_head: usize = 0;
+var rx_tail: usize = 0;
+
+/// How many bytes arrived by interrupt, and how many were dropped because
+/// nobody had read the ring yet. Both, because "the interrupt works" and
+/// "the ring is big enough" are different claims.
+pub var rx_interrupts: u64 = 0;
+pub var rx_dropped: u64 = 0;
+
+fn rx_push(c: u8) void {
+    const next = (rx_head + 1) % SERIAL_RING;
+    if (next == rx_tail) {
+        rx_dropped += 1;
+        return;
+    }
+    rx[rx_head] = c;
+    rx_head = next;
+}
+
+fn serial_irq(frame: *idt.TrapFrame) callconv(.C) void {
+    _ = frame;
+    // Drain, rather than take one byte: the UART raises one interrupt for a
+    // FIFO that may hold several, and a handler that took one byte per
+    // interrupt would fall behind exactly when it matters.
+    while ((port.in8(COM1 + 5) & 0x01) != 0) {
+        rx_push(port.in8(COM1));
+        rx_interrupts += 1;
+    }
+    idt.end_of_interrupt(SERIAL_VECTOR);
+}
+
+/// Let COM1 raise an interrupt when a byte arrives.
+///
+/// Separate from `init`, which runs before there is an IDT to put a handler
+/// in: the console is the first thing the kernel brings up precisely so that
+/// everything after it can report its own failures.
+pub fn enable_receive_interrupt() void {
+    idt.set_handler(SERIAL_VECTOR, serial_irq);
+    rx_interrupt_on = true;
+    // IER bit 0: received-data-available. Only that one -- the others report
+    // transmitter and modem state, which nothing here reads, and an
+    // interrupt nobody handles is a line that never fires again.
+    port.out8(COM1 + 1, 0x01);
+}
+
 /// One byte from COM1, or null if nothing has arrived.
 ///
-/// The other direction of the port `print` already writes to. Bit 0 of the
-/// line-status register says a byte is waiting; reading the data register
-/// takes it. Polled rather than interrupt-driven, which is what `read(2)`
-/// needs: it is entered with IF clear and an interrupt-filled ring would
-/// never fill while it waited.
+/// The ring first and the port second, and both rather than either. The ring
+/// is where the interrupt puts bytes; the port is where they sit on a machine
+/// whose interrupt never arrives, and this is the same belt-and-braces the
+/// PL011 driver has on the other architecture. Reading the port when the ring
+/// is empty cannot steal a byte from the handler: the handler runs with
+/// interrupts masked and drains the FIFO completely, so either it has taken
+/// the byte and the ring is not empty, or it has not run and the byte is
+/// still in the port.
 pub fn serial_poll() ?u8 {
+    if (rx_tail != rx_head) {
+        const c = rx[rx_tail];
+        rx_tail = (rx_tail + 1) % SERIAL_RING;
+        return c;
+    }
     if ((port.in8(COM1 + 5) & 0x01) == 0) return null;
     return port.in8(COM1);
 }

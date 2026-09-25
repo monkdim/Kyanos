@@ -148,6 +148,9 @@ def build_iso(kernel, workdir):
     return iso
 
 
+import re
+
+
 def main():
     if len(sys.argv) != 2:
         raise SystemExit("usage: serial_check_x86.py <kernel-elf>")
@@ -248,10 +251,30 @@ def main():
             why_not("%d shell prompts, wanted %d" % (prompts, len(SHELL_SESSION)))
             return 1
 
+        # The interrupt actually fired. Everything above works whether it did
+        # or not, because `serial_poll` falls back to reading the port -- so
+        # without this the receive interrupt could be entirely dead and every
+        # check here would still pass. The count is the only thing that can
+        # tell the difference.
+        m = re.search(r"serial: (\d+) bytes arrived by interrupt, (\d+) dropped", body)
+        if not m:
+            why_not("the kernel never reported how many bytes arrived by interrupt")
+            return 1
+        arrived, dropped = int(m.group(1)), int(m.group(2))
+        if arrived == 0:
+            why_not("nothing arrived by interrupt -- every byte was picked up "
+                    "by the poll fallback, so the interrupt is not working")
+            return 1
+        if dropped != 0:
+            why_not("%d bytes were dropped for want of room in the receive ring"
+                    % dropped)
+            return 1
+
         print("PASS: with no keyboard and no display, a program read %r "
               "through fd 0, the TSC clock underneath it was measured against "
-              "the PIT, and the shell answered %d commands and exited 5 as "
-              "asked" % (got, len(SHELL_SESSION)))
+              "the PIT, %d bytes arrived by interrupt with none dropped, and "
+              "the shell answered %d commands and exited 5 as asked"
+              % (got, arrived, len(SHELL_SESSION)))
         return 0
     finally:
         stopping = True
