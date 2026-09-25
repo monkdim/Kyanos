@@ -902,6 +902,14 @@ fn fork_child_entry(arg: u64) callconv(.C) noreturn {
     // What the child is running. Null while it is still its parent's copy.
     var image: ?loader.Loaded = null;
 
+    // Why it died, for the report below. The loop's own failure path knows
+    // something the exit status cannot say: `EXIT_FAULT` there means "there
+    // was no image to become", not "it touched an address it should not
+    // have", and `trap.last_fault` on that path holds whatever the *last*
+    // fault anywhere was -- which would be a confident report of the wrong
+    // thing.
+    var no_image = false;
+
     var out = trap.enter_user_frame(&c.frame, c.user_sp);
 
     // And the loop that makes `exec` mean something here.
@@ -920,6 +928,7 @@ fn fork_child_entry(arg: u64) callconv(.C) noreturn {
             // image; either way this process asked to stop being what it was
             // and there is nothing to make it into.
             out = .{ .status = trap.EXIT_FAULT, .code = 0 };
+            no_image = true;
             break;
         };
 
@@ -946,7 +955,43 @@ fn fork_child_entry(arg: u64) callconv(.C) noreturn {
 
     const code: i32 = switch (out.status) {
         trap.EXIT_DONE => @bitCast(@as(u32, @truncate(out.code))),
-        else => -1,
+        else => blk: {
+            // Say why, rather than handing the parent a -1 and dropping
+            // everything that would explain it.
+            //
+            // The parent sees "it exited -1" and that is the same answer for
+            // a program killed by a bad pointer, one killed by a bad
+            // instruction and one whose `exec` found nothing to load. The
+            // kernel knows which: the vector entry wrote the exception class,
+            // the faulting address and the PC into `trap.last_fault` on its
+            // way out, and this was the one place that had them and threw
+            // them away.
+            //
+            // It is the boot's own gates' format, `trap.report_fault`, so a
+            // child that dies under a shell reads the same as one that dies
+            // under a selftest -- but only where there is a fault to report.
+            // A child that asked for an image and got none never touched
+            // anything, and `last_fault` would name somebody else's.
+            //
+            // `last_fault` is one variable for the whole kernel rather than
+            // one per thread, so with two processes faulting at once this
+            // could name the wrong one. That is worth having anyway -- today
+            // it names nothing at all -- and it is written down here rather
+            // than left for somebody to discover from a confusing log.
+            console.print("  child pid ");
+            console.print_dec(if (p.pid > 0) @intCast(p.pid) else 0);
+            if (no_image) {
+                // It asked to be replaced and there was nothing to replace it
+                // with. No fault to report: nothing touched anything.
+                console.print(" asked to become ");
+                console.print(trap.exec_path());
+                console.println(" and there was nothing to load");
+            } else {
+                console.println(" was killed by a fault");
+                if (trap.last_fault) |f| trap.report_fault(f);
+            }
+            break :blk -1;
+        },
     };
 
     // The pages go back without a `paging.deactivate()` first, and that is
