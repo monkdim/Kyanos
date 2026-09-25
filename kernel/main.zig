@@ -38,6 +38,7 @@ const timer = @import("arch/x86_64/timer.zig");
 const stdin = @import("drivers/stdin.zig");
 const conread = @import("conread.zig");
 const readprobe = @import("readprobe.zig");
+const shell = @import("shell.zig");
 const fpu = @import("arch/x86_64/fpu.zig");
 const fputest = @import("fputest.zig");
 
@@ -273,6 +274,11 @@ pub export fn kernel_main(mb_info_phys: u64) callconv(.C) noreturn {
     // 14. And what every one of those crossings had to be true for. Read at
     //    the end because it is a tally of the whole boot, not a test of its
     //    own -- see gsprobe.zig for why it cannot be one.
+    // 15. And then a person, if there is one. Everything above is the kernel
+    //    asking itself questions; this is the first thing on this
+    //    architecture that lets somebody ask it one.
+    shell.run();
+
     gsprobe.run();
     stackprobe.run();
 

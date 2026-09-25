@@ -128,6 +128,21 @@ pub fn build(b: *std.Build) void {
         .root_source_file = wait_prog.getEmittedBin(),
     });
 
+    // /bin/clarity-sh: the shell. The AArch64 twin is user/sh_aarch64.zig;
+    // the two differ in one function, which is how a system call is made.
+    const sh_prog = b.addExecutable(.{
+        .name = "clarity-sh",
+        .root_source_file = b.path("user/sh.zig"),
+        .target = user_target,
+        .optimize = .ReleaseSmall,
+    });
+    sh_prog.setLinkerScript(b.path("user/user.ld"));
+    sh_prog.entry = .{ .symbol_name = "_start" };
+    sh_prog.pie = false;
+    kernel.root_module.addAnonymousImport("sh_elf", .{
+        .root_source_file = sh_prog.getEmittedBin(),
+    });
+
     // /bin/clarity-readprobe: can a program read what was typed? Descriptor
     // zero went to the filesystem and answered EBADF until now.
     const read_prog = b.addExecutable(.{
