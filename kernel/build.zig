@@ -172,6 +172,20 @@ pub fn build(b: *std.Build) void {
         .root_source_file = fork_prog.getEmittedBin(),
     });
 
+    // /bin/clarity-sleepprobe: a program that asks to be woken up later.
+    const sleep_prog = b.addExecutable(.{
+        .name = "clarity-sleepprobe",
+        .root_source_file = b.path("user/sleepprobe.zig"),
+        .target = user_target,
+        .optimize = .ReleaseSmall,
+    });
+    sleep_prog.setLinkerScript(b.path("user/user.ld"));
+    sleep_prog.entry = .{ .symbol_name = "_start" };
+    sleep_prog.pie = false;
+    kernel.root_module.addAnonymousImport("sleepprobe_elf", .{
+        .root_source_file = sleep_prog.getEmittedBin(),
+    });
+
     // /bin/clarity-faultprobe: a program that faults on purpose, so the
     // kernel can be asked what it does about one.
     const fault_prog = b.addExecutable(.{

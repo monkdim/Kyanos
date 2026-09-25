@@ -12,6 +12,7 @@ const sched = @import("../sched/scheduler.zig");
 const vfs = @import("../fs/vfs.zig");
 const console = @import("../arch/x86_64/console.zig");
 const arch_syscall = @import("../arch/x86_64/syscall.zig");
+const arch_timer = @import("../arch/x86_64/timer.zig");
 const pmm = @import("../mm/pmm.zig");
 const vmm = @import("../mm/vmm.zig");
 const uaccess = @import("../mm/uaccess.zig");
@@ -484,9 +485,38 @@ fn sys_getpid() i64 {
     return 0;
 }
 
+/// nanosleep(ns) — give the CPU up until at least `ns` nanoseconds have gone.
+///
+/// The argument is a plain count of nanoseconds rather than a `timespec`
+/// pointer, because there is no `timespec` in this kernel's headers yet and
+/// inventing one here would put the layout in two places. When there is one,
+/// this grows a pointer and keeps the meaning.
+///
+/// The resolution is the clock's, which is a hundredth of a second, so a
+/// shorter sleep than that is rounded *up* to one tick rather than down to
+/// nothing: a caller that asked to sleep and did not is a worse answer than
+/// one that slept slightly too long, and returning immediately is what this
+/// call did before anyone looked at it.
+///
+/// Zero is a yield and not a sleep. It is the one duration for which
+/// returning on the spot is what was asked for.
 fn sys_nanosleep(args: Args) i64 {
-    _ = args;
-    sched.block(.{ .sleep_until = 0 });
+    const ns = args.a0;
+    if (ns == 0) {
+        sched.yield();
+        return 0;
+    }
+    const NS_PER_CENTI: u64 = 10_000_000;
+    const centis = (ns + NS_PER_CENTI - 1) / NS_PER_CENTI;
+    const now = arch_timer.centiseconds();
+    // No clock, no deadline the timer could ever reach -- so this would block
+    // the caller for good. A yield is the honest answer: the CPU is given up,
+    // which is most of what was asked for, and the thread comes back.
+    if (!arch_timer.calibrated()) {
+        sched.yield();
+        return 0;
+    }
+    sched.sleep_until(now + centis);
     return 0;
 }
 

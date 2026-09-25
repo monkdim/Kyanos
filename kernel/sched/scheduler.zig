@@ -84,6 +84,15 @@ pub const Thread = struct {
     /// Separate from `next`, which belongs to the run queues: a waiting
     /// thread is on neither queue, and one field cannot hold both lists.
     wait_next: ?*Thread = null,
+    /// The next thread on the `sleepers` list — the ones asleep in
+    /// `nanosleep(2)`, waiting for a time rather than for an event.
+    ///
+    /// A third field and not a reuse of `wait_next`. A thread is blocked for
+    /// one reason at a time, so the two lists can never hold the same thread
+    /// and sharing the field would work — until a bug in one list corrupted
+    /// the other, at which point the only evidence would be a thread on a
+    /// list it was never put on. Twelve bytes is cheaper than that.
+    sleep_next: ?*Thread = null,
     ticks_run: u64 = 0,
     exit_code: i32 = 0,
 };
@@ -571,8 +580,36 @@ pub fn thread_exit(code: i32) noreturn {
 
 /// Hand control to the run queue and come back when it drains. Used by the
 /// boot path to run kernel threads to completion before carrying on.
+/// Is anything asleep on a deadline?
+fn sleeping() bool {
+    const guard = irqlock.acquire();
+    defer guard.release();
+    return sleepers != null;
+}
+
 pub fn run_queued() void {
-    while (queues.any()) yield();
+    // The queue *and* the sleepers, because a thread that called `nanosleep`
+    // is on no queue and this loop used to stop without it. That did not hang
+    // the boot, which is why it went unnoticed: the boot carried on one
+    // thread short, and the thread woke up later in the middle of whatever
+    // was running by then. Bounded because a thread only gets onto the
+    // sleepers list with a calibrated clock behind the deadline -- see
+    // `sys_nanosleep`, which yields instead of sleeping when there is none.
+    while (queues.any() or sleeping()) {
+        if (queues.any()) {
+            yield();
+            continue;
+        }
+        // Nothing runnable and somebody due to wake. Stopping the CPU until
+        // the timer says so, rather than spinning through this loop for the
+        // whole of the sleep -- which is the same spin `drivers/stdin.zig`
+        // was measured doing eleven million times in three seconds.
+        if (irqlock.enabled()) {
+            asm volatile ("hlt");
+        } else {
+            asm volatile ("pause");
+        }
+    }
     // The third place, and the only one on the boot path: the last thread to
     // exit leaves its stack behind, and the loop above has already stopped
     // asking because the queue is empty.
@@ -611,6 +648,72 @@ pub fn run_queued() void {
 pub fn preempt() void {
     if (current == null) return;
     yield();
+}
+
+/// How many sleeping threads the timer has woken.
+///
+/// Counted rather than inferred from the fact that a sleeper carried on,
+/// because a `nanosleep` that returned on the spot would also leave a thread
+/// that carried on, and the two have to stay distinguishable.
+pub var sleepers_woken: u64 = 0;
+
+/// The threads asleep on a deadline.
+///
+/// They are on no run queue -- that is what being blocked means -- so unless
+/// something holds them they are simply unreachable. That was the bug this
+/// list exists to fix: `sys_nanosleep` blocked a thread on a `sleep_until`
+/// nothing ever looked at, and because `run_queued` waits for the *queue* to
+/// drain rather than for every thread to finish, the boot did not even hang.
+/// It carried on, one thread short, and said nothing.
+var sleepers: ?*Thread = null;
+
+/// Sleep until the clock reads `deadline`, in hundredths of a second.
+///
+/// The deadline and not a duration, because the caller is the one that knows
+/// what clock it read and when.
+pub fn sleep_until(deadline: u64) void {
+    {
+        const guard = irqlock.acquire();
+        defer guard.release();
+        if (current) |c| {
+            c.sleep_next = sleepers;
+            sleepers = c;
+        }
+    }
+    block(.{ .sleep_until = deadline });
+}
+
+/// Wake every sleeper whose deadline has passed. Called from the timer.
+///
+/// Walks the whole list rather than keeping it sorted: this runs on every
+/// tick, and a list long enough for the ordering to pay for itself would
+/// need more threads asleep at once than this kernel can currently have
+/// processes. When that stops being true it is a heap, and the gate that
+/// measures it is already here.
+pub fn wake_sleepers(now: u64) void {
+    const guard = irqlock.acquire();
+    defer guard.release();
+
+    var link: *?*Thread = &sleepers;
+    while (link.*) |t| {
+        const due = switch (t.wait) {
+            .sleep_until => |d| d <= now,
+            // Not asleep any more -- something else woke it, or it was never
+            // really on this list. Either way it does not belong here, and
+            // leaving it would make the list grow forever.
+            else => true,
+        };
+        if (!due) {
+            link = &t.sleep_next;
+            continue;
+        }
+        link.* = t.sleep_next;
+        t.sleep_next = null;
+        if (t.state == .blocked) {
+            wake(t);
+            sleepers_woken += 1;
+        }
+    }
 }
 
 pub fn block(reason: WaitReason) void {

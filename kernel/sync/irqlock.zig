@@ -42,6 +42,33 @@ pub fn acquire() Guard {
     return .{ .saved = save_and_mask() };
 }
 
+/// Are interrupts on right now?
+///
+/// For a caller about to stop the CPU until one arrives. `hlt` and `wfi` are
+/// a pause when interrupts are on and, on x86_64, a hang when they are not —
+/// so the question has to be asked rather than assumed, and this file is
+/// where the bit's position is already known.
+pub fn enabled() bool {
+    switch (builtin.cpu.arch) {
+        // RFLAGS.IF, bit 9.
+        .x86_64 => {
+            const flags = asm volatile ("pushfq; popq %[out]"
+                : [out] "=r" (-> usize),
+            );
+            return (flags & 0x200) != 0;
+        },
+        // DAIF.I, bit 7 of the register as read by `mrs`, and *set* means
+        // masked — the opposite sense to x86_64's.
+        .aarch64 => {
+            const daif = asm volatile ("mrs %[out], daif"
+                : [out] "=r" (-> usize),
+            );
+            return (daif & 0x80) == 0;
+        },
+        else => @compileError("irqlock: no interrupt state for this architecture"),
+    }
+}
+
 fn save_and_mask() usize {
     switch (builtin.cpu.arch) {
         .x86_64 => {

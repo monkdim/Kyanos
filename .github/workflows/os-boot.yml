@@ -218,6 +218,11 @@ jobs:
             # "CPU EXCEPTION" block, deliberately: before this, a ring 3 page
             # fault halted the machine and nothing below it ever ran, so the
             # absence of this line is also the absence of everything after it.
+            # A thread that sleeps wakes up again. Without the wake the boot
+            # does not reach userspace-complete at all -- `run_queued` waits
+            # for the sleeper -- so this is belt and braces over a failure
+            # that is already loud.
+            grep -q "\[ok\] sleep:" "serial-$attempt.log" || missing="$missing sleep-wakes"
             grep -q "\[ok\] fault:" "serial-$attempt.log" || missing="$missing fault-kills-only-the-program"
             # A program waiting at a prompt gives the CPU up. The [FAIL] check
             # below catches a wait that spun; this catches the gate not
