@@ -87,14 +87,35 @@ fn readdir_round_trip() !void {
         const n = try vfs.readdir(@intCast(fd), &buf);
         if (n == 0) break;
         var off: usize = 0;
-        while (off + @sizeOf(vfs.Dirent) <= n) {
-            const header = std.mem.bytesToValue(vfs.Dirent, buf[off..][0..@sizeOf(vfs.Dirent)]);
-            if (header.reclen == 0 or off + header.reclen > n) return error.MalformedDirent;
-            const name = buf[off + @sizeOf(vfs.Dirent) ..][0..header.name_len];
-            if (buf[off + @sizeOf(vfs.Dirent) + header.name_len] != 0) return error.NameNotTerminated;
+        // Walked the way the format is documented and the way both shells
+        // walk it -- by `DIRENT_HEADER`, not by `@sizeOf(vfs.Dirent)`.
+        //
+        // This is the whole reason the name offset could be wrong for as
+        // long as it was. This reader used `@sizeOf` and so did the writer,
+        // so the two agreed with each other and disagreed with everybody
+        // else, and a test that shares a bug with the code under test cannot
+        // see it. Reading it the documented way is what makes this a test of
+        // the format rather than a test of the compiler's padding.
+        while (off + vfs.DIRENT_HEADER <= n) {
+            const reclen: usize = @as(usize, buf[off + 8]) | (@as(usize, buf[off + 9]) << 8);
+            const name_len: usize = buf[off + 11];
+            if (reclen == 0 or off + reclen > n) return error.MalformedDirent;
+            const name = buf[off + vfs.DIRENT_HEADER ..][0..name_len];
+            if (buf[off + vfs.DIRENT_HEADER + name_len] != 0) return error.NameNotTerminated;
+            // Compared whole, which is the check that matters and was
+            // always here. With the name read at the documented offset, a
+            // writer that put it four bytes further along yields four NULs
+            // and "hello" — which is not "hello.txt", so `found_hello` stays
+            // false and this gate fails. That is exactly what it did when
+            // the fix was first tried with the writer left wrong.
+            //
+            // Only `hello.txt` is in /bin at this point: `install_programs`
+            // runs after this gate, which the first attempt at strengthening
+            // this check got wrong by looking for a program that did not
+            // exist yet.
             if (std.mem.eql(u8, name, "hello.txt")) found_hello = true;
             names += 1;
-            off += header.reclen;
+            off += reclen;
         }
     }
     if (!found_hello) return error.EntryMissing;
