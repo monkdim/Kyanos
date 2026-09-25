@@ -30,6 +30,7 @@ const waitprobe = @import("waitprobe.zig");
 const forkexec = @import("forkexec.zig");
 const clarityprog = @import("clarityprog.zig");
 const gsprobe = @import("gsprobe.zig");
+const stackprobe = @import("stackprobe.zig");
 const threadtest = @import("threadtest.zig");
 const fstest = @import("fstest.zig");
 const preempttest = @import("preempttest.zig");
@@ -249,6 +250,7 @@ pub export fn kernel_main(mb_info_phys: u64) callconv(.C) noreturn {
     //    the end because it is a tally of the whole boot, not a test of its
     //    own -- see gsprobe.zig for why it cannot be one.
     gsprobe.run();
+    stackprobe.run();
 
     console.println("KyanOS: userspace complete.");
     hang();

@@ -69,6 +69,9 @@ pub const Thread = struct {
     /// than a single address to compare against; zero means "no stack of its
     /// own", which is true of a Thread that has not been given one.
     kernel_stack_bytes: u64 = 0,
+    /// Next on the list of exited threads whose stacks are still to be freed.
+    /// See `dead_stacks`.
+    next_dead: ?*Thread = null,
     iret_rsp: u64 = 0,                      // for first entry to userspace
     /// The register file a forked child resumes with, or null for a thread
     /// that starts at an ELF entry point and is owed nothing but zeroes.
@@ -347,6 +350,90 @@ pub fn check_on_stack() void {
 /// thread has its own kernel stack for that frame to sit on.
 ///
 /// Returns when something switches back to the caller.
+/// Threads that have exited, whose kernel stacks nobody has been able to
+/// free yet.
+///
+/// A thread cannot free the stack it is standing on, and a thread that calls
+/// `exit` is standing on its own until the switch away -- which is the last
+/// thing it ever does, so there is no "after" in which it could do this.
+/// Somebody else, on a stack of their own, does it instead.
+///
+/// It is a list and not a single slot, and that is the whole of what the
+/// first version got wrong. One slot assumes every exit is followed by a
+/// visit to a reap point before the next exit, and that is not true: a thread
+/// running for the *first* time starts at its entry function, not inside
+/// `yield`, so it passes neither the check at the top nor the one after the
+/// switch. Measured -- with one slot, the probe showed `exit tid=11` with no
+/// reap and then `exit tid=12` overwriting it, and those four pages were gone
+/// for the rest of the boot.
+///
+/// The link lives in the Thread itself, which costs nothing and cannot fail:
+/// the structure outlives the stack, because this kernel's heap does not give
+/// pages back and nothing frees it.
+///
+/// Three places call `reap_dead_stacks`: the top of `yield`, the point a
+/// thread is resumed at after a switch, and `run_queued` once the queue is
+/// empty. Those are the three ways a live thread arrives in the scheduler,
+/// and **no one of them is load-bearing on this boot** -- measured, each
+/// dropped on its own and the tally still read 9 of 9, because the list lets
+/// whichever one runs next catch up on everything. Dropping all three loses
+/// all nine stacks. They are kept because which one fires depends on the
+/// pattern of threads a boot happens to create, and that is not something
+/// this kernel promises anything about.
+var dead_stacks: ?*Thread = null;
+
+/// How many threads have exited, and how many stacks have gone back.
+///
+/// The page count in the fork+exec gate sees only the pages inside its own
+/// window. These see every thread on the boot, which is what says the list
+/// above is actually drained rather than merely drained often enough for one
+/// measurement to come out right.
+pub var threads_exited: u64 = 0;
+pub var stacks_reaped: u64 = 0;
+
+/// Threads still on the list. Zero at the end of a boot, or a stack was
+/// handed to a reap point that never came.
+pub fn dead_stacks_outstanding() u64 {
+    var n: u64 = 0;
+    var it = dead_stacks;
+    while (it) |t| : (it = t.next_dead) n += 1;
+    return n;
+}
+
+/// Hand back the stacks of every thread that has exited, except this one's.
+///
+/// The `!= current` test is what makes this safe to call at the top of
+/// `yield`: the dying thread's own call runs with itself on the list, on the
+/// very stack in question, and must leave it alone. It goes back on the list
+/// and the next caller takes it.
+///
+/// What this does not free is the Thread structure, a kernel-heap allocation
+/// rather than pages, which this kernel's heap does not shrink to give back
+/// anyway -- and which has to outlive the stack to carry the link above. The
+/// pages are what the fork+exec gate counts and what this is for.
+fn reap_dead_stacks() void {
+    var keep: ?*Thread = null;
+    while (dead_stacks) |t| {
+        dead_stacks = t.next_dead;
+        if (current == t) {
+            t.next_dead = keep;
+            keep = t;
+            continue;
+        }
+        t.next_dead = null;
+        if (t.kernel_stack_bytes != 0) {
+            const bottom = t.kernel_stack_top - t.kernel_stack_bytes;
+            const phys = bottom - 0xFFFF_8000_0000_0000;
+            var off: u64 = 0;
+            while (off < t.kernel_stack_bytes) : (off += pmm.PAGE_SIZE) pmm.free_page(phys + off);
+            t.kernel_stack_top = 0;
+            t.kernel_stack_bytes = 0;
+            stacks_reaped += 1;
+        }
+    }
+    dead_stacks = keep;
+}
+
 pub fn yield() void {
     if (frozen) return;
 
@@ -370,6 +457,10 @@ pub fn yield() void {
     // in forty-nine boots before any of this was written down.
     const guard = irqlock.acquire();
     defer guard.release();
+
+    // The first of the three places. Whoever got here is not on a dead
+    // thread's stack unless they are the dead thread, which the reap checks.
+    reap_dead_stacks();
 
     const prev = current;
     const prev_ctx: *context.Context = if (prev) |p| &p.context else &boot_context;
@@ -423,6 +514,10 @@ pub fn yield() void {
         }
         if (preempt_window_spins != 0) widen_preempt_window();
         context.switch_to(prev_ctx, &next.context);
+        // Resumed: the second of the three places a live thread arrives in
+        // the scheduler. See `dead_stacks` for why all three call this and
+        // what that redundancy is and is not worth.
+        reap_dead_stacks();
         return;
     }
     // Nothing else is runnable.
@@ -463,6 +558,14 @@ pub fn thread_exit(code: i32) noreturn {
 /// boot path to run kernel threads to completion before carrying on.
 pub fn run_queued() void {
     while (queues.any()) yield();
+    // The third place, and the only one on the boot path: the last thread to
+    // exit leaves its stack behind, and the loop above has already stopped
+    // asking because the queue is empty.
+    {
+        const guard = irqlock.acquire();
+        defer guard.release();
+        reap_dead_stacks();
+    }
     // The boot context is a resume point on *this* frame, and it stops being
     // one the moment this call returns. Left set, a thread that exits later
     // would find it, "switch back to boot", and resume inside a run_queued
@@ -583,6 +686,11 @@ pub fn exit(code: i32) noreturn {
             // The memory goes first, so the zombie the parent reaps holds an
             // exit code and a PID and nothing else.
             release_user_memory(c);
+            // And the kernel stack, which cannot go from here -- this code is
+            // running on it. It is left for the next thread to reach `yield`.
+            c.next_dead = dead_stacks;
+            dead_stacks = c;
+            threads_exited += 1;
             // And the *process*, which nothing did until now: this marked the
             // Thread dead and stopped, so a parent had nothing to reap and no
             // way to learn how its child went. One thread per process today,
