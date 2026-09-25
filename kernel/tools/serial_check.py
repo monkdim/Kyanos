@@ -209,6 +209,22 @@ def program_lines(text):
     return out
 
 
+def dump_transcript(text):
+    """Everything the kernel said from the shell's banner onwards.
+
+    Every failure gets this, not only the "a command went unanswered" one. A
+    test that says what went wrong without showing the evidence is the same
+    silence the boot gates are written to refuse -- and this one is
+    intermittent, so a run that fails and prints nothing is a run that has to
+    be waited for all over again.
+    """
+    print("  --- the shell's whole transcript ---")
+    start = text.find(SHELL_BANNER.decode())
+    body = text[start:] if start >= 0 else text[-4000:]
+    for candidate in body.splitlines():
+        print("  " + candidate)
+
+
 def main():
     if len(sys.argv) != 2:
         raise SystemExit("usage: serial_check.py <kernel-image>")
@@ -330,11 +346,7 @@ def main():
         if answer not in text:
             print("FAIL: sent %r to the shell, but %r is not in its output"
                   % (command, answer))
-            print("  --- the shell's whole transcript ---")
-            start = text.find(SHELL_BANNER.decode())
-            body = text[start:] if start >= 0 else text[-4000:]
-            for candidate in body.splitlines():
-                print("  " + candidate)
+            dump_transcript(text)
             return 1
 
     # The child's own voice, from the shell's `run` as well as from the
@@ -344,6 +356,7 @@ def main():
         print("FAIL: /bin/clarity-hello spoke %d time(s); the kernel's gate "
               "runs it once and the shell was told to run it too"
               % text.count(HELLO_LINE))
+        dump_transcript(text)
         return 1
 
     # Exactly one shell.
