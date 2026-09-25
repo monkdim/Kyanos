@@ -308,6 +308,22 @@ a bigger surface than the one measured here and pins the ABI to Linux's.
   the gate asks both halves — that the program died with a code no program
   can choose, and that the boot carried on — with the workflow grepping for
   a marker printed *after* the exception block.
+- **A thread that sleeps wakes up now.** ✅ `WaitReason.sleep_until` had been
+  declared since the process model landed, and across the whole kernel there
+  were two mentions of it: the declaration, and `sys_nanosleep` blocking a
+  thread on a deadline of *zero* with the argument discarded. Nothing woke
+  one. And the failure was quiet rather than loud, which is why it survived:
+  `run_queued` waited for the run *queue* to drain, and a blocked thread is
+  on no queue — so the boot carried on one thread short, said nothing, and
+  the abandoned thread's `Thread` and `Process` were never freed. The count
+  an existing gate already printed said so: 12 threads exited where 13 had
+  been started.
+  The timer walks a list of sleepers on every tick and wakes the ones whose
+  deadline has passed; `run_queued` waits for sleepers as well as for the
+  queue, halting rather than spinning while it does. This is what real
+  blocking for `read(2)` has to be built on — a reader that sleeps until a
+  key arrives needs to sleep with a deadline, and until now there was no
+  working sleep to give it one.
 - **AHCI and virtio-net are skeletons.** Both scan PCI correctly, but
   `attach`/`send_frame`/`recv_frame` are `NotImplemented`. PCI enumeration
   itself is real.

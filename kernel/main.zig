@@ -17,6 +17,7 @@ const pmm = @import("mm/pmm.zig");
 const vmm = @import("mm/vmm.zig");
 const heap = @import("mm/heap.zig");
 const sched = @import("sched/scheduler.zig");
+const irqlock = @import("sync/irqlock.zig");
 const syscall = @import("syscall/dispatch.zig");
 const vfs = @import("fs/vfs.zig");
 const smap = @import("arch/x86_64/smap.zig");
@@ -40,6 +41,7 @@ const kbd = @import("drivers/kbd.zig");
 const conread = @import("conread.zig");
 const readprobe = @import("readprobe.zig");
 const faultprobe = @import("faultprobe.zig");
+const sleepprobe = @import("sleepprobe.zig");
 const shell = @import("shell.zig");
 const fpu = @import("arch/x86_64/fpu.zig");
 const fputest = @import("fputest.zig");
@@ -266,6 +268,11 @@ pub export fn kernel_main(mb_info_phys: u64) callconv(.C) noreturn {
     //    and answered EBADF, so nothing a person typed could reach a program.
     readprobe.run();
 
+    // 12aa. And a program that asks to be woken up later — a call that has
+    //    been in the table since the process model landed with nothing ever
+    //    making it.
+    sleepprobe.run();
+
     // 12a. And a program that does the worst thing it can. Everything above
     //    behaves; this one writes through a null pointer, and what is being
     //    measured is whether anything below it runs at all.
@@ -326,20 +333,6 @@ fn poll_input() ?u8 {
     return console.serial_poll();
 }
 
-/// Is IF set in the caller's own flags?
-///
-/// Asked rather than assumed, because the answer decides whether `hlt` is a
-/// pause or a hang: with interrupts masked nothing can wake the CPU and the
-/// machine stops there for good.
-fn interrupts_enabled() bool {
-    const flags = asm volatile (
-        \\ pushfq
-        \\ popq %[out]
-        : [out] "=r" (-> u64),
-    );
-    return (flags & 0x200) != 0;
-}
-
 /// What the console wait does instead of spinning.
 ///
 /// Two steps, and they answer different questions. `yield` is about the rest
@@ -359,7 +352,11 @@ fn idle_input() void {
     // built, and the boot path runs with interrupts on -- but "does not
     // happen" is a claim about today's callers, and hanging the machine is
     // too expensive a way to find out it stopped being true.
-    if (interrupts_enabled()) {
+    //
+    // The question is asked through `irqlock` because that is the file that
+    // already knows where the bit lives on each architecture, and because
+    // `run_queued` came to need the same answer for the same reason.
+    if (irqlock.enabled()) {
         asm volatile ("hlt");
     } else {
         asm volatile ("pause");

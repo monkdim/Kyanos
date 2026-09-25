@@ -44,6 +44,11 @@ fn timer_irq(frame: *idt.TrapFrame) callconv(.C) void {
     // the one moment where that can be asked and answered, and it costs a
     // compare.
     sched.check_on_stack();
+    // Before the switch, so a thread whose deadline has just passed is back
+    // on the run queue in time for this tick's choice rather than the next
+    // one. `centiseconds` reads the TSC, which costs an instruction and does
+    // not depend on this handler having finished.
+    sched.wake_sleepers(centiseconds());
     // A real switch. This used to call sched.schedule(), which only chooses
     // the next thread without moving to it — so the comment here claimed
     // "the arch-level switch happens before we return from this IRQ" and
