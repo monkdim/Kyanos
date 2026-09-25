@@ -90,22 +90,34 @@ pub fn run() void {
 
     // What one fork and one exec are allowed to cost.
     //
-    // Not zero: this architecture does not free a process's memory when it
-    // exits — there is no reaper that does it, which is its own gap and not
-    // this one. What the bound is for is the *replaced* image, which `exec`
-    // kept until now.
+    // Measured, not guessed. Four numbers, from four builds of this kernel:
     //
-    // Measured both ways rather than guessed: 48 pages with the free in
-    // place, 65 with it taken out. The bound sits between them with room on
-    // each side, because a bound that only just catches its own negative is
-    // a bound that will pass the next one by accident.
-    const LEAK_MAX: u64 = 56;
+    //   12  both processes' pages given back at exit, which is this build
+    //   48  the images kept until the machine stopped, before `exit` freed
+    //       anything
+    //   65  and `exec` also keeping the image it replaced
+    //
+    // Not zero, and the 12 is accounted for rather than shrugged at. Eight of
+    // it is the two threads' kernel stacks -- 4 pages each, and a process's
+    // memory is not its thread's. That is measured too: with `kstack_pages`
+    // put up from 4 to 8 in both the spawn and the fork path, the same gate
+    // reports 20, which is the same 12 plus exactly the 8 extra pages the two
+    // stacks grew by. The remaining 4 are the kernel-heap allocations behind
+    // a Thread, a Process and an AddressSpace, whose pages the heap does not
+    // hand back; that one was not separated further and is not claimed to be.
+    //
+    // Both are somebody else's gap: a reaper that frees a zombie thread, and
+    // a heap that shrinks. What the bound is for is the *process* memory, and
+    // it sits between 12 and 48 with room on each side, because a bound that
+    // only just catches its own negative is a bound that will pass the next
+    // one by accident.
+    const LEAK_MAX: u64 = 24;
     if (free_before > free_after and free_before - free_after > LEAK_MAX) {
         console.print("  [FAIL] fork+exec: ");
         console.print_dec(free_before - free_after);
         console.print(" pages did not come back, more than the ");
         console.print_dec(LEAK_MAX);
-        console.println(" a process's own memory accounts for");
+        console.println(" the threads' stacks and the kernel heap account for");
         return;
     }
 
