@@ -28,9 +28,10 @@ pub fn init(target_hz: u32) void {
     idt.set_handler(TIMER_VECTOR, timer_irq);
 }
 
-// Interrupt calling convention: the CPU pushes an interrupt frame and the
-// handler must leave via `iretq`, which callconv(.C) would not do.
-fn timer_irq(frame: *idt.InterruptFrame) callconv(.Interrupt) void {
+// An ordinary function now. The vector's stub saves the register file, calls
+// this, restores it and leaves by `iretq` -- see arch/x86_64/trap_entry.zig,
+// which had to take that over so a ring boundary could `swapgs`.
+fn timer_irq(frame: *idt.TrapFrame) callconv(.C) void {
     _ = frame;
     ticks += 1;
     // Acknowledge before switching away. The PIC will not raise another

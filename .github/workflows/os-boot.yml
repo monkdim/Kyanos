@@ -207,6 +207,11 @@ jobs:
             grep -q "\[ok\] fork:" "serial-$attempt.log" || missing="$missing fork"
             grep -q "\[ok\] wait:" "serial-$attempt.log" || missing="$missing wait"
             grep -q "\[ok\] fork+exec:" "serial-$attempt.log" || missing="$missing fork-exec"
+            # And the invariant every one of those crossings depends on. The
+            # count is part of the assertion: "%gs was never wrong" is also
+            # what a boot that never entered ring 3 would report, and that
+            # boot would have exercised nothing.
+            grep -q "\[ok\] swapgs:" "serial-$attempt.log" || missing="$missing swapgs"
             grep -q "demo: wrote" "serial-$attempt.log" || missing="$missing second-process"
             grep -q "clarity-demo: all checks passed" "serial-$attempt.log" || missing="$missing clarity-program"
             grep -q "float 3.1415929203539825 1.4142135623730951 6.25" "serial-$attempt.log" || missing="$missing clarity-floats"
@@ -266,6 +271,7 @@ jobs:
           # which the marker above already says, but that the two calls that
           # write most heavily into user memory are not the exception.
           grep -q "\[ok\] fork+exec:" serial-smap.log || missing="$missing fork-exec"
+          grep -q "\[ok\] swapgs:" serial-smap.log || missing="$missing swapgs"
           grep -q "clarity-demo: all checks passed" serial-smap.log || missing="$missing clarity-program"
           grep -q "KyanOS: userspace complete." serial-smap.log || missing="$missing kernel-outlived"
           grep -q "\[FAIL\]" serial-smap.log && missing="$missing no-[FAIL]-lines"

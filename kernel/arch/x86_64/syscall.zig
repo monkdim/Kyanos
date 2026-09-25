@@ -35,14 +35,77 @@ pub const PerCpu = extern struct {
     kernel_rsp: u64 = 0,
     user_rsp_save: u64 = 0,
     current_thread: u64 = 0,
+    /// Which block this is. Read through %gs at every entry from ring 3, and
+    /// compared -- see `gs_is_kernel`. A block is the only thing at the GS
+    /// base, so this is the only way to ask what the base is without
+    /// FSGSBASE, which this kernel does not enable.
+    magic: u64 = 0,
 };
 
 comptime {
     std.debug.assert(@offsetOf(PerCpu, "kernel_rsp") == 0);
     std.debug.assert(@offsetOf(PerCpu, "user_rsp_save") == 8);
+    // Read by the entry check, which hardcodes it.
+    std.debug.assert(@offsetOf(PerCpu, "magic") == 24);
 }
 
-pub var per_cpu: PerCpu align(16) = .{};
+pub const KERNEL_GS_MAGIC: u64 = 0x4B59_414E_4B52_4E4C; // "KYANKRNL"
+pub const USER_GS_MAGIC: u64 = 0x4B59_414E_5553_4552; // "KYANUSER"
+
+pub var per_cpu: PerCpu align(16) = .{ .magic = KERNEL_GS_MAGIC };
+
+/// What ring 3's GS base holds on this kernel.
+///
+/// Every kernel with a `swapgs` has a value here; on a kernel where programs
+/// can set their own it is theirs, saved and restored per thread. This one
+/// has no call for that yet, so the value is the kernel's own choice and the
+/// same for every process -- which is what makes it a single variable rather
+/// than a field of a thread, and the day a program can set its own, this has
+/// to become the latter or two threads will trade GS bases at every switch.
+///
+/// It is shaped like a PerCpu and carries a different magic on purpose. A
+/// missing `swapgs` then reads a legible wrong answer -- caught and named by
+/// `gs_is_kernel` -- rather than whatever a wild base happens to point at.
+pub var user_gs: PerCpu align(16) = .{ .magic = USER_GS_MAGIC };
+
+/// How many times the kernel was entered from ring 3, and how many times %gs
+/// did not hold the per-CPU block when it was.
+///
+/// Both numbers, because either alone says nothing. "It was never wrong" is
+/// also what a boot that never entered from ring 3 reports, and that boot
+/// exercised nothing: the `swapgs` pairs only run at a real ring boundary. So
+/// the gate reads the count too, and a count of zero is a failure of the test
+/// rather than a pass.
+pub var entries_from_ring3: u64 = 0;
+pub var entries_total: u64 = 0;
+pub var gs_wrong: u64 = 0;
+
+/// Whether there is a per-CPU block to find yet.
+///
+/// The kernel takes interrupts before `init` below runs: `idt.init` ends with
+/// `sti` and the PIT is already ticking, while GS.base is still the zero the
+/// CPU booted with. Measured rather than assumed -- the check as first
+/// written reported "1 of 75 entries" and the one was vector 32 at cs=0x8,
+/// four lines into the boot log, exactly there.
+///
+/// That window is real and it is harmless: nothing reached from an interrupt
+/// in it reads %gs, because the only things that do are the syscall
+/// trampoline and this check, and neither can run yet. What it is not is
+/// something to check, because there is nothing yet to be right about. The
+/// invariant starts when the bases are written, so the counting does too.
+pub var gs_ready: bool = false;
+
+/// Does %gs name the kernel's block?
+///
+/// True on every entry into ring 0 if, and only if, the boundary did its
+/// `swapgs`. There is no cheaper way to ask: reading a segment base needs
+/// `rdgsbase`, which needs CR4.FSGSBASE, which this kernel does not set.
+pub fn gs_is_kernel() bool {
+    const magic = asm volatile ("movq %%gs:24, %[ret]"
+        : [ret] "=r" (-> u64),
+    );
+    return magic == KERNEL_GS_MAGIC;
+}
 
 /// Stack the syscall trampoline switches to. Separate from the TSS's RSP0
 /// because SYSCALL does not switch stacks itself and does not consult the TSS.
@@ -66,36 +129,29 @@ pub fn init() void {
     // the `syscall` and the stack switch would run on the user stack.
     write_msr(IA32_FMASK, 0x0000_0700);
 
-    // Both bases hold per_cpu, so `swapgs` cannot get it wrong.
+    // The textbook arrangement, now that the interrupt stubs can hold it up.
     //
-    // The textbook arrangement is GS = per_cpu in the kernel and the user's
-    // own value in the shadow, with `swapgs` at every boundary keeping the
-    // two straight. That depends on the boundaries being symmetric, and here
-    // they are not: an interrupt taken in ring 3 does no `swapgs` at all, so
-    // the handler runs with whatever base ring 3 had. That was harmless while
-    // only one process ever existed, because the handler always returned to
-    // the same ring-3 context it interrupted.
+    // While the CPU is in ring 0, GS.base is the per-CPU block and the shadow
+    // holds what ring 3 had; in ring 3 the two are the other way round, and
+    // `swapgs` at every boundary is what turns one into the other. The boot
+    // path is in ring 0, so it starts on the kernel side.
     //
-    // With two processes it stops being harmless. A thread preempted in ring
-    // 3 can be resumed from a context that is *in the kernel*, and its `iretq`
-    // then carries the kernel's base back into ring 3 — after which that
-    // process's next system call swaps to the shadow's zero and stores the
-    // user stack pointer at address 8. Measured: a page fault at cr2=0x8, in
-    // ring 0, on the instruction after `swapgs`, one boot in three.
+    // This kernel spent a while with *both* bases set to the per-CPU block,
+    // so that `swapgs` swapped a value for itself. That was not a design: it
+    // was a workaround for interrupt entry doing no `swapgs` at all, which
+    // meant a handler ran on whatever base ring 3 had. Harmless while one
+    // process existed; with two it was a page fault at cr2=0x8 in ring 0, on
+    // the instruction after the syscall path's `swapgs`, one boot in three --
+    // a thread preempted in ring 3 was resumed from a context already in the
+    // kernel, and its `iretq` carried the kernel's base back out with it.
     //
-    // This kernel has no user GS. It set the shadow to zero and no program
-    // has ever read %gs. So the two values are made the same, `swapgs`
-    // becomes a swap of one value for itself, and every path into the kernel
-    // finds per_cpu whichever way it arrived. Ring 3 holding the pointer
-    // costs nothing it can spend: reaching kernel memory through it faults,
-    // and reading the base needs FSGSBASE, which is not enabled.
-    //
-    // The day userspace wants a GS of its own, this has to go back to the
-    // textbook arrangement — and the interrupt stubs have to `swapgs` on
-    // entry from ring 3 and on the way back, which is what would have made
-    // the original arrangement correct in the first place.
+    // arch/x86_64/trap_entry.zig does the `swapgs` now, on entry from ring 3
+    // and on the way back, which is what would have made this correct in the
+    // first place. So the bases can differ again, and `user_gs` says what
+    // ring 3 gets.
     write_msr(IA32_GS_BASE, @intFromPtr(&per_cpu));
-    write_msr(IA32_KERNEL_GS_BASE, @intFromPtr(&per_cpu));
+    write_msr(IA32_KERNEL_GS_BASE, @intFromPtr(&user_gs));
+    gs_ready = true;
 }
 
 fn read_msr(msr: u32) u64 {
@@ -223,6 +279,14 @@ pub const UserFrame = extern struct {
 };
 
 export fn dispatch_syscall_c(nr: u64, frame: *const UserFrame) callconv(.C) i64 {
+    // The other ring boundary. `syscall_entry` has always swapped correctly,
+    // so this has never been anything but true -- it is here because the
+    // claim the gate makes is about every way into the kernel from ring 3,
+    // and a boundary that is not counted is a boundary not claimed about.
+    entries_from_ring3 += 1;
+    entries_total += 1;
+    if (!gs_is_kernel()) gs_wrong += 1;
+
     return dispatch.dispatch(nr, .{
         .a0 = frame.a0,
         .a1 = frame.a1,
