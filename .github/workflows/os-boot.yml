@@ -219,6 +219,10 @@ jobs:
             # fault halted the machine and nothing below it ever ran, so the
             # absence of this line is also the absence of everything after it.
             grep -q "\[ok\] fault:" "serial-$attempt.log" || missing="$missing fault-kills-only-the-program"
+            # A program waiting at a prompt gives the CPU up. The [FAIL] check
+            # below catches a wait that spun; this catches the gate not
+            # running at all, which would report nothing either way.
+            grep -q "polls of the keyboard over" "serial-$attempt.log" || missing="$missing console-wait-measured"
             # The clock read(2) stands on. Not the console *read*: on a boot
             # with nobody typing, fd 0 correctly gives end of input and the
             # gate says [--]. Typing is the serial step below.
@@ -551,6 +555,7 @@ jobs:
              && grep -q "\[ok\] framebuffer:" serial-arm.log \
              && grep -q "KyanOS aarch64: EL1 boot ok" serial-arm.log \
              && grep -q "\[ok\] aarch64 timer: interrupts delivered" serial-arm.log \
+             && grep -q "polls of the keyboard over" serial-arm.log \
              && ! grep -q "\[FAIL\]" serial-arm.log; then
             echo "PASS: aarch64 reached EL1 in the high half, read its device tree, allocated a page, and drew a screen"
           else

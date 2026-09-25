@@ -12,6 +12,8 @@
 
 const console = @import("arch/x86_64/console.zig");
 const sched = @import("sched/scheduler.zig");
+const stdin = @import("drivers/stdin.zig");
+const arch_timer = @import("arch/x86_64/timer.zig");
 const vfs = @import("fs/vfs.zig");
 const dispatch = @import("syscall/dispatch.zig");
 
@@ -21,6 +23,20 @@ const PATH = "/bin/clarity-readprobe";
 const GOT_BOTH: i32 = 0;
 const QUIET: i32 = 71;
 const GOT_ONE: i32 = 72;
+
+/// How many polls per hundredth of a second a waiting read may cost.
+///
+/// The wait wakes on interrupts, and the timer is the one that is always
+/// there, so the natural answer is one poll per tick -- which is what both
+/// architectures measure: 300 polls over 300 hundredths on x86_64, 291 over
+/// 329 on aarch64. The bound is ten times that plus a hundred, because the
+/// thing it exists to catch is not a slow drift but a loop that stopped
+/// giving the CPU up at all, and that lands three to four orders of
+/// magnitude away: 11,882,275 and 2,922,091 respectively. A tight bound here
+/// would fail on a machine with a faster tick and catch nothing a loose one
+/// misses.
+const POLLS_PER_CENTI: u64 = 10;
+const POLLS_SLACK: u64 = 100;
 
 fn install(path: []const u8, bytes: []const u8) !void {
     const fd = try vfs.open(path, 0x40 | 0x1, 0o755); // O_CREAT | O_WRONLY
@@ -55,7 +71,30 @@ pub fn run() void {
     // that its stack goes back, so what survives to be asked about afterwards
     // has to be the number.
     const tid = started.tid;
+    const polls_before = stdin.polls;
+    const ticks_before = arch_timer.centiseconds();
     sched.run_queued();
+
+    // What the wait cost. A read that waits by asking the keyboard as fast as
+    // the CPU can ask is indistinguishable, in every other line this gate
+    // prints, from one that sleeps — the bytes come back either way. This is
+    // the difference, and it is the whole reason the number is here.
+    const polls = stdin.polls - polls_before;
+    const centis = arch_timer.centiseconds() - ticks_before;
+    console.print("  console read: ");
+    console.print_dec(polls);
+    console.print(" polls of the keyboard over ");
+    console.print_dec(centis);
+    console.println(" hundredths of a second of waiting");
+
+    const allowed = centis * POLLS_PER_CENTI + POLLS_SLACK;
+    if (polls > allowed) {
+        console.print("  [FAIL] console read: the wait spun — ");
+        console.print_dec(polls);
+        console.print(" polls where ");
+        console.print_dec(allowed);
+        console.println(" is the most a loop that gives the CPU up should need");
+    }
 
     const code = sched.exit_code_of(tid) orelse {
         console.println("  [FAIL] console read: the probe never finished");

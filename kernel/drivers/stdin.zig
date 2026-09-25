@@ -24,6 +24,19 @@ pub const Source = struct {
     /// timeout built on one never expires — which is not a slow read, it is
     /// a hung kernel.
     ticks: *const fn () u64,
+    /// Give the CPU up until something might have happened.
+    ///
+    /// Called every time round the wait loop with nothing typed. Without it
+    /// the loop asks the keyboard as fast as the CPU can issue the
+    /// instruction -- measured at 11,882,275 times across one three-second
+    /// wait on x86_64 -- which is a core at 100% for a machine sitting at a
+    /// prompt, and on a laptop is a fan and a battery.
+    ///
+    /// A function rather than a `hlt` written here, because what "give the
+    /// CPU up" means is the one thing about waiting that is not shared: the
+    /// instruction differs, and so does whether there is a scheduler in a
+    /// position to be yielded to at this point.
+    idle: *const fn () void,
 };
 
 var src: ?Source = null;
@@ -64,11 +77,18 @@ pub fn partial() []const u8 {
 /// Fill `dest` from the console. Returns 0 for end of input.
 ///
 /// This is where a real kernel blocks the calling thread and wakes it when a
-/// key arrives. There is no scheduler to block on yet, so it spins — and a
-/// spin with no end would hang the boot rather than wait for it, since
-/// nothing can interrupt a system call. So it gives up after `idle_ticks`
-/// with nothing typed and reports end of input, which is a thing callers
-/// already have to handle: it is what a closed stdin looks like.
+/// key arrives. It does not do that yet — there is no wait queue a keyboard
+/// interrupt could wake somebody from — so it waits rather than sleeps, and
+/// gives up after `idle_ticks` with nothing typed and reports end of input,
+/// which is a thing callers already have to handle: it is what a closed
+/// stdin looks like.
+///
+/// What it no longer does is *spin*. The loop hands the CPU back on every
+/// turn through `Source.idle`, so a program waiting at a prompt costs one
+/// wakeup per timer tick instead of as many as the CPU can issue. That is
+/// not the same thing as blocking and is not written down as if it were:
+/// the thread is still on the run queue, and the timeout is still a stand-in
+/// for a wait queue.
 ///
 /// The timeout is the caller's, not this module's, because how long it is
 /// worth waiting is a question about the caller and not about the keyboard.
@@ -93,10 +113,22 @@ pub fn unread(n: usize) void {
     pending_at -= @min(n, pending_at);
 }
 
+/// How many times the wait loop asked the device for a character.
+///
+/// The instrument for the spin. A loop that gives the CPU up asks a number of
+/// times related to how long it waited; one that does not asks as often as
+/// the CPU can issue the instruction, and the difference between those two is
+/// several orders of magnitude rather than a matter of degree.
+pub var polls: u64 = 0;
+
 fn collect(s: Source, idle_ticks: u64) bool {
     var deadline = s.ticks() + idle_ticks;
     while (s.ticks() < deadline) {
-        const c = s.poll() orelse continue;
+        polls += 1;
+        const c = s.poll() orelse {
+            s.idle();
+            continue;
+        };
         deadline = s.ticks() + idle_ticks;
         const done = editor.feed(c) orelse continue;
 
