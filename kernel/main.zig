@@ -73,6 +73,11 @@ pub export fn kernel_main(mb_info_phys: u64) callconv(.C) noreturn {
     // on x86-64 keeps every double in an xmm register. Without CR4.OSFXSR
     // that program's first division raises #UD.
     fpu.enable();
+    // Now that there is an IDT to put a handler in. The console itself came
+    // up first, before any of this, so that everything since could report its
+    // own failures -- which is why turning the interrupt on is a separate
+    // call and not part of `console.init`.
+    console.enable_receive_interrupt();
     console.println("  [ok] GDT + IDT + FPU");
     // SMEP and SMAP, where the CPU has them. Every access to a process's
     // memory goes through mm/uaccess.zig and the direct map, so the kernel
@@ -299,6 +304,19 @@ pub export fn kernel_main(mb_info_phys: u64) callconv(.C) noreturn {
 
     gsprobe.run();
     stackprobe.run();
+
+    // Did the serial interrupt actually do anything?
+    //
+    // Everything above works whether or not it fired, because `serial_poll`
+    // falls back to the port -- which is the point of the fallback and also
+    // the trap: a change that did nothing at all would pass every test on
+    // this boot in silence. So the count is printed, and the serial test
+    // asserts it is not zero.
+    console.print("  serial: ");
+    console.print_dec(console.rx_interrupts);
+    console.print(" bytes arrived by interrupt, ");
+    console.print_dec(console.rx_dropped);
+    console.println(" dropped for want of room");
 
     console.println("KyanOS: userspace complete.");
     hang();
