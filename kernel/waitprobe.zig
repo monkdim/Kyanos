@@ -53,17 +53,21 @@ pub fn run() void {
 
     const slept_before = sched.wait_sleeps;
 
-    const t = sched.spawn_user(PATH) catch |e| {
+    const started = sched.spawn_user(PATH) catch |e| {
         console.print("  [FAIL] wait: could not spawn the probe: ");
         console.println(@errorName(e));
         return;
     };
+    // The id and not the pointer: `run_queued` below can free the Thread now
+    // that its stack goes back, so what survives to be asked about afterwards
+    // has to be the number.
+    const tid = started.tid;
 
     sched.run_queued();
 
     var ok = true;
 
-    const code = sched.exit_code_of(t) orelse {
+    const code = sched.exit_code_of(tid) orelse {
         console.println("  [FAIL] wait: the parent never finished");
         return;
     };
