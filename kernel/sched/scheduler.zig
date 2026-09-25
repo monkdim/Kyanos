@@ -521,6 +521,57 @@ pub fn wake(t: *Thread) void {
     queues.enqueue(t, @intFromEnum(t.priority));
 }
 
+/// Give a dying process's pages back, from the thread that is dying on them.
+///
+/// Every process on this architecture kept its whole image until the machine
+/// stopped: `exit` marked the Thread and the Process zombies and nothing ever
+/// walked the address space. The fork+exec gate is what put a number on it --
+/// 48 pages that two finished processes still held.
+///
+/// **Off the address space before its tables are freed.** The kernel half is
+/// shared -- entries 256..511 of every PML4 are copies of the kernel's own --
+/// so the kernel's tree maps this code, this stack, and the direct map that
+/// `free_user_half` writes through. Switching to it first is what makes
+/// freeing the PML4 underneath safe: after the `mov`, not one page being
+/// freed is a page the CPU is still translating through.
+///
+/// This is not AArch64's `paging.deactivate`, which sets TCR_EL1.EPD0 and so
+/// takes the low half from every merely *preempted* process, because nothing
+/// puts it back. CR3 is reloaded from the thread's own Context on every
+/// switch, so this is a statement one thread makes about itself and it lasts
+/// exactly as long as this thread does. The Context is set to match: a zombie
+/// is never re-queued, but `free_user_half` leaves `pml4_phys` zero and a
+/// zero CR3 is not something to leave lying in a live structure.
+///
+/// The gate does not catch the switch going missing, and that is worth saying
+/// rather than implying otherwise. Taken out, three boots passed: interrupts
+/// are masked for the rest of this block and nothing between here and the
+/// `yield` below allocates, so the freed PML4 keeps its contents long enough
+/// for the switch to happen anyway. What the switch is for is the window
+/// *after* the guard is released, where a timer tick can run the allocator.
+/// Held open on purpose -- one `alloc_page` and a `memset` put where such a
+/// tick would land, in a build with the switch removed -- the machine stops
+/// dead with no exception on the console, twice out of two, which is what a
+/// triple fault looks like from outside. So: the switch closes the window
+/// rather than narrowing it, and the evidence for it is that experiment and
+/// not the boot gate.
+fn release_user_memory(c: *Thread) void {
+    const p = process_table.lookup(c.pid) orelse return;
+    const space = p.address_space;
+    // A kernel thread's process, if it has one, points at the kernel's own
+    // tree. Freeing that frees the machine.
+    if (space == vmm.kernel() or space.pml4_phys == 0) return;
+    if (space.pml4_phys == vmm.kernel().pml4_phys) return;
+
+    asm volatile ("mov %[cr3], %%cr3"
+        :
+        : [cr3] "r" (vmm.kernel().pml4_phys),
+        : "memory"
+    );
+    vmm.free_user_half(space);
+    c.context.cr3 = vmm.kernel().pml4_phys;
+}
+
 pub fn exit(code: i32) noreturn {
     {
         const guard = irqlock.acquire();
@@ -528,6 +579,9 @@ pub fn exit(code: i32) noreturn {
         if (current) |c| {
             c.state = .zombie;
             c.exit_code = code;
+            // The memory goes first, so the zombie the parent reaps holds an
+            // exit code and a PID and nothing else.
+            release_user_memory(c);
             // And the *process*, which nothing did until now: this marked the
             // Thread dead and stopped, so a parent had nothing to reap and no
             // way to learn how its child went. One thread per process today,
