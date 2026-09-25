@@ -279,6 +279,57 @@ fn clone_level(table_phys: u64, level: usize, base: u64, dst: *AddressSpace) !vo
     }
 }
 
+/// Give back every page the user half of a space holds, and the space itself.
+///
+/// The counterpart of `clone_user_half`, and the thing `exec` never had. Its
+/// comment said "Tear down the old address space; the new one replaces it"
+/// over a line that only overwrote the pointer: every page of every image a
+/// process replaced stayed allocated for the life of the machine.
+///
+/// The user half only. Entries 256 and up are the kernel's own tables, shared
+/// into every space by `share_kernel_half` — copies of pointers, not copies
+/// of tables — so walking them would free the kernel out from under itself.
+/// The PML4 page goes at the end, which is this space's and nobody else's.
+pub fn free_user_half(space: *AddressSpace) void {
+    var top: usize = 0;
+    while (top < 256) : (top += 1) {
+        const pml4 = phys_to_table(space.pml4_phys);
+        if (pml4[top] & PAGE_PRESENT == 0) continue;
+        free_level(pml4[top] & ADDR_MASK, 1);
+        pml4[top] = 0;
+    }
+    pmm.free_page(space.pml4_phys);
+    space.pml4_phys = 0;
+}
+
+/// One level of the walk down, freeing leaves and then the table that held
+/// them.
+fn free_level(table_phys: u64, level: usize) void {
+    const shift: u6 = switch (level) {
+        1 => 30,
+        2 => 21,
+        else => 12,
+    };
+    const table = phys_to_table(table_phys);
+    var i: usize = 0;
+    while (i < 512) : (i += 1) {
+        const entry = table[i];
+        if (entry & PAGE_PRESENT == 0) continue;
+        const frame = entry & ADDR_MASK;
+        if (level == 3 or (entry & PAGE_HUGE) != 0) {
+            // A leaf. A huge one covers many 4 KiB pages and the allocator
+            // knows only 4 KiB pages, so it goes back as the pages it is
+            // made of — the same arithmetic `clone_level` uses to copy one.
+            const span: u64 = @as(u64, 1) << shift;
+            var off: u64 = 0;
+            while (off < span) : (off += 4096) pmm.free_page(frame + off);
+            continue;
+        }
+        free_level(frame, level + 1);
+    }
+    pmm.free_page(table_phys);
+}
+
 fn copy_phys_page(dst_phys: u64, src_phys: u64) void {
     const HHDM: u64 = 0xFFFF_8000_0000_0000;
     const d: [*]u8 = @ptrFromInt(HHDM + dst_phys);

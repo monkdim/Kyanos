@@ -199,6 +199,14 @@ jobs:
             grep -q "\[ok\] user sse" "serial-$attempt.log" || missing="$missing user-sse"
             grep -q "\[ok\] user pointers" "serial-$attempt.log" || missing="$missing user-pointers"
             grep -q "\[exit\] status=0" "serial-$attempt.log" || missing="$missing sysret-return"
+            # The three calls a shell makes, in the order it makes them.
+            # Each one prints [FAIL] of its own accord when it goes wrong, and
+            # the no-[FAIL] check below catches that -- but a gate that stops
+            # running at all prints nothing, and silence is what these three
+            # lines are here to refuse.
+            grep -q "\[ok\] fork:" "serial-$attempt.log" || missing="$missing fork"
+            grep -q "\[ok\] wait:" "serial-$attempt.log" || missing="$missing wait"
+            grep -q "\[ok\] fork+exec:" "serial-$attempt.log" || missing="$missing fork-exec"
             grep -q "demo: wrote" "serial-$attempt.log" || missing="$missing second-process"
             grep -q "clarity-demo: all checks passed" "serial-$attempt.log" || missing="$missing clarity-program"
             grep -q "float 3.1415929203539825 1.4142135623730951 6.25" "serial-$attempt.log" || missing="$missing clarity-floats"
@@ -248,6 +256,16 @@ jobs:
           grep -q "\[ok\] smep+smap" serial-smap.log || missing="$missing smep-smap-enabled"
           grep -q "\[ok\] preempt window" serial-smap.log || missing="$missing preempt-window"
           grep -q "\[ok\] user pointers" serial-smap.log || missing="$missing user-pointers"
+          # fork and exec both fill a process's pages from ring 0 — exec
+          # writes a program image into a fresh address space, fork copies
+          # the parent's pages one at a time. They are meant to do it through
+          # the direct map, at kernel addresses, the way mm/uaccess.zig does;
+          # this kernel has no stac/clac anywhere, so a path that reached for
+          # a user address instead has nothing to lift SMAP for it and faults
+          # in ring 0. That is what this line is asking: not that SMAP works,
+          # which the marker above already says, but that the two calls that
+          # write most heavily into user memory are not the exception.
+          grep -q "\[ok\] fork+exec:" serial-smap.log || missing="$missing fork-exec"
           grep -q "clarity-demo: all checks passed" serial-smap.log || missing="$missing clarity-program"
           grep -q "KyanOS: userspace complete." serial-smap.log || missing="$missing kernel-outlived"
           grep -q "\[FAIL\]" serial-smap.log && missing="$missing no-[FAIL]-lines"
