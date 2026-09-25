@@ -26,6 +26,7 @@ const multiboot = @import("boot/multiboot2.zig");
 const initprog = @import("initprog.zig");
 const regprobe = @import("regprobe.zig");
 const forkprobe = @import("forkprobe.zig");
+const waitprobe = @import("waitprobe.zig");
 const clarityprog = @import("clarityprog.zig");
 const threadtest = @import("threadtest.zig");
 const fstest = @import("fstest.zig");
@@ -221,6 +222,11 @@ pub export fn kernel_main(mb_info_phys: u64) callconv(.C) noreturn {
 
     // 11b. The first call to fork(2) this kernel has ever served.
     forkprobe.run();
+
+    // And the other half: a parent that sleeps until its child is done. The
+    // first system call on this architecture that does not return on the
+    // spot.
+    waitprobe.run();
 
     // 12. A Clarity program. Everything above this ran code written for the
     //    kernel; this is a Clarity source file compiled to C by
