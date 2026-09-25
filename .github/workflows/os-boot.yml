@@ -217,6 +217,10 @@ jobs:
             # with nobody typing, fd 0 correctly gives end of input and the
             # gate says [--]. Typing is the serial step below.
             grep -q "\[ok\] console clock:" "serial-$attempt.log" || missing="$missing console-clock"
+            # The shell ran. With nobody typing it reads end of input and
+            # exits 0, which is what a shell does when its input closes; the
+            # serial step below is where one is actually typed at.
+            grep -q "\[ok\] shell: ran and exited" "serial-$attempt.log" || missing="$missing shell"
             grep -q "demo: wrote" "serial-$attempt.log" || missing="$missing second-process"
             grep -q "clarity-demo: all checks passed" "serial-$attempt.log" || missing="$missing clarity-program"
             grep -q "float 3.1415929203539825 1.4142135623730951 6.25" "serial-$attempt.log" || missing="$missing clarity-floats"
@@ -279,6 +283,7 @@ jobs:
           grep -q "\[ok\] swapgs:" serial-smap.log || missing="$missing swapgs"
           grep -q "\[ok\] thread stacks:" serial-smap.log || missing="$missing thread-stacks"
           grep -q "\[ok\] console clock:" serial-smap.log || missing="$missing console-clock"
+          grep -q "\[ok\] shell: ran and exited" serial-smap.log || missing="$missing shell"
           grep -q "clarity-demo: all checks passed" serial-smap.log || missing="$missing clarity-program"
           grep -q "KyanOS: userspace complete." serial-smap.log || missing="$missing kernel-outlived"
           grep -q "\[FAIL\]" serial-smap.log && missing="$missing no-[FAIL]-lines"

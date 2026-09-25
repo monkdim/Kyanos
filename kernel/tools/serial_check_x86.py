@@ -14,6 +14,9 @@ What it checks:
   * a line typed at the serial port reaches a program through fd 0, whole
   * a second line reaches it after the first, with nothing of the first left
   * and the program's exit code says which of those happened
+  * the shell reads commands, runs them, and exits with the status it is
+    given -- including `run`, which forks, execs and waits, so what comes
+    back is a second program's exit status carried through three calls
 
 Everything it sends goes down the same serial line the boot log comes back on,
 which is what `-serial stdio` gives a person and `-serial unix:` gives a
@@ -34,9 +37,37 @@ import time
 LINES = ["alpha", "beta gamma delta"]
 
 PROBE_READY = b"readprobe: reading a line"
+SHELL_BANNER = b"clarity-sh: type help"
+SHELL_PROMPT = b"$ "
 CLOCK_MARKER = b"[ok] console clock:"
 DONE_MARKER = b"[ok] console read:"
 COMPLETE = b"KyanOS: userspace complete."
+
+# Typed at the shell. `run` is the point of the middle two: it forks, execs
+# and waits, so the status that comes back is a second program's, carried
+# through three system calls. The two after it are typed *after* a program has
+# been run and finished -- on a shell that lost itself to exec there would be
+# nobody left to type them at.
+SHELL_SESSION = [
+    "help",
+    "echo status check",
+    "run /nope",
+    "run /bin/clarity-hello",
+    "echo still here",
+    "count abcdefghij",
+    "exit 5",
+]
+
+SHELL_EXPECTED = [
+    "status check",
+    "run: cannot run /nope — no such file",
+    "run: /nope exited 127",
+    "hello: I am a different program than the one that asked for me",
+    "run: /bin/clarity-hello exited 55",
+    "still here",
+    "10",
+    "clarity-sh: exit",
+]
 
 BOOT_DEADLINE = 90
 STEP_DEADLINE = 45
@@ -182,13 +213,45 @@ def main():
             why_not("the program read %r, not %r" % (got, LINES))
             return 1
 
+        # And then the shell, which is the same serial line used the way a
+        # person would use it.
+        if not wait_for(log, SHELL_BANNER, time.time() + STEP_DEADLINE, qemu):
+            why_not("the shell never started")
+            return 1
+
+        for i, cmd in enumerate(SHELL_SESSION):
+            if not wait_for(log, SHELL_PROMPT, time.time() + STEP_DEADLINE,
+                            qemu, count=i + 1):
+                why_not("the shell did not prompt before %r" % cmd)
+                return 1
+            send(sock, cmd)
+
         if not wait_for(log, COMPLETE, time.time() + STEP_DEADLINE, qemu):
-            why_not("the kernel did not finish after the read")
+            why_not("the kernel did not finish after the shell")
+            return 1
+
+        body = read_log(log).decode("utf-8", "replace")
+        for want in SHELL_EXPECTED:
+            if want not in body:
+                why_not("the shell never said %r" % want)
+                return 1
+
+        # Exactly one prompt per command: one before each, and none after the
+        # last because the last is `exit`. Counted rather than merely looked
+        # for, because a child whose exec failed and returned into the loop
+        # would be a *second* shell reading the same port, and both would
+        # answer correctly -- every expected string would be there and the
+        # test would pass on the strings alone. What gives it away is that
+        # there are twice as many prompts.
+        prompts = body.count("$ ")
+        if prompts != len(SHELL_SESSION):
+            why_not("%d shell prompts, wanted %d" % (prompts, len(SHELL_SESSION)))
             return 1
 
         print("PASS: with no keyboard and no display, a program read %r "
-              "through fd 0, and the TSC clock underneath it was measured "
-              "against the PIT" % (got,))
+              "through fd 0, the TSC clock underneath it was measured against "
+              "the PIT, and the shell answered %d commands and exited 5 as "
+              "asked" % (got, len(SHELL_SESSION)))
         return 0
     finally:
         stopping = True
