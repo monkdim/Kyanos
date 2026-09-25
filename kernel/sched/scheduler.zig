@@ -972,6 +972,7 @@ fn wake_waiters_for(parent_pid: Pid, child_pid: Pid) void {
 fn end_process(pid: Pid, code: i32) void {
     const p = process_table.lookup(pid) orelse return;
     if (p.state == .zombie) return;
+    processes_ended += 1;
     p.state = .zombie;
     p.exit_code = code;
     process_table.reparent_children(p) catch {};
@@ -981,6 +982,45 @@ fn end_process(pid: Pid, code: i32) void {
     }
     // After the zombie is recorded, so a woken parent has something to find.
     wake_waiters_for(p.parent_pid, p.pid);
+
+    // And then the Process itself, because nothing can reach it any more.
+    //
+    // `record_zombie` copied the pid, the exit code and the name into the
+    // parent's list by value; `remove_child` took it off the parent's list of
+    // children; `reparent_children` moved its own children to init; and the
+    // table entry goes here. The thread that was running it is a zombie, and
+    // is freed at the next reap point.
+    //
+    // **Who owns the AddressSpace was the open question**, and it has an
+    // answer rather than a guess: `loader.alloc_address_space` creates it with
+    // the allocator it is handed and only destroys it in an `errdefer`, so on
+    // success the caller owns it -- and `clone_address_space`, the other way
+    // one is made, creates it the same way with the same allocator. One
+    // owner, either way, so this is a single free and not a double one.
+    const gpa = process_table.gpa;
+    process_table.remove(p.pid);
+    p.children.deinit(gpa);
+    p.zombies.deinit(gpa);
+    p.fd_table.deinit(gpa);
+    release_address_space(p.address_space, gpa);
+    gpa.destroy(p);
+    processes_freed += 1;
+}
+
+/// How many Processes have been ended and how many freed. Two numbers for the
+/// reason the thread ones are two: "it was freed" and "every one was" are
+/// different claims.
+pub var processes_ended: u64 = 0;
+pub var processes_freed: u64 = 0;
+
+/// The structure, once its pages have gone.
+fn release_address_space(space: *vmm.AddressSpace, gpa: std.mem.Allocator) void {
+    // The pages and the PML4 went in `release_user_memory`, which leaves
+    // `pml4_phys` zero to say so -- freeing it again here would hand the page
+    // allocator physical address zero. What is left is the list of regions and
+    // the structure holding it.
+    space.regions.deinit(heap.allocator());
+    gpa.destroy(space);
 }
 
 /// wait(2) — sleep until a child of this process has exited, then reap it.

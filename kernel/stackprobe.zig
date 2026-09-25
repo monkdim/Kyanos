@@ -51,7 +51,20 @@ pub fn run() void {
         console.println(" Thread structures did");
         return;
     }
+    const ended = sched.processes_ended;
+    const p_freed = sched.processes_freed;
+    if (ended == 0 or p_freed != ended) {
+        console.print("  [FAIL] thread stacks: ");
+        console.print_dec(ended);
+        console.print(" processes ended but ");
+        console.print_dec(p_freed);
+        console.println(" were freed");
+        return;
+    }
+
     console.print("  [ok] thread stacks: ");
     console.print_dec(exited);
-    console.println(" threads exited and every one gave back its kernel stack and its own structure");
+    console.print(" threads exited and every one gave back its kernel stack and its own structure, and all ");
+    console.print_dec(ended);
+    console.println(" processes gave back theirs");
 }
