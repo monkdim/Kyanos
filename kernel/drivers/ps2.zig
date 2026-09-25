@@ -78,11 +78,27 @@ pub fn init() !void {
         _ = port.in8(PS2_DATA);
     }
 
-    // Configure controller: enable IRQs on both ports, scancode translation off.
+    // Configure the controller: interrupts on both ports, and scancode
+    // translation *on*.
+    //
+    // Two bits, and the first of them was wrong in a way nothing could see.
+    // The mask that cleared the translation bit was 0b1011_1110, which also
+    // clears bit 0 -- the first port's interrupt-enable, set on the line
+    // above. The keyboard interrupt therefore never fired. Nothing reported
+    // anything: the controller was content, `init` returned without error,
+    // and the scancodes simply piled up in the output buffer with nobody
+    // reading them. Measured, with keys sent through QEMU's monitor: the
+    // output-buffer-full bit was set on 16283629 consecutive polls while the
+    // ring stayed empty. With bit 0 left alone, the same keys arrive.
+    //
+    // Translation on, rather than off, because that is what makes the
+    // scancodes the same numbers as the Linux keycodes the AArch64 side
+    // already has a table for -- see drivers/kbd.zig, which measured both
+    // settings.
     cmd(0x20);
     var cfg = read_data() orelse return error.ControllerUnresponsive;
     cfg |= 0b0000_0011; // IRQ1 + IRQ12
-    cfg &= 0b1011_1110; // clear translation bit
+    cfg |= 0b0100_0000; // translation: keyboard set 2 in, set 1 out
     cmd(0x60);
     write_data(cfg);
 

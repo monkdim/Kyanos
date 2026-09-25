@@ -213,9 +213,11 @@ pub fn syscall_entry() callconv(.Naked) void {
         \\ pushq %r12
         \\ pushq %rbp
         \\ pushq %rbx
+        \\ sti
         \\ movq %rax, %rdi
         \\ movq %rsp, %rsi
         \\ call dispatch_syscall_c
+        \\ cli
         \\ popq %rbx
         \\ popq %rbp
         \\ popq %r12

@@ -36,6 +36,7 @@ const fstest = @import("fstest.zig");
 const preempttest = @import("preempttest.zig");
 const timer = @import("arch/x86_64/timer.zig");
 const stdin = @import("drivers/stdin.zig");
+const kbd = @import("drivers/kbd.zig");
 const conread = @import("conread.zig");
 const readprobe = @import("readprobe.zig");
 const shell = @import("shell.zig");
@@ -177,9 +178,12 @@ pub export fn kernel_main(mb_info_phys: u64) callconv(.C) noreturn {
     // The clock is measured, not the interrupt count: `read(2)` is entered
     // with IF cleared by IA32_FMASK, where `timer.ticks` stands still and a
     // timeout built on it never expires.
+    //
+    // Two inputs, one editor: `poll_input` below asks the keyboard and then
+    // the serial port.
     timer.calibrate(20);
     stdin.init(.{
-        .poll = console.serial_poll,
+        .poll = poll_input,
         .echo = console.echo,
         .ticks = timer.centiseconds,
     });
@@ -302,6 +306,19 @@ fn hang() noreturn {
 /// violated (slice OOB, integer overflow with checked semantics,
 /// `unreachable`, etc). We dump the message, stop scheduling, and
 /// halt.
+/// The two ways into this machine, in one function because the line editor
+/// has one input.
+///
+/// The keyboard first and the serial port second, in the order a person is
+/// more likely to be at -- but each call asks both, so a byte on either never
+/// waits for the other to be quiet. A machine with no keyboard attached
+/// simply never answers from the first half, which is the headless case and
+/// is not a special case here.
+fn poll_input() ?u8 {
+    if (kbd.poll()) |c| return c;
+    return console.serial_poll();
+}
+
 pub fn panic(msg: []const u8, _: ?*std.builtin.StackTrace, _: ?usize) noreturn {
     console.print("\n\nKERNEL PANIC: ");
     console.println(msg);

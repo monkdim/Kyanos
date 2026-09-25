@@ -310,6 +310,18 @@ jobs:
           python3 kernel/tools/serial_check_x86.py kernel/zig-out/bin/clarity-kernel | tee serial-x86-typed.log
           grep -q "^PASS:" serial-x86-typed.log
 
+      # ── And somebody types at the keyboard ─────────────────────────────
+      #
+      # The other way in, and a separate file on purpose: either alone would
+      # leave the other free to break without anything noticing, and the two
+      # paths share only the line editor. Keys go through QEMU's monitor to
+      # the PS/2 controller, and **nothing is sent down the serial line**, so
+      # every byte the kernel reads on that boot came from the keyboard.
+      - name: Type at the keyboard with nothing on the serial line (x86_64)
+        run: |
+          python3 kernel/tools/key_check_x86.py kernel/zig-out/bin/clarity-kernel | tee key-x86-typed.log
+          grep -q "^PASS:" key-x86-typed.log
+
       # ── The developer command produces the same boot ───────────────────
       #
       # Everything above is what this workflow does by hand. `clarity os
