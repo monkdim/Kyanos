@@ -128,6 +128,21 @@ pub fn build(b: *std.Build) void {
         .root_source_file = wait_prog.getEmittedBin(),
     });
 
+    // /bin/clarity-readprobe: can a program read what was typed? Descriptor
+    // zero went to the filesystem and answered EBADF until now.
+    const read_prog = b.addExecutable(.{
+        .name = "clarity-readprobe",
+        .root_source_file = b.path("user/readprobe.zig"),
+        .target = user_target,
+        .optimize = .ReleaseSmall,
+    });
+    read_prog.setLinkerScript(b.path("user/user.ld"));
+    read_prog.entry = .{ .symbol_name = "_start" };
+    read_prog.pie = false;
+    kernel.root_module.addAnonymousImport("readprobe_elf", .{
+        .root_source_file = read_prog.getEmittedBin(),
+    });
+
     // /bin/clarity-forkprobe: the first program to call fork(2).
     const fork_prog = b.addExecutable(.{
         .name = "clarity-forkprobe",

@@ -213,6 +213,10 @@ jobs:
             # boot would have exercised nothing.
             grep -q "\[ok\] swapgs:" "serial-$attempt.log" || missing="$missing swapgs"
             grep -q "\[ok\] thread stacks:" "serial-$attempt.log" || missing="$missing thread-stacks"
+            # The clock read(2) stands on. Not the console *read*: on a boot
+            # with nobody typing, fd 0 correctly gives end of input and the
+            # gate says [--]. Typing is the serial step below.
+            grep -q "\[ok\] console clock:" "serial-$attempt.log" || missing="$missing console-clock"
             grep -q "demo: wrote" "serial-$attempt.log" || missing="$missing second-process"
             grep -q "clarity-demo: all checks passed" "serial-$attempt.log" || missing="$missing clarity-program"
             grep -q "float 3.1415929203539825 1.4142135623730951 6.25" "serial-$attempt.log" || missing="$missing clarity-floats"
@@ -274,6 +278,7 @@ jobs:
           grep -q "\[ok\] fork+exec:" serial-smap.log || missing="$missing fork-exec"
           grep -q "\[ok\] swapgs:" serial-smap.log || missing="$missing swapgs"
           grep -q "\[ok\] thread stacks:" serial-smap.log || missing="$missing thread-stacks"
+          grep -q "\[ok\] console clock:" serial-smap.log || missing="$missing console-clock"
           grep -q "clarity-demo: all checks passed" serial-smap.log || missing="$missing clarity-program"
           grep -q "KyanOS: userspace complete." serial-smap.log || missing="$missing kernel-outlived"
           grep -q "\[FAIL\]" serial-smap.log && missing="$missing no-[FAIL]-lines"
@@ -282,6 +287,23 @@ jobs:
             exit 1
           fi
           echo "PASS: two processes ran with SMEP and SMAP enforced; the kernel touched no user page directly"
+
+      # ── Somebody types at it, over the wire ────────────────────────────
+      #
+      # No display and no keyboard: everything this sends goes down the same
+      # serial line the boot log comes back on. That is what a person gets
+      # with `-serial stdio` and what a script gets with `-serial unix:`, and
+      # until descriptor zero reached the console on this architecture there
+      # was nothing for it to drive -- fd 0 went to the filesystem, found no
+      # inode and answered EBADF.
+      #
+      # The steps above assert the clock the read stands on; this one is the
+      # only place a line is actually typed, so it is the only place the
+      # `[ok] console read:` marker can appear.
+      - name: Type down the serial line with no keyboard attached (x86_64)
+        run: |
+          python3 kernel/tools/serial_check_x86.py kernel/zig-out/bin/clarity-kernel | tee serial-x86-typed.log
+          grep -q "^PASS:" serial-x86-typed.log
 
       # ── The developer command produces the same boot ───────────────────
       #

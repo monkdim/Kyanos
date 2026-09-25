@@ -35,6 +35,9 @@ const threadtest = @import("threadtest.zig");
 const fstest = @import("fstest.zig");
 const preempttest = @import("preempttest.zig");
 const timer = @import("arch/x86_64/timer.zig");
+const stdin = @import("drivers/stdin.zig");
+const conread = @import("conread.zig");
+const readprobe = @import("readprobe.zig");
 const fpu = @import("arch/x86_64/fpu.zig");
 const fputest = @import("fputest.zig");
 
@@ -165,6 +168,22 @@ pub export fn kernel_main(mb_info_phys: u64) callconv(.C) noreturn {
     };
     console.println("  [ok] drivers");
 
+    // The console as something to *read*. Everything that reads it reads it
+    // through drivers/stdin.zig -- the line editor there is one editor and
+    // not one per caller, because two editors polling the same port would
+    // each see half of what was typed.
+    //
+    // The clock is measured, not the interrupt count: `read(2)` is entered
+    // with IF cleared by IA32_FMASK, where `timer.ticks` stands still and a
+    // timeout built on it never expires.
+    timer.calibrate(20);
+    stdin.init(.{
+        .poll = console.serial_poll,
+        .echo = console.echo,
+        .ticks = timer.centiseconds,
+    });
+    conread.report_clock();
+
     console.println("KyanOS ready.");
 
     // 7. Kernel threads. The context switch had never executed — the call
@@ -235,7 +254,12 @@ pub export fn kernel_main(mb_info_phys: u64) callconv(.C) noreturn {
     // for it, and still be there. Untried on this architecture.
     forkexec.run();
 
-    // 12. A Clarity program. Everything above this ran code written for the
+    // 12. The console, read from a program. Descriptor zero was a descriptor
+    //    like any other until now: it went to the filesystem, found no inode
+    //    and answered EBADF, so nothing a person typed could reach a program.
+    readprobe.run();
+
+    // 13. A Clarity program. Everything above this ran code written for the
     //    kernel; this is a Clarity source file compiled to C by
     //    `clarity cc --freestanding`, linked against kernel/user/libc, and
     //    run as a second process — which also means the first one exited and
@@ -246,7 +270,7 @@ pub export fn kernel_main(mb_info_phys: u64) callconv(.C) noreturn {
         hang();
     };
 
-    // 13. And what every one of those crossings had to be true for. Read at
+    // 14. And what every one of those crossings had to be true for. Read at
     //    the end because it is a tally of the whole boot, not a test of its
     //    own -- see gsprobe.zig for why it cannot be one.
     gsprobe.run();

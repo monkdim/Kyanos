@@ -15,6 +15,8 @@ const arch_syscall = @import("../arch/x86_64/syscall.zig");
 const pmm = @import("../mm/pmm.zig");
 const vmm = @import("../mm/vmm.zig");
 const uaccess = @import("../mm/uaccess.zig");
+const stdin = @import("../drivers/stdin.zig");
+const line = @import("../drivers/line.zig");
 
 /// Canonical syscall numbers — must match stdlib/kernel_abi.clarity.
 pub const Nr = enum(u32) {
@@ -170,11 +172,31 @@ const PATH_MAX: usize = 256;
 /// refuses it: translating for reading instead (the call write makes, and
 /// the easy mistake) would find the page readable and scribble into the
 /// program's instructions.
+/// Bytes a program has read from the console, so the boot log can say the
+/// path was used rather than merely present.
+var console_read_total: u64 = 0;
+
+pub fn console_bytes_read() u64 {
+    return console_read_total;
+}
+
 fn sys_read(args: Args) i64 {
     const fd: i32 = @intCast(@as(i64, @bitCast(args.a0)));
     const buf = args.a1;
     const len: usize = @intCast(args.a2);
     if (!uaccess.user_range_writable(buf, len)) return errno(.efault);
+
+    // Descriptor zero is the console, and it is not a file: there is no inode
+    // behind it and `vfs.read` would answer EBADF. The bytes come from the
+    // line editor in drivers/stdin.zig -- the same editor the boot's own
+    // console reads use, because two editors on one port would each see half
+    // of what was typed.
+    //
+    // Descriptors 1 and 2 are refused rather than passed on. They are
+    // stdout and stderr, and a read of them is a program's mistake, not a
+    // request the filesystem should try to answer.
+    if (fd == 0) return read_console(buf, len);
+    if (fd == 1 or fd == 2) return errno(.ebadf);
 
     var staging: [CHUNK]u8 = undefined;
     var done: usize = 0;
@@ -191,6 +213,39 @@ fn sys_read(args: Args) i64 {
     }
     return @intCast(done);
 }
+
+/// One line from the console, or as much of one as fits.
+///
+/// A whole line at a time is the line editor's doing, not this function's: it
+/// hands back what it has when the newline arrives, and keeps the rest for
+/// the next call, which is what makes a read with a one-byte buffer work.
+///
+/// Zero means the input went quiet for the idle timeout, which is what end of
+/// input means on a console nobody is typing at.
+///
+/// `stdin.unread` on a bad pointer gives back everything not delivered. A
+/// program that passes a bad buffer should cost itself its input and nothing
+/// else -- without that line the next reader would find a line missing for a
+/// reason nothing in its own behaviour explains.
+fn read_console(buf: u64, len: usize) i64 {
+    if (len == 0) return 0;
+    var staging: [line.MAX_LINE + 1]u8 = undefined;
+    const want = @min(len, staging.len);
+    const n = stdin.read(staging[0..want], IDLE_CENTISECONDS);
+    if (n == 0) return 0;
+    if (!uaccess.copy_to_user(buf, staging[0..n])) {
+        stdin.unread(n);
+        return errno(.efault);
+    }
+    console_read_total += n;
+    return @intCast(n);
+}
+
+/// How long the console may be quiet before a read gives up, in hundredths of
+/// a second. The aarch64 side takes this from the kernel command line; this
+/// one has no command line to take it from yet, and says so rather than
+/// pretending the number came from somewhere.
+const IDLE_CENTISECONDS: u64 = 300;
 
 /// readdir(fd, buf, len) — directory entries in the layout vfs.Dirent
 /// describes: inode, record length, type, name length, the name and a NUL,
