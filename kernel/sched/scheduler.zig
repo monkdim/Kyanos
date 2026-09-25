@@ -691,6 +691,13 @@ fn release_user_memory(c: *Thread) void {
     c.context.cr3 = vmm.kernel().pml4_phys;
 }
 
+/// How many processes have been killed by a fault they took themselves.
+///
+/// Counted rather than inferred from an exit code, because "killed" and
+/// "chose to leave with this number" have to stay distinguishable even if a
+/// program picks the same number on purpose.
+pub var user_faults: u64 = 0;
+
 pub fn exit(code: i32) noreturn {
     {
         const guard = irqlock.acquire();

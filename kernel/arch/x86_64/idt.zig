@@ -13,6 +13,7 @@ const console = @import("console.zig");
 const port = @import("port.zig");
 const trap_entry = @import("trap_entry.zig");
 const arch_syscall = @import("syscall.zig");
+const sched = @import("../../sched/scheduler.zig");
 
 const Entry = packed struct {
     offset_low: u16,
@@ -67,7 +68,12 @@ fn halt() noreturn {
     while (true) asm volatile ("cli; hlt");
 }
 
-fn report(vec: usize, err: ?u64, frame: *const TrapFrame) noreturn {
+/// What `sched.exit` is given for a process the kernel ended rather than one
+/// that ended itself. Negative because an exit status a program can pass to
+/// `exit(2)` is a byte, so nothing a program can say collides with it.
+const KILLED: i32 = -1;
+
+fn report(vec: usize, err: ?u64, frame: *const TrapFrame) void {
     console.print("\n\nCPU EXCEPTION ");
     console.print_dec(vec);
     if (vec < EXCEPTION_NAMES.len) {
@@ -95,6 +101,38 @@ fn report(vec: usize, err: ?u64, frame: *const TrapFrame) noreturn {
         console.print_hex(read_cr2());
     }
     console.println("");
+}
+
+/// A program faulted. End the program.
+///
+/// Reached only from ring 3, and it does exactly what `exit(2)` does, for the
+/// reason that the two situations are the same one: a fault from ring 3
+/// arrives on the faulting thread's own kernel stack — `yield` writes
+/// `next.kernel_stack_top` into the TSS on every switch — so `sched.exit` is
+/// running where it always runs. It marks the thread a zombie, gives the
+/// process's memory back, records the exit against the parent and switches
+/// away without returning; the trap frame is abandoned along with the stack,
+/// which is freed later by whoever next reaches `yield`.
+///
+/// Interrupts are masked here and stay masked, and that is not a hazard:
+/// every gate is an interrupt gate (`0x8E`), so the counter below cannot be
+/// raced by a tick, and `switch_to` does `pushfq; cli` in and `popfq` out, so
+/// the thread this switches to comes back with its own interrupt state rather
+/// than the fault's.
+fn kill_current() noreturn {
+    if (sched.current_thread()) |t| {
+        console.print("  [killed] ");
+        console.print(t.name);
+        console.print(" (pid ");
+        console.print_dec(if (t.pid > 0) @intCast(t.pid) else 0);
+        console.println(") — it faulted, so the kernel ended it");
+        sched.user_faults += 1;
+        sched.exit(KILLED);
+    }
+    // Nothing to end. Every path into ring 3 goes through a scheduler thread,
+    // so this is unreachable rather than merely unlikely — and if it is ever
+    // reached, there is no process to blame and no successor to switch to.
+    console.println("  [halt] a fault in ring 3 with no thread to end");
     halt();
 }
 
@@ -104,16 +142,26 @@ pub const Handler = *const fn (*TrapFrame) callconv(.C) void;
 
 var handlers: [256]?Handler = [_]?Handler{null} ** 256;
 
-/// Where every vector arrives. Exceptions report and halt; everything else
+/// Where every vector arrives. An exception reports, and then ends either the
+/// machine or the program depending on the ring it came from; everything else
 /// goes to whatever driver claimed the vector, or acknowledges the PIC and
 /// resumes -- a spurious or unclaimed IRQ must not be able to take the
-/// machine down.
+/// machine down, and neither must a program.
 fn dispatch(frame: *TrapFrame) callconv(.C) void {
     const vec = frame.vector;
     check_gs(frame);
     if (vec < 32) {
         const err: ?u64 = if (has_error_code(vec)) frame.error_code else null;
         report(vec, err, frame);
+        // Whose bug it was decides what happens next, and until now the
+        // answer to both was to stop the machine. A fault in ring 0 is a
+        // kernel bug and halting is right: there is no smaller thing to end,
+        // and carrying on would run the rest of the boot on top of whatever
+        // went wrong. A fault in ring 3 is a *program's* bug, and an
+        // operating system that stops for one is not one — so the program
+        // ends and nothing else does.
+        if ((frame.cs & 3) == 3) kill_current();
+        halt();
     }
     if (vec < handlers.len) {
         if (handlers[vec]) |h| {

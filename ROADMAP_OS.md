@@ -292,8 +292,22 @@ a bigger surface than the one measured here and pins the ABI to Linux's.
   consumed. SMEP and SMAP are turned on where the CPU has them and the boot
   gate runs `-cpu max` as well as `qemu64`, for the same reason the aarch64
   job runs PAN: on the CPU without it, doing it the wrong way also works.
-  What is still open is what happens to a process that faults on its own:
-  the page-fault handler halts the machine on both architectures.
+  **A process that faults is killed on both architectures now.** ✅ aarch64
+  already was: a synchronous exception from EL0 records the fault and leaves
+  through `aarch64_leave_user(EXIT_FAULT)`, which is why the boot can say
+  *"when it wrote to its read-only text at 0x400000, the kernel took the CPU
+  back — and still had its own timer"*. x86_64 was not. `idt.dispatch`
+  treated every vector below 32 alike without looking at `frame.cs & 3`, and
+  `report` ends in `cli; hlt` — so one program's null pointer stopped the
+  machine, and everything the boot would have done after it simply never
+  happened. It now ends the program, through the same `sched.exit` that
+  `exit(2)` uses and for the same reason: a fault from ring 3 arrives on the
+  faulting thread's own kernel stack. A fault in **ring 0** still halts, and
+  should: there is no smaller thing to end.
+  `/bin/clarity-faultprobe` writes through a null pointer on every boot and
+  the gate asks both halves — that the program died with a code no program
+  can choose, and that the boot carried on — with the workflow grepping for
+  a marker printed *after* the exception block.
 - **AHCI and virtio-net are skeletons.** Both scan PCI correctly, but
   `attach`/`send_frame`/`recv_frame` are `NotImplemented`. PCI enumeration
   itself is real.
