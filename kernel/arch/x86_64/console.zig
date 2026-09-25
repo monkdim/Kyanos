@@ -80,6 +80,25 @@ pub fn println(s: []const u8) void {
 // stays serial-only until a driver explicitly turns VGA on.
 var vga_enabled: bool = false;
 
+/// One byte from COM1, or null if nothing has arrived.
+///
+/// The other direction of the port `print` already writes to. Bit 0 of the
+/// line-status register says a byte is waiting; reading the data register
+/// takes it. Polled rather than interrupt-driven, which is what `read(2)`
+/// needs: it is entered with IF clear and an interrupt-filled ring would
+/// never fill while it waited.
+pub fn serial_poll() ?u8 {
+    if ((port.in8(COM1 + 5) & 0x01) == 0) return null;
+    return port.in8(COM1);
+}
+
+/// Echo a byte back the way it came, for the line editor.
+pub fn echo(c: u8) void {
+    const flags = lock();
+    defer unlock(flags);
+    putchar(c);
+}
+
 pub fn enable_vga() void {
     vga_enabled = true;
 }
