@@ -196,8 +196,41 @@ pub const Dirent = extern struct {
 
 pub const DIRENT_ALIGN: usize = 8;
 
+/// Where the name starts: after the four fields, and *not* after whatever
+/// the compiler pads the struct to.
+///
+/// The two are not the same, and the difference was a bug. The fields sum to
+/// twelve bytes; the `u64` gives the struct an alignment of eight, so
+/// `@sizeOf(Dirent)` is **sixteen** — twelve of fields and four of tail
+/// padding. This file wrote the name at `@sizeOf`, and every reader that
+/// followed the layout described above read four bytes of padding followed
+/// by all but the last four characters of the name:
+///
+///     $ ls /bin
+///     hello          <- hello.txt
+///     clarity-       <- clarity-init
+///     clarit         <- clarity-sh
+///     clarity-h      <- clarity-hello
+///
+/// Both shells had it right; this file had it wrong. The reason it survived
+/// is in `fstest.zig`, whose own reader used `@sizeOf` too — so the gate
+/// agreed with the writer and could not see a disagreement with anybody
+/// else.
+///
+/// So the wire format gets a name of its own, and the asserts below stop it
+/// drifting from the struct it describes.
+pub const DIRENT_HEADER: usize = 12;
+
+comptime {
+    std.debug.assert(@offsetOf(Dirent, "inode_num") == 0);
+    std.debug.assert(@offsetOf(Dirent, "reclen") == 8);
+    std.debug.assert(@offsetOf(Dirent, "file_type") == 10);
+    std.debug.assert(@offsetOf(Dirent, "name_len") == 11);
+    std.debug.assert(@offsetOf(Dirent, "name_len") + 1 == DIRENT_HEADER);
+}
+
 fn dirent_reclen(name_len: usize) usize {
-    const raw = @sizeOf(Dirent) + name_len + 1; // + the NUL
+    const raw = DIRENT_HEADER + name_len + 1; // + the NUL
     return (raw + (DIRENT_ALIGN - 1)) & ~(DIRENT_ALIGN - 1);
 }
 
@@ -235,13 +268,15 @@ pub fn readdir(fd: i32, out: []u8) !usize {
             .file_type = @intFromEnum(entry.file_type),
             .name_len = @intCast(name_len),
         };
-        @memcpy(out[written..][0..@sizeOf(Dirent)], std.mem.asBytes(&header));
-        @memcpy(out[written + @sizeOf(Dirent) ..][0..name_len], entry.name[0..name_len]);
+        // The fields, and not the struct: `asBytes` hands back sixteen bytes,
+        // the last four of which are padding that is no part of the format.
+        @memcpy(out[written..][0..DIRENT_HEADER], std.mem.asBytes(&header)[0..DIRENT_HEADER]);
+        @memcpy(out[written + DIRENT_HEADER ..][0..name_len], entry.name[0..name_len]);
         // The NUL and the padding are written rather than left as whatever
         // the buffer held: a process reading its own stale stack through a
         // name that was not terminated is the kind of leak that only shows
         // up on someone else's machine.
-        @memset(out[written + @sizeOf(Dirent) + name_len ..][0 .. reclen - @sizeOf(Dirent) - name_len], 0);
+        @memset(out[written + DIRENT_HEADER + name_len ..][0 .. reclen - DIRENT_HEADER - name_len], 0);
         written += reclen;
     }
     file.pos = index;
