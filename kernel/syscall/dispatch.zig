@@ -113,7 +113,41 @@ pub fn init() void {
 /// Called from the syscall-entry trampoline with the six argument
 /// registers already plumbed into a struct. Returns the value that
 /// the trampoline writes back into %rax.
+/// What each syscall number did on this boot: how often it was dispatched,
+/// and what the last one answered.
+///
+/// For `reachprobe.zig`, which asks a question no other gate does. The table
+/// above declares 44 numbers and the switch below implements 17; the rest
+/// answer ENOSYS, honestly. Neither of those is the dangerous category. The
+/// dangerous one is a number that *is* implemented and that nothing on the
+/// boot ever calls, because every path found in that state here has turned
+/// out to be broken: `fork` was a stub that would have reset the machine,
+/// `wait` did not wait, `exec` killed the child that called it, and
+/// `nanosleep` blocked its caller for ever. Four for four.
+///
+/// Recorded in the kernel rather than reported by the probe, because the
+/// kernel already has the number and the result and a program would need a
+/// protocol to hand them back.
+pub const TRACKED: usize = 64;
+pub var calls: [TRACKED]u32 = [_]u32{0} ** TRACKED;
+pub var last: [TRACKED]i64 = [_]i64{0} ** TRACKED;
+
+/// Every system call, with the bookkeeping the reachability probe reads.
+///
+/// `exit` is recorded by nothing, and that is correct rather than a gap:
+/// `sys_exit` does not come back, so there is no result to write down. The
+/// probe's classification treats "never answered" and "never returned" alike,
+/// which is why `exit` is one of the four it does not poke.
 pub fn dispatch(nr: u64, args: Args) i64 {
+    const result = dispatch_inner(nr, args);
+    if (nr < TRACKED) {
+        calls[@intCast(nr)] +|= 1;
+        last[@intCast(nr)] = result;
+    }
+    return result;
+}
+
+fn dispatch_inner(nr: u64, args: Args) i64 {
     switch (@as(Nr, @enumFromInt(@as(u32, @truncate(nr))))) {
         .read => return sys_read(args),
         .write => return sys_write(args),
