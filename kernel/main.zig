@@ -42,6 +42,7 @@ const conread = @import("conread.zig");
 const readprobe = @import("readprobe.zig");
 const faultprobe = @import("faultprobe.zig");
 const sleepprobe = @import("sleepprobe.zig");
+const reachprobe = @import("reachprobe.zig");
 const shell = @import("shell.zig");
 const fpu = @import("arch/x86_64/fpu.zig");
 const fputest = @import("fputest.zig");
@@ -301,6 +302,12 @@ pub export fn kernel_main(mb_info_phys: u64) callconv(.C) noreturn {
     //    asking itself questions; this is the first thing on this
     //    architecture that lets somebody ask it one.
     shell.run();
+
+    // 16. And the question none of the gates above can ask: of the system
+    //    calls this kernel implements, which ones does nothing exercise?
+    //    Read here, after everything else has run, because the answer is a
+    //    statement about the whole boot's coverage.
+    reachprobe.run();
 
     gsprobe.run();
     stackprobe.run();

@@ -223,6 +223,11 @@ jobs:
             # for the sleeper -- so this is belt and braces over a failure
             # that is already loud.
             grep -q "\[ok\] sleep:" "serial-$attempt.log" || missing="$missing sleep-wakes"
+            # Which implemented system calls nothing exercises. The gate fails
+            # if that set drifts from the list recorded in reachprobe.zig --
+            # in either direction, so a newly implemented call with no test
+            # and a call that lost its test both show up.
+            grep -q "\[ok\] reach:" "serial-$attempt.log" || missing="$missing syscall-reachability"
             grep -q "\[ok\] fault:" "serial-$attempt.log" || missing="$missing fault-kills-only-the-program"
             # A program waiting at a prompt gives the CPU up. The [FAIL] check
             # below catches a wait that spun; this catches the gate not
@@ -302,6 +307,7 @@ jobs:
           # thread's own stack and hands the process's pages back, so it is
           # exactly the kind of code SMAP exists to catch.
           grep -q "\[ok\] fault:" serial-smap.log || missing="$missing fault-kills-only-the-program"
+          grep -q "\[ok\] reach:" serial-smap.log || missing="$missing syscall-reachability"
           grep -q "\[ok\] console clock:" serial-smap.log || missing="$missing console-clock"
           grep -q "\[ok\] shell: ran and exited" serial-smap.log || missing="$missing shell"
           grep -q "clarity-demo: all checks passed" serial-smap.log || missing="$missing clarity-program"

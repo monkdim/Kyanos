@@ -172,6 +172,21 @@ pub fn build(b: *std.Build) void {
         .root_source_file = fork_prog.getEmittedBin(),
     });
 
+    // /bin/clarity-reachprobe: a program that calls every syscall number, so
+    // the boot can say which ones answer and which nothing exercises.
+    const reach_prog = b.addExecutable(.{
+        .name = "clarity-reachprobe",
+        .root_source_file = b.path("user/reachprobe.zig"),
+        .target = user_target,
+        .optimize = .ReleaseSmall,
+    });
+    reach_prog.setLinkerScript(b.path("user/user.ld"));
+    reach_prog.entry = .{ .symbol_name = "_start" };
+    reach_prog.pie = false;
+    kernel.root_module.addAnonymousImport("reachprobe_elf", .{
+        .root_source_file = reach_prog.getEmittedBin(),
+    });
+
     // /bin/clarity-sleepprobe: a program that asks to be woken up later.
     const sleep_prog = b.addExecutable(.{
         .name = "clarity-sleepprobe",
