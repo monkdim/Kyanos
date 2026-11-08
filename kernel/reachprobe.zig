@@ -77,14 +77,24 @@ const SKIP = [_]Skipped{
 /// reading the dispatcher and got half of it wrong: `stat`, `fstat`, `lseek`
 /// and `munmap` are declared but *not* implemented, so they answer ENOSYS and
 /// belong in no danger list, and four that are implemented were missed.
+/// Two numbers came off this list, and the boot is the reason.
+///
+/// `mmap` (7) and `ioctl` (40) were both on it, and the prediction held: the
+/// first gate to call them from ring 3 found six ways an unprivileged process
+/// could corrupt the kernel's page tables or stop the machine outright. That
+/// gate -- mmapprobe.zig -- now runs before this one, so the snapshot this
+/// gate takes already counts its calls, and both numbers read as exercised.
+///
+/// Taken off on the strength of that execution and nothing else. The lines
+/// above `[ok] reach:` on any boot say how many times each was called before
+/// the probe; if the mmap gate were ever removed or stopped running, the
+/// numbers would fall back to zero and this gate would say so.
 const UNEXERCISED = [_]u32{
     3, // close -- the kernel uses vfs.close directly; the call is untried
-    7, // mmap
     14, // getpid
     15, // getppid
     16, // kill
     34, // readdir -- `ls` goes through it, but only when somebody types `ls`
-    40, // ioctl
     41, // clock_gettime -- and it is a stub that answers 0, see below
 };
 

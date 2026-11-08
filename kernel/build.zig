@@ -187,6 +187,20 @@ pub fn build(b: *std.Build) void {
         .root_source_file = reach_prog.getEmittedBin(),
     });
 
+    // /bin/clarity-mmapprobe: the first program to ask mmap for an address.
+    const mmap_prog = b.addExecutable(.{
+        .name = "clarity-mmapprobe",
+        .root_source_file = b.path("user/mmapprobe.zig"),
+        .target = user_target,
+        .optimize = .ReleaseSmall,
+    });
+    mmap_prog.setLinkerScript(b.path("user/user.ld"));
+    mmap_prog.entry = .{ .symbol_name = "_start" };
+    mmap_prog.pie = false;
+    kernel.root_module.addAnonymousImport("mmapprobe_elf", .{
+        .root_source_file = mmap_prog.getEmittedBin(),
+    });
+
     // /bin/clarity-sleepprobe: a program that asks to be woken up later.
     const sleep_prog = b.addExecutable(.{
         .name = "clarity-sleepprobe",

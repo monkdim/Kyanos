@@ -20,6 +20,17 @@ pub const PAGE_HUGE: u64 = 1 << 7;
 
 pub const ADDR_MASK: u64 = 0x000FFFFFFFFFF000;
 
+/// The first address that is not userspace: PML4 entry 256, the first one
+/// `share_kernel_half` copies out of the kernel's table.
+///
+/// It lives here rather than in `uaccess` (which re-exports it) because it is
+/// a fact about these page tables, and because `map_page` has to know it. A
+/// user pointer that names a kernel address is caught by `uaccess` before
+/// anything is read through it; a user *mapping* at a kernel address is not
+/// read through anything, it is written into the tables, and the tables above
+/// this line are the kernel's own.
+pub const USER_TOP: u64 = 0x0000_8000_0000_0000;
+
 /// One per process. Holds the root page table phys addr + a small
 /// list of region descriptors so the kernel knows what's mapped at
 /// what permissions. Region list is checked on page fault.
@@ -84,6 +95,30 @@ pub fn share_kernel_half(pml4_phys: u64) void {
 }
 
 pub fn map_page(space: *AddressSpace, virt: u64, phys: u64, flags: u64) !void {
+    // Nothing reachable from ring 3 may be installed in the kernel's half.
+    //
+    // This is not belt-and-braces for the checking in `sys_mmap`; it is where
+    // the invariant actually lives, because of what the walk below does. Two
+    // facts meet here. `share_kernel_half` copies PML4 entries 256..511 into
+    // every new process *by value*, so the tables under those entries are one
+    // set of tables, shared by the kernel and by every process at once. And
+    // the loop below deliberately widens U/S on every level of the path it
+    // walks, because a leaf is only reachable if every level above it is --
+    // see the comment further down. Put together: a user mapping at a
+    // kernel-half address makes the kernel's own page tables user-readable
+    // down that path, for every process, and writes a leaf of its own over
+    // whatever the kernel had mapped there.
+    //
+    // Measured, before this line existed: an unprivileged program asking for
+    // the framebuffer at 0x0000_8000_0000_0000 was granted it, and the gate
+    // in mmapprobe.zig found the kernel's PML4[256] changed afterwards.
+    //
+    // `virt` is not masked to canonical form first on purpose. The walk takes
+    // index bits out of it with shifts, so a non-canonical address no load
+    // could ever use still selects a real entry in a real table -- which is
+    // exactly how that measurement got into PML4[256].
+    if ((flags & PAGE_USER) != 0 and virt >= USER_TOP) return error.NotUserAddress;
+
     // Walk the four levels, allocating intermediate tables on demand.
     // Each table is one 4 KiB page from the pmm. Returns error.OutOfMemory
     // if we exhaust physical pages before the path completes.
@@ -291,6 +326,33 @@ fn clone_level(table_phys: u64, level: usize, base: u64, dst: *AddressSpace) !vo
 /// of tables — so walking them would free the kernel out from under itself.
 /// The PML4 page goes at the end, which is this space's and nobody else's.
 pub fn free_user_half(space: *AddressSpace) void {
+    // Frames this process does not own go first, by clearing their entries
+    // rather than freeing them.
+    //
+    // The walk below treats every present leaf in the user half as a page
+    // from `pmm` and hands it back. For a device mapping that is not a leak,
+    // it is the opposite: the framebuffer's frames were never the allocator's
+    // to begin with, so returning them *adds* memory-mapped I/O to the free
+    // pool, and the next allocation gets a frame that is not RAM.
+    //
+    // Measured. Nothing on this boot had ever called `mmap` -- the
+    // reachability gate said exactly that -- so the first program to map the
+    // framebuffer and exit was also the first to reach this function with a
+    // device region in its list. The boot stopped straight after it, with
+    // 0xb8000 in the allocator's free list.
+    //
+    // `unmap_page` clears the leaf and flushes, and never calls `pmm`, which
+    // is what makes it the right tool here.
+    for (space.regions.items) |r| {
+        switch (r.backing) {
+            .device => {
+                var va = r.start;
+                while (va < r.end) : (va += pmm.PAGE_SIZE) unmap_page(space, va);
+            },
+            else => {},
+        }
+    }
+
     var top: usize = 0;
     while (top < 256) : (top += 1) {
         const pml4 = phys_to_table(space.pml4_phys);
