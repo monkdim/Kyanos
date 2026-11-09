@@ -431,6 +431,34 @@ fn sys_brk(args: Args) i64 {
     // fails partway, the break stays where it got to and the caller sees that
     // it got less than it asked for.
     const page: u64 = pmm.PAGE_SIZE;
+    // Nothing in the way first.
+    //
+    // The heap grows by mapping pages one at a time, and `map_page` overwrites
+    // a leaf that is already there without a word. A process that mapped the
+    // framebuffer somewhere above its break and then grew the heap into it
+    // used to get private RAM mapped over the device pages, with the region
+    // list still saying device -- so the teardown walk declined to free RAM
+    // that was the allocator's. The ordering matters and both orders have to
+    // be covered: `sys_mmap` refuses to land in the heap, and this refuses to
+    // grow into anything recorded. A shrink followed by a mapping and then a
+    // regrow is the case that needs both.
+    {
+        const grow_from = (proc.brk + page - 1) & ~(page - 1);
+        if (requested > grow_from) {
+            for (proc.address_space.regions.items) |r| {
+                if (grow_from < r.end and r.start < requested) {
+                    report_refusal("the heap would grow over a mapping already there", proc, requested);
+                    return @intCast(proc.brk);
+                }
+            }
+            const stack_bottom = load.USER_STACK_TOP - load.USER_STACK_PAGES * pmm.PAGE_SIZE;
+            if (grow_from < load.USER_STACK_TOP and stack_bottom < requested) {
+                report_refusal("the heap would grow into the stack", proc, requested);
+                return @intCast(proc.brk);
+            }
+        }
+    }
+
     var addr = (proc.brk + page - 1) & ~(page - 1);
     const end = (requested + page - 1) & ~(page - 1);
     while (addr < end) : (addr += page) {
@@ -539,6 +567,19 @@ fn sys_mmap(args: Args) i64 {
     }
     const stack_bottom = load.USER_STACK_TOP - load.USER_STACK_PAGES * pmm.PAGE_SIZE;
     if (addr < load.USER_STACK_TOP and stack_bottom < end[0]) return errno(.einval);
+    // And the heap, which is in neither the region list nor the stack.
+    //
+    // `sys_brk` maps pages and records nothing: the heap exists as two numbers
+    // on the Process, `brk_start` and `brk`, and a region scan cannot see it.
+    // Without this a mapping could be placed inside the heap, where it would
+    // overwrite the leaves `brk` installed -- losing those frames, and
+    // leaving the region list calling the result device-backed over RAM the
+    // allocator still believes is handed out.
+    //
+    // The interval is the live heap. Pages above `brk` were either never
+    // mapped or were abandoned by a shrink, and `brk` itself refuses to grow
+    // back over anything in the way, which is the other half of this.
+    if (proc.brk > proc.brk_start and addr < proc.brk and proc.brk_start < end[0]) return errno(.einval);
 
     const size = fb.map_into_user(proc.address_space, addr) catch |err| return switch (err) {
         error.NoFramebuffer => errno(.enodev),

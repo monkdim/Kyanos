@@ -53,6 +53,9 @@ const NR_WRITE: u64 = 1;
 const NR_EXIT: u64 = 12;
 const NR_MMAP: u64 = 7;
 const NR_IOCTL: u64 = 40;
+const NR_FORK: u64 = 10;
+const NR_WAIT: u64 = 13;
+const NR_BRK: u64 = 9;
 
 const FB_FD: u64 = @bitCast(@as(i64, -2));
 const IOCTL_FB_GET_INFO: u64 = 0x4600;
@@ -60,12 +63,19 @@ const IOCTL_FB_GET_INFO: u64 = 0x4600;
 /// The first address that is not userspace. Must match `uaccess.USER_TOP`.
 const USER_TOP: u64 = 0x0000_8000_0000_0000;
 
+/// Where the stack is. Must match loader/load.zig.
+const USER_STACK_TOP: u64 = 0x0000_7FFF_FFFF_F000;
+const USER_STACK_PAGES: u64 = 8;
+
 const AT_TOP: u64 = USER_TOP;
 const WRAPS: u64 = 0xFFFF_FFFF_FFFF_F000;
 const KERNEL_VA: u64 = 0xFFFF_8000_0000_0000;
 const VALID: u64 = 0x6000_0000;
+/// Inside the range `brk` can reach (brk_start + 256 MiB), and well above
+/// where the heap will have got to, so the heap can be asked to grow over it.
+const IN_BRK_REACH: u64 = 0x4800_0000;
 
-const ALL_PASSED: u64 = 0x3FF;
+const ALL_PASSED: u64 = 0xFFFF;
 
 const FbInfo = extern struct {
     width: u32,
@@ -181,11 +191,9 @@ export fn _start() callconv(.Naked) noreturn {
 fn body() callconv(.C) noreturn {
     var passed: u64 = 0;
 
-    // Geometry first: the size decides where the overflow case has to start,
-    // and a size the program invented would test the wrong boundary.
-    // Left `undefined` rather than zeroed: the ioctl fills it, and nothing
-    // below reads it unless that call returned 0. A zeroing initialiser is
-    // also how the SSE store above got in.
+    // Geometry first: the size decides where the boundary cases have to sit,
+    // and a size the program invented would test the wrong address. This is
+    // also the first call anything has ever made to `ioctl`.
     var fb: FbInfo = undefined;
     const geom = syscall3(NR_IOCTL, FB_FD, IOCTL_FB_GET_INFO, @intFromPtr(&fb));
     say("ioctl(FB_GET_INFO)", geom);
@@ -213,11 +221,10 @@ fn body() callconv(.C) noreturn {
         _ = syscall3(NR_EXIT, 0, 0, 0);
         unreachable;
     }
+    const span = pages * 0x1000;
 
     // 1. The first address that is not userspace. Walks into PML4[256],
-    //    which is the kernel's. Asked first because it is the one that
-    //    corrupts the shared tables without also stopping the boot, so the
-    //    gate's table check downstream has something to find.
+    //    which is the kernel's.
     const r_top = mmap(AT_TOP, FB_FD);
     say("mmap at the first non-user address", r_top);
     if (r_top < 0) passed |= 1 << 0;
@@ -237,9 +244,9 @@ fn body() callconv(.C) noreturn {
     say("mmap at an address whose end wraps", r_wrap);
     if (r_wrap < 0) passed |= 1 << 3;
 
-    // 5. An fd that does not fit in the i32 the dispatcher converts it to.
-    //    The bit still being clear afterwards is the whole point: if the
-    //    conversion traps, this program never reaches the next line.
+    // 5. An fd that does not fit in an i32. The bit still being clear
+    //    afterwards is the point: if the conversion traps, this program never
+    //    reaches the next line.
     const r_wide = mmap(VALID, 0xFFFF_FFFF_0000_0000);
     say("mmap with an fd wider than i32", r_wide);
     if (r_wide < 0) passed |= 1 << 4;
@@ -249,22 +256,51 @@ fn body() callconv(.C) noreturn {
     say("mmap with fd 0", r_fd0);
     if (r_fd0 < 0) passed |= 1 << 5;
 
-    // 7. The highest placement that still fits. Must be granted.
-    const last_legal = USER_TOP - pages * 0x1000;
-    const r_edge = mmap(last_legal, FB_FD);
-    say("mmap at the last placement that fits under the top", r_edge);
-    if (r_edge >= 0 and @as(u64, @bitCast(r_edge)) == last_legal) passed |= 1 << 6;
+    // 7. And the same width question of `ioctl`, which got the same repair
+    //    and had no test of its own until now.
+    const r_ioctl_wide = syscall3(NR_IOCTL, 0xFFFF_FFFF_0000_0000, IOCTL_FB_GET_INFO, @intFromPtr(&fb));
+    say("ioctl with an fd wider than i32", r_ioctl_wide);
+    if (r_ioctl_wide < 0) passed |= 1 << 6;
 
-    // 8. The request this call exists for.
+    // 8/9. The boundary pair at the stack: the highest placement that fits
+    //      below it must be granted, and one page higher must not.
+    const stack_bottom = USER_STACK_TOP - USER_STACK_PAGES * 0x1000;
+    const below_stack = stack_bottom - span;
+    const r_edge = mmap(below_stack, FB_FD);
+    say("mmap at the highest placement below the stack", r_edge);
+    if (r_edge >= 0 and @as(u64, @bitCast(r_edge)) == below_stack) passed |= 1 << 7;
+
+    const r_into_stack = mmap(below_stack + 0x1000, FB_FD);
+    say("mmap one page higher, which overlaps the stack", r_into_stack);
+    if (r_into_stack < 0) passed |= 1 << 8;
+
+    // 9b. And the address the old version of this gate demanded success at.
+    //
+    //     It asked for `USER_TOP - span`, the highest placement under the
+    //     *limit*. For a one-page framebuffer that is USER_STACK_TOP exactly,
+    //     which is free, so it passed. For two pages or more it is inside the
+    //     stack and the right answer is a refusal -- so the gate would have
+    //     failed on any machine with a real graphics framebuffer, and passed
+    //     on this one by accident.
+    //
+    //     Asking for USER_TOP - two pages tests that hazard here, whatever
+    //     the framebuffer's size: a span of one page ending at
+    //     USER_STACK_TOP still starts inside the stack's last page, so it has
+    //     to be refused either way.
+    const old_placement = USER_TOP - 2 * 0x1000;
+    const r_old = mmap(old_placement, FB_FD);
+    say("mmap two pages below the top, which the stack's last page covers", r_old);
+    if (r_old < 0) passed |= 1 << 15;
+
+    // 10. The request this call exists for.
     const r_ok = mmap(VALID, FB_FD);
     say("mmap at a valid user address", r_ok);
-    if (r_ok >= 0 and @as(u64, @bitCast(r_ok)) == VALID) passed |= 1 << 7;
+    if (r_ok >= 0 and @as(u64, @bitCast(r_ok)) == VALID) passed |= 1 << 9;
 
-    // And it has to actually be the framebuffer: writable, readable, and
-    //    the bytes that come back are the ones that went in. Restored
-    //    afterwards so the probe does not leave the screen scribbled on.
-    // 9. And it has to actually be the framebuffer.
-    if ((passed & (1 << 7)) != 0) {
+    // 11. And it has to actually be the framebuffer: writable, readable, and
+    //     the bytes that come back are the ones that went in. Restored
+    //     afterwards so the probe does not leave the screen scribbled on.
+    if ((passed & (1 << 9)) != 0) {
         const px: [*]volatile u32 = @ptrFromInt(VALID);
         const words = size / 4;
         const probe_at = [_]u64{ 0, words / 2, words - 1 };
@@ -276,26 +312,65 @@ fn body() callconv(.C) noreturn {
             if (px[w] != pattern) good = false;
             px[w] = saved;
         }
-        if (good) passed |= 1 << 8;
+        if (good) passed |= 1 << 10;
         write("  mmapprobe: wrote and read back three words of the mapping: ");
         write(if (good) "they match\n" else "THEY DO NOT MATCH\n");
     }
 
-    // 10. The same range twice. The second request would rewrite leaf entries
-    //    the first one installed and append a second region describing the
-    //    same addresses.
+    // 12. The same range twice.
     const r_again = mmap(VALID, FB_FD);
     say("mmap over a range already mapped", r_again);
-    if (r_again < 0) passed |= 1 << 9;
+    if (r_again < 0) passed |= 1 << 11;
+
+    // 13. Into the heap. `brk` records no region, so a mapping placed inside
+    //     the live heap would overwrite leaves nothing has a record of.
+    const brk0 = syscall3(NR_BRK, 0, 0, 0);
+    say("brk(0), where the heap stands", brk0);
+    const grown = syscall3(NR_BRK, @as(u64, @bitCast(brk0)) + 0x10000, 0, 0);
+    say("brk grown by 64 KiB", grown);
+    const in_heap = (@as(u64, @bitCast(brk0)) + 0x1000) & ~@as(u64, 0xFFF);
+    const r_in_heap = mmap(in_heap, FB_FD);
+    say("mmap inside the live heap", r_in_heap);
+    if (r_in_heap < 0) passed |= 1 << 12;
+
+    // 14. And the other order: a mapping above the heap, then asking the heap
+    //     to grow over it. Both orders matter and only one of them is
+    //     `mmap`'s to refuse.
+    const r_reach = mmap(IN_BRK_REACH, FB_FD);
+    say("mmap inside the range brk can reach", r_reach);
+    const r_grow_over = syscall3(NR_BRK, IN_BRK_REACH + span + 0x1000, 0, 0);
+    say("brk grown over that mapping", r_grow_over);
+    if (r_reach >= 0 and @as(u64, @bitCast(r_grow_over)) <= IN_BRK_REACH) passed |= 1 << 13;
+
+    // 15. Fork while the framebuffer is mapped, and let the child go.
+    //
+    //     The child's address space is built by `clone_user_half`. It used to
+    //     take a fresh frame for every present leaf and copy the parent's
+    //     into it -- the framebuffer's pages included -- while the child's
+    //     region list was copied verbatim and still said those addresses were
+    //     device-backed. The cleanup walk was then told not to give those
+    //     frames back, so this fork lost a page of RAM for every mapped page.
+    const child = syscall3(NR_FORK, 0, 0, 0);
+    if (child == 0) {
+        _ = syscall3(NR_EXIT, 0, 0, 0);
+        unreachable;
+    }
+    say("fork with the framebuffer mapped", child);
+    if (child > 0) {
+        // wait(2) here takes the status pointer in a0 and the pid in a1.
+        const reaped = syscall3(NR_WAIT, 0, @bitCast(child), 0);
+        say("wait for that child", reaped);
+        if (reaped == child) passed |= 1 << 14;
+    }
 
     write("  mmapprobe: done, ");
     print_dec(@popCount(passed));
-    write(" of 10\n");
+    write(" of 16\n");
 
     _ = syscall3(NR_EXIT, passed, 0, 0);
     unreachable;
 }
 
 comptime {
-    if (ALL_PASSED != 0x3FF) @compileError("ten questions, ten bits");
+    if (ALL_PASSED != 0xFFFF) @compileError("sixteen questions, sixteen bits");
 }

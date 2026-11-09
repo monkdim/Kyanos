@@ -201,6 +201,18 @@ pub fn free_page(phys_addr: u64) void {
     if (page < next_hint) next_hint = page;
 }
 
+/// Is this physical page in the allocator's free pool?
+///
+/// For asserting ownership rather than accounting. A net free-page count that
+/// comes out even does not say that the right pages came back -- a frame that
+/// was never the allocator's being added and a real one being lost cancel
+/// out. Asking about a specific frame does say.
+pub fn is_free(phys_addr: u64) bool {
+    const page = phys_addr >> PAGE_SHIFT;
+    if (page >= max_page) return false;
+    return !is_set(page);
+}
+
 pub fn stats() Stats {
     return .{
         .total_pages = total_pages,
