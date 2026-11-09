@@ -238,7 +238,20 @@ fn sys_read(args: Args) i64 {
     var done: usize = 0;
     while (done < len) {
         const want = @min(len - done, staging.len);
-        const n = vfs.read(fd, staging[0..want]) catch {
+        const n = vfs.read(fd, staging[0..want]) catch |e| {
+            // A descriptor that is open, but not for reading, is EBADF.
+            // POSIX gives read(2) that answer for "fd is not open for
+            // reading", and it is the same answer write(2) already gives for
+            // its mirror image, so the pair stays symmetric.
+            //
+            // The other errors still come back as EIO, including
+            // `error.BadFd`. That is not right either -- a closed descriptor
+            // is EBADF by the same clause -- but changing it changes an errno
+            // a program can already observe today, which is a shared-contract
+            // decision rather than this repair's to make. Raised for relay;
+            // the new condition is chosen here because it had no errno at all
+            // before, having never been refused.
+            if (e == error.NotOpenForReading) return errno(.ebadf);
             if (done == 0) return errno(.eio);
             break;
         };

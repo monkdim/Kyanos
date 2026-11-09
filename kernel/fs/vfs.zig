@@ -86,6 +86,38 @@ pub const DirEntry = struct {
 
 var root_dentry: ?*Dentry = null;
 
+/// `open`'s flags: the access mode, and the one creation flag this VFS reads.
+///
+/// O_RDONLY is zero, and that is not a detail to skim past. It means
+/// `flags & O_RDONLY` is false for every descriptor ever opened, so a
+/// readability test written that way answers "no" always; and
+/// `flags & O_WRONLY` says yes for O_RDWR and no for O_RDONLY, which is the
+/// right answer reached for the wrong reason and stops being right the moment
+/// a fourth mode exists. The access mode is the low two bits taken *together*
+/// and compared against a value, which is what O_ACCMODE is for.
+///
+/// These numbers are not new. They are the ones every caller in the tree
+/// already passes -- `0x40 | 0x1` to create and write, and plain `0` to read
+/// -- written down so that the next reader does not have to infer them from
+/// a comment beside a literal.
+pub const O_RDONLY: u32 = 0;
+pub const O_WRONLY: u32 = 1;
+pub const O_RDWR: u32 = 2;
+pub const O_ACCMODE: u32 = 3;
+pub const O_CREAT: u32 = 0x40;
+
+/// May a descriptor opened with these flags be read?
+pub fn mode_readable(flags: u32) bool {
+    const mode = flags & O_ACCMODE;
+    return mode == O_RDONLY or mode == O_RDWR;
+}
+
+/// May a descriptor opened with these flags be written?
+pub fn mode_writable(flags: u32) bool {
+    const mode = flags & O_ACCMODE;
+    return mode == O_WRONLY or mode == O_RDWR;
+}
+
 /// Per-process fd table, keyed by PID. `current_process_id_fn` is
 /// installed by the scheduler at boot so VFS doesn't have to import
 /// it directly (would be a circular dependency).
@@ -143,8 +175,14 @@ pub fn set_root(fs: *Fs) void {
 }
 
 pub fn open(path: []const u8, flags: u32, mode: Mode) !i64 {
+    // Three of the four values the two access-mode bits can take mean
+    // something. The fourth does not, and a descriptor carrying it would be
+    // neither readable nor writable -- a file handle that answers no to every
+    // operation, which is harder to diagnose from userspace than a refused
+    // open.
+    if ((flags & O_ACCMODE) == O_ACCMODE) return error.BadAccessMode;
     const inode = try resolve(path) orelse {
-        if ((flags & 0x40) != 0) {
+        if ((flags & O_CREAT) != 0) {
             const parent = try resolve_parent(path);
             const name = basename(path);
             const new_inode = try parent.fs.ops.create(parent.fs, parent, name, mode);
@@ -165,6 +203,11 @@ pub fn close(fd: i32) !void {
 pub fn read(fd: i32, buf: []u8) !usize {
     const slot_ptr = try current_table().slot(fd);
     const file = slot_ptr.* orelse return error.BadFd;
+    // The mode the descriptor was opened with. It has been recorded since
+    // `File` had a `flags` field and consulted by nothing: a descriptor
+    // opened write-only could be read through, and one opened read-only
+    // could be written through, because neither function looked.
+    if (!mode_readable(file.flags)) return error.NotOpenForReading;
     const n = try file.inode.fs.ops.read(file.inode.fs, file.inode, file.pos, buf);
     file.pos += n;
     return n;
@@ -173,6 +216,7 @@ pub fn read(fd: i32, buf: []u8) !usize {
 pub fn write(fd: i32, buf: []const u8) !usize {
     const slot_ptr = try current_table().slot(fd);
     const file = slot_ptr.* orelse return error.BadFd;
+    if (!mode_writable(file.flags)) return error.NotOpenForWriting;
     const n = try file.inode.fs.ops.write(file.inode.fs, file.inode, file.pos, buf);
     file.pos += n;
     return n;
@@ -249,6 +293,10 @@ fn dirent_reclen(name_len: usize) usize {
 pub fn readdir(fd: i32, out: []u8) !usize {
     const slot_ptr = try current_table().slot(fd);
     const file = slot_ptr.* orelse return error.BadFd;
+    // Listing a directory is reading it, so it answers to the same mode as
+    // `read`. Checked before the type, because "you may not read this" is
+    // true of a write-only descriptor whatever it points at.
+    if (!mode_readable(file.flags)) return error.NotOpenForReading;
     if (file.inode.file_type != .directory) return error.NotADirectory;
 
     const entries = try file.inode.fs.ops.readdir(file.inode.fs, file.inode);

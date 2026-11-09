@@ -16,11 +16,22 @@ const std = @import("std");
 const NR_READ: u64 = 0;
 const NR_WRITE: u64 = 1;
 const NR_OPEN: u64 = 2;
+const NR_CLOSE: u64 = 3;
 const NR_BRK: u64 = 9;
 const NR_EXIT: u64 = 12;
 
 /// What the kernel answers for a pointer it will not follow.
 const EFAULT: i64 = -14;
+/// And for a descriptor it will not use the way it was asked to. POSIX gives
+/// write(2) EBADF for "fd is not open for writing", and read(2) the same for
+/// reading, so this is one answer for two questions on purpose.
+const EBADF: i64 = -9;
+
+const O_RDONLY: u64 = 0;
+const O_WRONLY: u64 = 1;
+const O_RDWR: u64 = 2;
+const O_ACCMODE: u64 = 3;
+const O_CREAT: u64 = 0x40;
 
 fn syscall3(nr: u64, a0: u64, a1: u64, a2: u64) i64 {
     return asm volatile ("syscall"
@@ -52,6 +63,132 @@ fn write_hex(v: u64) void {
     }
     buf[18] = '\n';
     _ = write(1, &buf);
+}
+
+/// Does a descriptor remember what it was opened for?
+///
+/// `open` has recorded the access mode since `File` had a `flags` field, and
+/// until now nothing read it: `vfs.read` and `vfs.write` fetched the file and
+/// went straight to the filesystem. So a descriptor opened read-only could be
+/// written through, and one opened write-only could be read through, and the
+/// mode was a number the kernel carried around for nothing.
+///
+/// Asked from ring 3, through the dispatcher, because that is the only place
+/// the answer matters: calling the VFS helper directly would exercise the
+/// check without going near the path a program actually takes, including the
+/// errno it comes back as.
+///
+/// O_RDONLY is zero, which is why the matrix is worth having rather than one
+/// case. A check written as `flags & O_WRONLY` gives the right answer for
+/// read-only and write-only by accident and the wrong one for nothing yet --
+/// so a single case passes and says nothing. Each of the three modes is asked
+/// both questions.
+fn access_modes() void {
+    var bad: u32 = 0;
+
+    // Read-only: reads, does not write. /bin/hello.txt is the file the
+    // kernel's own filesystem self-test leaves behind.
+    const ro = syscall3(NR_OPEN, @intFromPtr("/bin/hello.txt"), O_RDONLY, 0);
+    if (ro < 0) {
+        bad += 1;
+        _ = write(1, "  [FAIL] access modes: could not open read-only: ");
+        write_hex(@bitCast(ro));
+    } else {
+        var buf: [16]u8 = undefined;
+        if (syscall3(NR_READ, @intCast(ro), @intFromPtr(&buf), buf.len) <= 0) {
+            bad += 1;
+            _ = write(1, "  [FAIL] access modes: a read-only descriptor could not be read\n");
+        }
+        const w = syscall3(NR_WRITE, @intCast(ro), @intFromPtr("x"), 1);
+        if (w != EBADF) {
+            bad += 1;
+            _ = write(1, "  [FAIL] access modes: writing a read-only descriptor answered ");
+            write_hex(@bitCast(w));
+        }
+        _ = syscall3(NR_CLOSE, @intCast(ro), 0, 0);
+    }
+
+    // Write-only: writes, does not read.
+    const wo = syscall3(NR_OPEN, @intFromPtr("/bin/accmode.txt"), O_CREAT | O_WRONLY, 0o644);
+    if (wo < 0) {
+        bad += 1;
+        _ = write(1, "  [FAIL] access modes: could not open write-only: ");
+        write_hex(@bitCast(wo));
+    } else {
+        if (syscall3(NR_WRITE, @intCast(wo), @intFromPtr("hello"), 5) != 5) {
+            bad += 1;
+            _ = write(1, "  [FAIL] access modes: a write-only descriptor could not be written\n");
+        }
+        var buf: [8]u8 = undefined;
+        const r = syscall3(NR_READ, @intCast(wo), @intFromPtr(&buf), buf.len);
+        if (r != EBADF) {
+            bad += 1;
+            _ = write(1, "  [FAIL] access modes: reading a write-only descriptor answered ");
+            write_hex(@bitCast(r));
+        }
+        _ = syscall3(NR_CLOSE, @intCast(wo), 0, 0);
+    }
+
+    // Read/write: both.
+    const rw = syscall3(NR_OPEN, @intFromPtr("/bin/accmode.txt"), O_RDWR, 0);
+    if (rw < 0) {
+        bad += 1;
+        _ = write(1, "  [FAIL] access modes: could not open read/write: ");
+        write_hex(@bitCast(rw));
+    } else {
+        if (syscall3(NR_WRITE, @intCast(rw), @intFromPtr("A"), 1) != 1) {
+            bad += 1;
+            _ = write(1, "  [FAIL] access modes: a read/write descriptor could not be written\n");
+        }
+        var buf: [8]u8 = undefined;
+        if (syscall3(NR_READ, @intCast(rw), @intFromPtr(&buf), buf.len) < 0) {
+            bad += 1;
+            _ = write(1, "  [FAIL] access modes: a read/write descriptor could not be read\n");
+        }
+        _ = syscall3(NR_CLOSE, @intCast(rw), 0, 0);
+
+        // And the same descriptor once it is closed, which is a different
+        // refusal reached by the same call.
+        const after = syscall3(NR_WRITE, @intCast(rw), @intFromPtr("x"), 1);
+        if (after != EBADF) {
+            bad += 1;
+            _ = write(1, "  [FAIL] access modes: writing a closed descriptor answered ");
+            write_hex(@bitCast(after));
+        }
+    }
+
+    // The fourth value of the two mode bits means nothing, and a descriptor
+    // carrying it would answer no to every operation.
+    const bogus = syscall3(NR_OPEN, @intFromPtr("/bin/hello.txt"), O_ACCMODE, 0);
+    if (bogus >= 0) {
+        bad += 1;
+        _ = write(1, "  [FAIL] access modes: an access mode of 3 was accepted as fd ");
+        write_hex(@bitCast(bogus));
+        _ = syscall3(NR_CLOSE, @intCast(bogus), 0, 0);
+    }
+
+    // And the descriptors that are not files. Writing stdout has to keep
+    // working: it is how every line above was printed, and it does not go
+    // through the mode check at all, which is worth asserting rather than
+    // assuming.
+    if (write(1, "") != 0) {
+        bad += 1;
+        _ = write(1, "  [FAIL] access modes: writing stdout stopped working\n");
+    }
+    // Into a writable buffer: a read into a string literal is refused as
+    // EFAULT before the descriptor is looked at, which is correct and tests
+    // the wrong thing. The first version of this case did that.
+    var sink: [1]u8 = undefined;
+    const rd_stdout = syscall3(NR_READ, 1, @intFromPtr(&sink), sink.len);
+    if (rd_stdout != EBADF) {
+        bad += 1;
+        _ = write(1, "  [FAIL] access modes: reading stdout answered ");
+        write_hex(@bitCast(rd_stdout));
+    }
+
+    if (bad == 0) {
+        _ = write(1, "  [ok] access modes: read-only refuses writes, write-only refuses reads, read/write does both, a closed one and a mode of 3 are refused, and stdout still works\n");
+    }
 }
 
 fn exit(code: u64) noreturn {
@@ -195,6 +332,8 @@ export fn _start() callconv(.C) noreturn {
             write_hex(@bitCast(r_real));
         }
     }
+
+    access_modes();
 
     if (bad == 0) {
         _ = write(1, "  [ok] user pointers: unmapped, kernel-half and read-only buffers refused with EFAULT; a real one read the file\n");
