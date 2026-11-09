@@ -68,6 +68,9 @@ pub const Loaded = struct {
 pub const Error = error{
     OutOfMemory,
     TooManySegments,
+    /// The executable asks for an address this machine's user half does not
+    /// reach.
+    BadExecutable,
 };
 
 pub fn load(image: []const u8, asid: u16, gpa: std.mem.Allocator) !Loaded {
@@ -89,6 +92,24 @@ pub fn load(image: []const u8, asid: u16, gpa: std.mem.Allocator) !Loaded {
     // No heap yet at this point: brk has not run, so there is nothing past
     // brk_start to give back.
     errdefer release(&out, 0);
+
+    // Where every segment wants to go, before anything is mapped.
+    //
+    // `paging.map_page` already refuses an address at or above USER_VA_END,
+    // so a segment asking for one could not be mapped -- but it would be
+    // refused at its first page, with everything before it already mapped,
+    // and reported as whatever that call returns. Asked up front, the answer
+    // names the executable.
+    //
+    // USER_VA_END is 1 << 39: the first address TTBR0 does not cover with
+    // T0SZ = 25. That is this machine's number, which is why the check lives
+    // here and not in loader/elf.zig -- the x86_64 user half ends at 1 << 47
+    // and the shared parser must not pick one of the two.
+    for (exe.segments) |seg| {
+        // `elf.parse` has refused anything whose end wraps.
+        if (seg.vaddr + seg.memsz > paging.USER_VA_END) return Error.BadExecutable;
+    }
+    if (exe.entry >= paging.USER_VA_END) return Error.BadExecutable;
 
     for (exe.segments) |seg| {
         try segments.map_segment(Ops, &out.space, seg, image);

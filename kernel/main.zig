@@ -44,6 +44,7 @@ const faultprobe = @import("faultprobe.zig");
 const sleepprobe = @import("sleepprobe.zig");
 const reachprobe = @import("reachprobe.zig");
 const mmapprobe = @import("mmapprobe.zig");
+const elfprobe = @import("elfprobe.zig");
 const shell = @import("shell.zig");
 const fpu = @import("arch/x86_64/fpu.zig");
 const fputest = @import("fputest.zig");
@@ -304,12 +305,17 @@ pub export fn kernel_main(mb_info_phys: u64) callconv(.C) noreturn {
     //    architecture that lets somebody ask it one.
     shell.run();
 
-    // 16. The one system call that takes an address from userspace and
+    // 16. What the loader does with an executable that lies about itself.
+    //    Read before the reachability gate for the same reason as the one
+    //    below it: it is a statement about the loader, not about this boot.
+    elfprobe.run();
+
+    // 17. The one system call that takes an address from userspace and
     //    installs a page-table entry for it. Read before the reachability
     //    gate so its snapshot counts these calls as exercised.
     mmapprobe.run();
 
-    // 17. And the question none of the gates above can ask: of the system
+    // 18. And the question none of the gates above can ask: of the system
     //    calls this kernel implements, which ones does nothing exercise?
     //    Read here, after everything else has run, because the answer is a
     //    statement about the whole boot's coverage.

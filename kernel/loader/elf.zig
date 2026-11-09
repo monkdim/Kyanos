@@ -18,6 +18,7 @@
 //! target AddressSpace.
 
 const std = @import("std");
+const pmm = @import("../mm/pmm.zig");
 
 pub const ELFMAG: [4]u8 = .{ 0x7F, 'E', 'L', 'F' };
 pub const ELFCLASS64: u8 = 2;
@@ -96,7 +97,11 @@ pub const LoadedExecutable = struct {
     pub fn highest_address(self: LoadedExecutable) u64 {
         var max: u64 = 0;
         for (self.segments) |s| {
-            const end = s.vaddr + s.memsz;
+            // Saturating: `parse` refuses a segment whose end wraps, so this
+            // cannot be reached with one -- but this is a public method on a
+            // public type, and a sum that wraps here would read as a *low*
+            // address, which is the dangerous direction.
+            const end = s.vaddr +| s.memsz;
             if (end > max) max = end;
         }
         return max;
@@ -113,6 +118,14 @@ pub const ParseError = error{
     BadPhdrTable,
     OutOfMemory,
     Overflow,
+    /// Nothing to load: no PT_LOAD segment at all.
+    NoLoadableSegments,
+    /// The entry point is not inside any segment the file asks to have
+    /// loaded, so there would be nothing mapped at the address the process
+    /// is supposed to start at.
+    EntryNotMapped,
+    /// Two segments' page-rounded ranges intersect. See `segments_overlap`.
+    OverlappingSegments,
 };
 
 /// One fixed-size structure out of a byte slice, at any alignment.
@@ -151,8 +164,20 @@ pub fn parse(bytes: []const u8, gpa: std.mem.Allocator) ParseError!LoadedExecuta
 
     const phoff = hdr.e_phoff;
     const phnum = @as(u64, hdr.e_phnum);
+    // Cannot overflow: `e_phnum` is a u16, so this is at most 65535 * 56.
     const ph_total = phnum * @sizeOf(ProgramHeader);
-    if (phoff + ph_total > bytes.len) return error.Truncated;
+    // The sum can. Every bound in this function is an addition on a field
+    // taken straight out of the file, and an addition that wraps compares
+    // *below* the limit it was meant to enforce -- so the check lets the
+    // image through and the read that follows goes wherever the field said.
+    //
+    // Measured on the revision before this: `e_phoff` of
+    // 0xFFFFFFFFFFFFFFFF with everything else well-formed ended the boot
+    // with "KERNEL PANIC: integer overflow" at this line, and a host build
+    // of this same file panicked at the same line. It was the first thing
+    // the loader did with the image.
+    const ph_end = @addWithOverflow(phoff, ph_total);
+    if (ph_end[1] != 0 or ph_end[0] > bytes.len) return error.Truncated;
 
     var loadable = std.ArrayList(Segment).init(gpa);
     errdefer loadable.deinit();
@@ -163,7 +188,21 @@ pub fn parse(bytes: []const u8, gpa: std.mem.Allocator) ParseError!LoadedExecuta
         const ph = read_struct(ProgramHeader, bytes, off);
         if (ph.p_type != PT_LOAD) continue;
         if (ph.p_filesz > ph.p_memsz) return error.BadPhdrTable;
-        if (ph.p_offset + ph.p_filesz > bytes.len) return error.Truncated;
+
+        // Where the contents are in the file.
+        const file_end = @addWithOverflow(ph.p_offset, ph.p_filesz);
+        if (file_end[1] != 0 or file_end[0] > bytes.len) return error.Truncated;
+
+        // Where the segment goes in memory. Checked here rather than left to
+        // whoever maps it, because three places downstream add these two
+        // together and two of them then round the sum up to a page -- so an
+        // end that wraps becomes a *small* number before anybody compares it
+        // to anything.
+        const mem_end = @addWithOverflow(ph.p_vaddr, ph.p_memsz);
+        if (mem_end[1] != 0) return error.Overflow;
+        // And the rounding itself, for the same reason.
+        if (mem_end[0] > std.math.maxInt(u64) - (pmm.PAGE_SIZE - 1)) return error.Overflow;
+
         try loadable.append(.{
             .vaddr = ph.p_vaddr,
             .filesz = ph.p_filesz,
@@ -173,11 +212,82 @@ pub fn parse(bytes: []const u8, gpa: std.mem.Allocator) ParseError!LoadedExecuta
         });
     }
 
+    const segs = loadable.items;
+
+    // Something to load. An image with no PT_LOAD used to produce a process
+    // with an empty address space and a `brk_start` of zero, which was then
+    // entered at whatever `e_entry` said.
+    if (segs.len == 0) return error.NoLoadableSegments;
+
+    // Somewhere to start. `e_entry` is the address the kernel hands to
+    // `sysretq` (x86_64) or writes to ELR_EL1 (aarch64); nothing checked that
+    // a page would be mapped there, so an entry point pointing anywhere at
+    // all was loaded and jumped to. An address no segment covers cannot be
+    // anything but a fault, and on x86_64 a non-canonical one is a #GP in
+    // ring 0 rather than in the process.
+    //
+    // Checked against the segment's own extent rather than its page-rounded
+    // one: the extra bytes in the last page of a segment are not part of the
+    // program, and a linker that meant to start there would have said so.
+    if (!address_in_segments(hdr.e_entry, segs)) return error.EntryNotMapped;
+
+    // And one frame per page. See `segments_overlap`.
+    if (segments_overlap(segs)) return error.OverlappingSegments;
+
     return .{
         .entry = hdr.e_entry,
         .is_dynamic = hdr.e_type == ET_DYN,
         .segments = try loadable.toOwnedSlice(),
     };
+}
+
+fn address_in_segments(addr: u64, segs: []const Segment) bool {
+    for (segs) |s| {
+        // `parse` has already refused a segment whose end wraps.
+        if (addr >= s.vaddr and addr < s.vaddr + s.memsz) return true;
+    }
+    return false;
+}
+
+/// Do any two segments share a page?
+///
+/// This matters because of how a segment is mapped: `segments.map_segment`
+/// walks it page by page, takes a *fresh* physical frame for each page, zeroes
+/// it, maps it, and copies the file bytes in. Two segments covering the same
+/// page therefore get two different frames for it, and the second mapping
+/// replaces the first -- discarding whatever had been copied into it, with no
+/// error anywhere. The process starts with a page of one segment silently
+/// missing.
+///
+/// user/user.ld already knows this. It aligns every section to a page and
+/// says why: "if two PT_LOADs shared a page the second would be mapped over
+/// the first and silently discard whatever had been copied into it". So the
+/// layouts this loader supports are the page-disjoint ones, and that is not a
+/// limitation being introduced here -- it is the one that already existed,
+/// said out loud instead of producing a broken process.
+///
+/// Real linkers do emit page-sharing segments, and honouring them means
+/// mapping a page once and copying both segments' bytes into it with the
+/// union of their permissions. That is a larger change than refusing them,
+/// and refusing is the safe direction in the meantime: a program that will
+/// not start is better than one that starts with a hole in it.
+fn segments_overlap(segs: []const Segment) bool {
+    for (segs, 0..) |a, ai| {
+        // A segment that occupies nothing cannot share a page with anything.
+        // Skipped rather than measured, because its rounded range is empty
+        // and an empty range sits *inside* a neighbour's -- which the test
+        // below would call an overlap and refuse an image over.
+        if (a.memsz == 0) continue;
+        const a_start = a.vaddr & ~@as(u64, pmm.PAGE_SIZE - 1);
+        const a_end = (a.vaddr + a.memsz + pmm.PAGE_SIZE - 1) & ~@as(u64, pmm.PAGE_SIZE - 1);
+        for (segs[ai + 1 ..]) |b| {
+            if (b.memsz == 0) continue;
+            const b_start = b.vaddr & ~@as(u64, pmm.PAGE_SIZE - 1);
+            const b_end = (b.vaddr + b.memsz + pmm.PAGE_SIZE - 1) & ~@as(u64, pmm.PAGE_SIZE - 1);
+            if (a_start < b_end and b_start < a_end) return true;
+        }
+    }
+    return false;
 }
 
 pub fn release(gpa: std.mem.Allocator, exe: LoadedExecutable) void {

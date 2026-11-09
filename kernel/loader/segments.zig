@@ -15,10 +15,21 @@
 //! tables and AArch64 page tables have nothing to say to each other, and a
 //! file that mentions both is a file neither architecture can compile.
 
+const std = @import("std");
 const elf = @import("elf.zig");
 const pmm = @import("../mm/pmm.zig");
 
-pub const Error = error{OutOfMemory};
+pub const Error = error{
+    OutOfMemory,
+    /// The segment's own numbers do not describe a mappable range: its
+    /// virtual end wraps, or its contents are not inside the image.
+    ///
+    /// `elf.parse` refuses both before a Segment ever gets here. This exists
+    /// because `map_segment` is public and takes a Segment, not a file: the
+    /// next caller may build one itself, and the cost of saying so is two
+    /// comparisons per segment against a silently truncated mapping.
+    BadSegment,
+};
 
 /// `Ops` is a struct type providing:
 ///
@@ -35,8 +46,14 @@ pub fn map_segment(
     seg: elf.Segment,
     image: []const u8,
 ) Error!void {
+    const mem_end = @addWithOverflow(seg.vaddr, seg.memsz);
+    if (mem_end[1] != 0) return Error.BadSegment;
+    if (mem_end[0] > std.math.maxInt(u64) - (pmm.PAGE_SIZE - 1)) return Error.BadSegment;
+    const file_end = @addWithOverflow(seg.file_offset, seg.filesz);
+    if (file_end[1] != 0 or file_end[0] > image.len) return Error.BadSegment;
+
     const start = page_round_down(seg.vaddr);
-    const end = page_round_up(seg.vaddr + seg.memsz);
+    const end = page_round_up(mem_end[0]);
 
     // How far into the first page the segment actually begins. A linker is
     // free to start a segment mid-page, and the bytes before it belong to
@@ -54,8 +71,15 @@ pub fn map_segment(
         // holding whatever the last one left in it.
         zero(Ops, phys);
 
-        Ops.map(space, addr, phys, seg.writable(), seg.executable()) catch
+        Ops.map(space, addr, phys, seg.writable(), seg.executable()) catch {
+            // The frame was taken a moment ago and nothing is pointing at it,
+            // so it goes back here. Without this, every mapping that failed
+            // lost a page for the life of the machine -- and the pages mapped
+            // by earlier turns of this loop are the caller's to release,
+            // which is what makes that the caller's job and this one ours.
+            pmm.free_page(phys);
             return Error.OutOfMemory;
+        };
 
         // The file-backed part of this page, if any. Past p_filesz there is
         // nothing to copy and the zeroing above is the answer.
