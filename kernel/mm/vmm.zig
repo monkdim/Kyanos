@@ -20,6 +20,17 @@ pub const PAGE_HUGE: u64 = 1 << 7;
 
 pub const ADDR_MASK: u64 = 0x000FFFFFFFFFF000;
 
+/// The first address that is not userspace: PML4 entry 256, the first one
+/// `share_kernel_half` copies out of the kernel's table.
+///
+/// It lives here rather than in `uaccess` (which re-exports it) because it is
+/// a fact about these page tables, and because `map_page` has to know it. A
+/// user pointer that names a kernel address is caught by `uaccess` before
+/// anything is read through it; a user *mapping* at a kernel address is not
+/// read through anything, it is written into the tables, and the tables above
+/// this line are the kernel's own.
+pub const USER_TOP: u64 = 0x0000_8000_0000_0000;
+
 /// One per process. Holds the root page table phys addr + a small
 /// list of region descriptors so the kernel knows what's mapped at
 /// what permissions. Region list is checked on page fault.
@@ -84,6 +95,30 @@ pub fn share_kernel_half(pml4_phys: u64) void {
 }
 
 pub fn map_page(space: *AddressSpace, virt: u64, phys: u64, flags: u64) !void {
+    // Nothing reachable from ring 3 may be installed in the kernel's half.
+    //
+    // This is not belt-and-braces for the checking in `sys_mmap`; it is where
+    // the invariant actually lives, because of what the walk below does. Two
+    // facts meet here. `share_kernel_half` copies PML4 entries 256..511 into
+    // every new process *by value*, so the tables under those entries are one
+    // set of tables, shared by the kernel and by every process at once. And
+    // the loop below deliberately widens U/S on every level of the path it
+    // walks, because a leaf is only reachable if every level above it is --
+    // see the comment further down. Put together: a user mapping at a
+    // kernel-half address makes the kernel's own page tables user-readable
+    // down that path, for every process, and writes a leaf of its own over
+    // whatever the kernel had mapped there.
+    //
+    // Measured, before this line existed: an unprivileged program asking for
+    // the framebuffer at 0x0000_8000_0000_0000 was granted it, and the gate
+    // in mmapprobe.zig found the kernel's PML4[256] changed afterwards.
+    //
+    // `virt` is not masked to canonical form first on purpose. The walk takes
+    // index bits out of it with shifts, so a non-canonical address no load
+    // could ever use still selects a real entry in a real table -- which is
+    // exactly how that measurement got into PML4[256].
+    if ((flags & PAGE_USER) != 0 and virt >= USER_TOP) return error.NotUserAddress;
+
     // Walk the four levels, allocating intermediate tables on demand.
     // Each table is one 4 KiB page from the pmm. Returns error.OutOfMemory
     // if we exhaust physical pages before the path completes.
@@ -241,13 +276,19 @@ pub fn clone_user_half(src: *const AddressSpace, dst: *AddressSpace) !void {
     while (top < 256) : (top += 1) {
         const pml4 = phys_to_table(src.pml4_phys);
         if (pml4[top] & PAGE_PRESENT == 0) continue;
-        try clone_level(pml4[top] & ADDR_MASK, 1, @as(u64, top) << 39, dst);
+        try clone_level(src, pml4[top] & ADDR_MASK, 1, @as(u64, top) << 39, dst);
     }
 }
 
 /// One level of the walk. `base` is the virtual address the entries under
 /// this table start at.
-fn clone_level(table_phys: u64, level: usize, base: u64, dst: *AddressSpace) !void {
+///
+/// `src` is carried down so each leaf can be asked what backs it. The walk
+/// itself is still driven by the tables rather than by the region list -- see
+/// `clone_user_half` for what driving it from the list got wrong, twice -- but
+/// *how* a leaf is copied depends on who owns its frame, and only the list
+/// knows that.
+fn clone_level(src: *const AddressSpace, table_phys: u64, level: usize, base: u64, dst: *AddressSpace) !void {
     const shift: u6 = switch (level) {
         1 => 30,
         2 => 21,
@@ -262,20 +303,36 @@ fn clone_level(table_phys: u64, level: usize, base: u64, dst: *AddressSpace) !vo
         const frame = entry & ADDR_MASK;
 
         if (level == 3 or (entry & PAGE_HUGE) != 0) {
-            // A leaf. A huge one covers many 4 KiB pages and is copied as
+            // A leaf. A huge one covers many 4 KiB pages and is handled as
             // that many, because the child is built out of 4 KiB mappings and
             // nothing here needs the larger ones.
             const flags = entry & ~ADDR_MASK & ~PAGE_HUGE;
             const span: u64 = @as(u64, 1) << shift;
             var off: u64 = 0;
             while (off < span) : (off += 4096) {
-                const page = pmm.alloc_page() orelse return error.OutOfMemory;
-                copy_phys_page(page, frame + off);
-                try map_page(dst, va + off, page, flags);
+                if (device_backed(src, va + off)) {
+                    // A device mapping is the device, not a copy of it. The
+                    // child gets the same frame.
+                    //
+                    // It used to get a fresh page from `pmm` with the
+                    // framebuffer's current contents copied into it, which
+                    // was wrong twice over. The child drew into private RAM
+                    // that reached no screen -- and its region list said
+                    // those addresses were device-backed, so the cleanup walk
+                    // was told not to give the frames back, and a fork with
+                    // the framebuffer mapped lost one page of RAM per mapped
+                    // page. Measured on a boot: two pages for two mappings of
+                    // a one-page framebuffer.
+                    try map_page(dst, va + off, frame + off, flags);
+                } else {
+                    const page = pmm.alloc_page() orelse return error.OutOfMemory;
+                    copy_phys_page(page, frame + off);
+                    try map_page(dst, va + off, page, flags);
+                }
             }
             continue;
         }
-        try clone_level(frame, level + 1, va, dst);
+        try clone_level(src, frame, level + 1, va, dst);
     }
 }
 
@@ -291,6 +348,49 @@ fn clone_level(table_phys: u64, level: usize, base: u64, dst: *AddressSpace) !vo
 /// of tables — so walking them would free the kernel out from under itself.
 /// The PML4 page goes at the end, which is this space's and nobody else's.
 pub fn free_user_half(space: *AddressSpace) void {
+    // Frames this process does not own go first, by clearing their entries
+    // rather than freeing them.
+    //
+    // The walk below treats every present leaf in the user half as a page
+    // from `pmm` and hands it back. For a device mapping that is not a leak,
+    // it is the opposite: the framebuffer's frames were never the allocator's
+    // to begin with, so returning them *adds* memory-mapped I/O to the free
+    // pool, and the next allocation gets a frame that is not RAM.
+    //
+    // Measured. Nothing on this boot had ever called `mmap` -- the
+    // reachability gate said exactly that -- so the first program to map the
+    // framebuffer and exit was also the first to reach this function with a
+    // device region in its list. The boot stopped straight after it, with
+    // 0xb8000 in the allocator's free list.
+    //
+    // `unmap_page` clears the leaf and flushes, and never calls `pmm`, which
+    // is what makes it the right tool here.
+    for (space.regions.items) |r| {
+        switch (r.backing) {
+            .device => |d| {
+                var va = r.start;
+                while (va < r.end) : (va += pmm.PAGE_SIZE) {
+                    // Only the device's own frame is declined. A leaf holding
+                    // anything else at a device address is ordinary RAM that
+                    // something put there, and leaving it to the walk below
+                    // is what gives it back.
+                    //
+                    // This matters because the label and the frame can
+                    // disagree. `clone_user_half` used to hand a forked child
+                    // private copies of these pages while copying the parent's
+                    // region list verbatim, and `brk` can still grow over a
+                    // mapped range without the list being told. In both cases
+                    // the region says "device" over a frame that came from
+                    // `pmm`, and skipping it unconditionally leaked it.
+                    const expected = d.phys_base + (va - r.start);
+                    const actual = leaf_phys(space, va) orelse continue;
+                    if (actual == expected) unmap_page(space, va);
+                }
+            },
+            else => {},
+        }
+    }
+
     var top: usize = 0;
     while (top < 256) : (top += 1) {
         const pml4 = phys_to_table(space.pml4_phys);
@@ -417,6 +517,44 @@ pub fn handle_page_fault(space: *AddressSpace, faulting_addr: u64, error_code: u
     const aligned = faulting_addr & ~@as(u64, pmm.PAGE_SIZE - 1);
     map_page(space, aligned, phys, flags) catch return error.OutOfMemory;
 }
+
+/// Is `addr` inside a region whose frames belong to a device rather than to
+/// the physical allocator?
+fn device_backed(space: *const AddressSpace, addr: u64) bool {
+    for (space.regions.items) |*r| {
+        if (addr >= r.start and addr < r.end) {
+            return switch (r.backing) {
+                .device => true,
+                else => false,
+            };
+        }
+    }
+    return false;
+}
+
+/// The physical frame mapped at `virt`, or null if nothing is.
+///
+/// Used by the teardown walk to check that a frame really is the device's
+/// before declining to free it. Stops at a huge page the same way the rest of
+/// this file does.
+pub fn leaf_phys(space: *const AddressSpace, virt: u64) ?u64 {
+    const shifts = [_]u6{ 39, 30, 21, 12 };
+    var table_phys = space.pml4_phys;
+    var level: usize = 0;
+    while (level < 4) : (level += 1) {
+        const entry = phys_to_table(table_phys)[(virt >> shifts[level]) & 0x1FF];
+        if (entry & PAGE_PRESENT == 0) return null;
+        if (level == 3) return entry & ADDR_MASK;
+        if (level > 0 and (entry & PAGE_HUGE) != 0) {
+            const size: u64 = if (level == 1) (1 << 30) else (1 << 21);
+            return (entry & ADDR_MASK & ~(size - 1)) + (virt & (size - 1) & ~@as(u64, PAGE_SIZE_MASK));
+        }
+        table_phys = entry & ADDR_MASK;
+    }
+    return null;
+}
+
+const PAGE_SIZE_MASK: u64 = pmm.PAGE_SIZE - 1;
 
 fn find_region(space: *AddressSpace, addr: u64) ?*const AddressSpace.Region {
     for (space.regions.items) |*r| {

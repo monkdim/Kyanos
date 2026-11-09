@@ -62,29 +62,112 @@ pub fn clear(bgra: u32) void {
     }
 }
 
+/// How many bytes the framebuffer occupies, or null if the bootloader did
+/// not hand one up. `pitch` and `height` are both u32, so the product cannot
+/// overflow the u64 it is computed in -- 0xFFFFFFFF squared is under 2^64.
+pub fn byte_size() ?u64 {
+    const fb_info = info orelse return null;
+    return @as(u64, fb_info.pitch) * fb_info.height;
+}
+
+/// That size rounded up to whole pages, which is what actually gets mapped,
+/// or null if there is no framebuffer or the rounding would not fit.
+///
+/// The rounding is checked rather than written as `(size + 0xFFF) & ~0xFFF`
+/// because the geometry is the bootloader's, not the kernel's: `pitch` and
+/// `height` each fill a u32, and their product can come within 0xFFF of the
+/// top of a u64. That is not a reachable geometry on any real display, which
+/// is exactly why it would sit here unnoticed, and the kernel does not get to
+/// assume a tag it did not write is sensible.
+pub fn mapped_size() ?u64 {
+    const size = byte_size() orelse return null;
+    const rounded = @addWithOverflow(size, 0xFFF);
+    if (rounded[1] != 0) return null;
+    return rounded[0] & ~@as(u64, 0xFFF);
+}
+
+pub const MapError = error{
+    /// There is no framebuffer to map.
+    NoFramebuffer,
+    /// `user_virt` is not page-aligned, or the range it asks for is not
+    /// wholly inside userspace.
+    BadRange,
+    OutOfMemory,
+};
+
 /// Map the framebuffer's physical pages into `space` at `user_virt`
 /// with PAGE_USER + PAGE_WRITE so a userspace compositor can blit
 /// directly. Returns the byte length of the framebuffer on success
-/// (caller-side: that's the size to mmap-track in its region list)
-/// or zero if the framebuffer hasn't been initialised yet.
-pub fn map_into_user(space: *vmm.AddressSpace, user_virt: u64) !u64 {
-    const fb_info = info orelse return 0;
+/// (caller-side: that's the size to mmap-track in its region list).
+///
+/// `user_virt` comes from a user process, so it is checked here as well as in
+/// the caller. Not for the sake of belt and braces: this is a public function
+/// that installs user-reachable page-table entries, and the next caller to be
+/// written will not necessarily be a system call that has already checked.
+/// The checks are the cheap part; the expensive part is that the range is
+/// derived from the framebuffer's own geometry rather than from anything the
+/// caller said about length, so there is no second length to disagree.
+///
+/// A failure part-way through leaves nothing mapped. The loop used to stop at
+/// the failing page and return the error with every page before it still
+/// installed and no region recorded -- a range the process could read and the
+/// kernel had no record of, so nothing would ever unmap it.
+pub fn map_into_user(space: *vmm.AddressSpace, user_virt: u64) MapError!u64 {
+    const fb_info = info orelse return error.NoFramebuffer;
     const size = @as(u64, fb_info.pitch) * fb_info.height;
-    const pages = (size + 0xFFF) / 0x1000;
+    // Whole pages, by the one function that does that rounding, so the
+    // length checked here and the length `sys_mmap` checked are the same
+    // number and not two computations of it.
+    const span = mapped_size() orelse return error.NoFramebuffer;
+    const pages = span / 0x1000;
+    if (pages == 0) return error.NoFramebuffer;
+
+    if (user_virt & 0xFFF != 0) return error.BadRange;
+    // Checked, not assumed: `user_virt + span` on an address near the top of
+    // the 64-bit space wraps round past zero, and a wrapped end compares
+    // below any limit. Measured before this check existed: a request at
+    // 0xFFFF_FFFF_FFFF_F000 ended the boot with "integer overflow".
+    const end = @addWithOverflow(user_virt, span);
+    if (end[1] != 0) return error.BadRange;
+    if (end[0] > vmm.USER_TOP) return error.BadRange;
+
     var i: u64 = 0;
     while (i < pages) : (i += 1) {
         const phys = fb_info.phys_addr + i * 0x1000;
         const virt = user_virt + i * 0x1000;
-        try vmm.map_page(space, virt, phys, vmm.PAGE_PRESENT | vmm.PAGE_WRITE | vmm.PAGE_USER);
+        vmm.map_page(space, virt, phys, vmm.PAGE_PRESENT | vmm.PAGE_WRITE | vmm.PAGE_USER) catch |err| {
+            unmap_range(space, user_virt, i);
+            // `map_page` refuses a user mapping in the kernel's half. The
+            // checks above mean this range has already been found to be
+            // inside userspace, so reaching it would be the two disagreeing
+            // -- but it is reported as what it is rather than as running out
+            // of memory, which is what a caller would otherwise be told.
+            return switch (err) {
+                error.NotUserAddress => error.BadRange,
+                else => error.OutOfMemory,
+            };
+        };
     }
     // Track the mapping as a region so munmap + COW (later) work.
-    try space.regions.append(heap.allocator(), .{
+    space.regions.append(heap.allocator(), .{
         .start = user_virt,
-        .end = user_virt + pages * 0x1000,
+        .end = end[0],
         .flags = vmm.PAGE_WRITE,
         .backing = .{ .device = .{ .phys_base = fb_info.phys_addr } },
-    });
+    }) catch {
+        // A mapping the kernel has no record of is worse than no mapping.
+        unmap_range(space, user_virt, pages);
+        return error.OutOfMemory;
+    };
     return size;
+}
+
+/// Take back the first `pages` pages of a mapping this module installed.
+/// The frames are the framebuffer's own, so they are not returned to the
+/// physical allocator -- only the page-table entries go.
+fn unmap_range(space: *vmm.AddressSpace, user_virt: u64, pages: u64) void {
+    var i: u64 = 0;
+    while (i < pages) : (i += 1) vmm.unmap_page(space, user_virt + i * 0x1000);
 }
 
 /// Geometry inquiry — userspace asks what the framebuffer looks

@@ -31,7 +31,11 @@ const pmm = @import("pmm.zig");
 
 /// The first non-user address. Everything at or above it is the kernel's
 /// half or non-canonical, and no user pointer may name it.
-pub const USER_TOP: u64 = 0x0000_8000_0000_0000;
+///
+/// Defined in `vmm` and re-exported here. It was a second copy of the same
+/// number until `map_page` needed it too, and a limit that two files each
+/// state for themselves is a limit that can come to disagree.
+pub const USER_TOP: u64 = vmm.USER_TOP;
 
 pub const PAGE_SIZE: u64 = pmm.PAGE_SIZE;
 const HHDM_BASE: u64 = 0xFFFF_8000_0000_0000;

@@ -16,6 +16,7 @@ const arch_timer = @import("../arch/x86_64/timer.zig");
 const pmm = @import("../mm/pmm.zig");
 const vmm = @import("../mm/vmm.zig");
 const uaccess = @import("../mm/uaccess.zig");
+const load = @import("../loader/load.zig");
 const stdin = @import("../drivers/stdin.zig");
 const line = @import("../drivers/line.zig");
 
@@ -237,7 +238,20 @@ fn sys_read(args: Args) i64 {
     var done: usize = 0;
     while (done < len) {
         const want = @min(len - done, staging.len);
-        const n = vfs.read(fd, staging[0..want]) catch {
+        const n = vfs.read(fd, staging[0..want]) catch |e| {
+            // A descriptor that is open, but not for reading, is EBADF.
+            // POSIX gives read(2) that answer for "fd is not open for
+            // reading", and it is the same answer write(2) already gives for
+            // its mirror image, so the pair stays symmetric.
+            //
+            // The other errors still come back as EIO, including
+            // `error.BadFd`. That is not right either -- a closed descriptor
+            // is EBADF by the same clause -- but changing it changes an errno
+            // a program can already observe today, which is a shared-contract
+            // decision rather than this repair's to make. Raised for relay;
+            // the new condition is chosen here because it had no errno at all
+            // before, having never been refused.
+            if (e == error.NotOpenForReading) return errno(.ebadf);
             if (done == 0) return errno(.eio);
             break;
         };
@@ -430,6 +444,34 @@ fn sys_brk(args: Args) i64 {
     // fails partway, the break stays where it got to and the caller sees that
     // it got less than it asked for.
     const page: u64 = pmm.PAGE_SIZE;
+    // Nothing in the way first.
+    //
+    // The heap grows by mapping pages one at a time, and `map_page` overwrites
+    // a leaf that is already there without a word. A process that mapped the
+    // framebuffer somewhere above its break and then grew the heap into it
+    // used to get private RAM mapped over the device pages, with the region
+    // list still saying device -- so the teardown walk declined to free RAM
+    // that was the allocator's. The ordering matters and both orders have to
+    // be covered: `sys_mmap` refuses to land in the heap, and this refuses to
+    // grow into anything recorded. A shrink followed by a mapping and then a
+    // regrow is the case that needs both.
+    {
+        const grow_from = (proc.brk + page - 1) & ~(page - 1);
+        if (requested > grow_from) {
+            for (proc.address_space.regions.items) |r| {
+                if (grow_from < r.end and r.start < requested) {
+                    report_refusal("the heap would grow over a mapping already there", proc, requested);
+                    return @intCast(proc.brk);
+                }
+            }
+            const stack_bottom = load.USER_STACK_TOP - load.USER_STACK_PAGES * pmm.PAGE_SIZE;
+            if (grow_from < load.USER_STACK_TOP and stack_bottom < requested) {
+                report_refusal("the heap would grow into the stack", proc, requested);
+                return @intCast(proc.brk);
+            }
+        }
+    }
+
     var addr = (proc.brk + page - 1) & ~(page - 1);
     const end = (requested + page - 1) & ~(page - 1);
     while (addr < end) : (addr += page) {
@@ -474,21 +516,102 @@ fn sys_mmap(args: Args) i64 {
     // graphics fast path — fd=MMAP_FB_FD maps the kernel framebuffer
     // into the calling process at `addr`. Anonymous + file-backed
     // mmap come in a later phase.
+    //
+    // This is the only call in the table that takes an address from a user
+    // process and has the kernel write a page-table entry for it. Every other
+    // user address is a pointer to read *through*, and `uaccess` refuses one
+    // at or above USER_TOP before a byte moves. An address to map is not read
+    // through anything, so none of that applies to it, and what it reaches
+    // instead is `vmm.map_page` -- which walks index bits, widens U/S on
+    // every level of the path, and writes a leaf. Above USER_TOP that path is
+    // in the kernel's own tables, shared by every process.
+    //
+    // So the four things checked here are the four that were measured wrong,
+    // in a boot, from ring 3:
+    //
+    //   fd narrowed to i32 before comparison   0xFFFF_FFFF_0000_0000 ended
+    //                                          the boot: "integer cast
+    //                                          truncated bits"
+    //   addr above USER_TOP                    0x0000_8000_0000_0000 was
+    //                                          *granted*, and changed the
+    //                                          kernel's PML4[256]
+    //   addr not page-aligned                  0x60000001 was granted
+    //   addr whose end wraps                   0xFFFF_FFFF_FFFF_F000 ended
+    //                                          the boot: "integer overflow"
+    //
+    // and the fifth, overlap, which no measurement reached because the boot
+    // did not survive that far.
     const addr: u64 = args.a0;
-    const fd: i32 = @intCast(@as(i64, @bitCast(args.a4)));
-    if (fd != MMAP_FB_FD) return -@as(i64, @intFromEnum(Errno.einval));
-    const cur = sched.current_thread() orelse return -@as(i64, @intFromEnum(Errno.esrch));
-    const proc = sched.process_table.lookup(cur.pid) orelse return -@as(i64, @intFromEnum(Errno.esrch));
+
+    // Compared at full width. `fd` arrives in a 64-bit register and is a
+    // user-supplied value; converting it to i32 first is a conversion that
+    // can fail on a value the caller chose, and the call has not yet been
+    // refused at that point. MMAP_FB_FD widens exactly.
+    const fd: i64 = @bitCast(args.a4);
+    if (fd != @as(i64, MMAP_FB_FD)) return errno(.einval);
+
+    const cur = sched.current_thread() orelse return errno(.esrch);
+    const proc = sched.process_table.lookup(cur.pid) orelse return errno(.esrch);
     const fb = @import("../drivers/framebuffer.zig");
-    const size = fb.map_into_user(proc.address_space, addr) catch return -@as(i64, @intFromEnum(Errno.enomem));
-    if (size == 0) return -@as(i64, @intFromEnum(Errno.enodev));
+
+    // The length is the framebuffer's, not the caller's: `args.a1` is not
+    // read. One length, from the device, so there is no second one to
+    // disagree with it -- and a caller cannot ask for a longer mapping than
+    // the thing being mapped.
+    const len = fb.mapped_size() orelse return errno(.enodev);
+    if (len == 0) return errno(.enodev);
+
+    if (addr & (pmm.PAGE_SIZE - 1) != 0) return errno(.einval);
+    const end = @addWithOverflow(addr, len);
+    if (end[1] != 0) return errno(.einval);
+    if (end[0] > uaccess.USER_TOP) return errno(.einval);
+
+    // Nothing already mapped. Refused rather than replaced: the second
+    // request would write leaf entries over the first one's and append a
+    // second region describing the same addresses, so the kernel's record of
+    // what is mapped where would have two answers and `munmap` would undo
+    // half of it. A process that wants to move the mapping has to unmap it.
+    //
+    // The stack is checked separately because the loader does not record it
+    // as a region -- it maps the pages and returns. Until it does, a region
+    // scan alone would let a process map the framebuffer over its own stack.
+    for (proc.address_space.regions.items) |r| {
+        if (addr < r.end and r.start < end[0]) return errno(.einval);
+    }
+    const stack_bottom = load.USER_STACK_TOP - load.USER_STACK_PAGES * pmm.PAGE_SIZE;
+    if (addr < load.USER_STACK_TOP and stack_bottom < end[0]) return errno(.einval);
+    // And the heap, which is in neither the region list nor the stack.
+    //
+    // `sys_brk` maps pages and records nothing: the heap exists as two numbers
+    // on the Process, `brk_start` and `brk`, and a region scan cannot see it.
+    // Without this a mapping could be placed inside the heap, where it would
+    // overwrite the leaves `brk` installed -- losing those frames, and
+    // leaving the region list calling the result device-backed over RAM the
+    // allocator still believes is handed out.
+    //
+    // The interval is the live heap. Pages above `brk` were either never
+    // mapped or were abandoned by a shrink, and `brk` itself refuses to grow
+    // back over anything in the way, which is the other half of this.
+    if (proc.brk > proc.brk_start and addr < proc.brk and proc.brk_start < end[0]) return errno(.einval);
+
+    const size = fb.map_into_user(proc.address_space, addr) catch |err| return switch (err) {
+        error.NoFramebuffer => errno(.enodev),
+        error.BadRange => errno(.einval),
+        error.OutOfMemory => errno(.enomem),
+    };
+    if (size == 0) return errno(.enodev);
+    // Cannot trap: the checks above put `end` at or below USER_TOP, which is
+    // 2^47, so `addr` is far below the largest i64.
     return @intCast(addr);
 }
 
 fn sys_ioctl(args: Args) i64 {
-    const fd: i32 = @intCast(@as(i64, @bitCast(args.a0)));
+    // At full width, for the reason given in `sys_mmap`: the descriptor is a
+    // user-supplied 64-bit value and narrowing it to i32 is a conversion that
+    // fails on values the caller picks, before the call has been refused.
+    const fd: i64 = @bitCast(args.a0);
     const op: u64 = args.a1;
-    if (fd == MMAP_FB_FD and op == IOCTL_FB_GET_INFO) {
+    if (fd == @as(i64, MMAP_FB_FD) and op == IOCTL_FB_GET_INFO) {
         const fb = @import("../drivers/framebuffer.zig");
         const info_user = fb.user_info() orelse return -@as(i64, @intFromEnum(Errno.enodev));
         if (!uaccess.put_user(fb.FbInfoForUser, args.a2, info_user)) return errno(.efault);

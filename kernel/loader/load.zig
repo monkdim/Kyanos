@@ -40,6 +40,27 @@ pub fn load_into_new_space(exe: elf.LoadedExecutable, image: []const u8, gpa: st
     const space = try alloc_address_space(gpa);
     errdefer destroy_address_space(space, gpa);
 
+    // Where every segment wants to go, before anything is mapped.
+    //
+    // `vmm.map_page` refuses a user mapping at or above USER_TOP, so an
+    // executable asking for the kernel's half cannot install one -- but it
+    // would get as far as the first page of the offending segment, having
+    // already mapped every segment before it, and come back as
+    // "out of memory". Checked up front, the answer is that the executable
+    // is wrong, and nothing has been taken yet.
+    //
+    // The limit comes from `vmm`, which owns it, rather than from a copy kept
+    // here. loader/elf.zig deliberately does not do this check: it compiles
+    // for both architectures and their user halves end in different places
+    // (aarch64's is `paging.USER_VA_END`, 1 << 39, with T0SZ = 25), so the
+    // one file that knows which machine this is has to be the one that says.
+    for (exe.segments) |seg| {
+        // `elf.parse` has refused anything whose end wraps.
+        const seg_end = seg.vaddr + seg.memsz;
+        if (seg_end > vmm.USER_TOP) return error.BadExecutable;
+    }
+    if (exe.entry >= vmm.USER_TOP) return error.BadExecutable;
+
     var brk_start: u64 = 0;
     for (exe.segments) |seg| {
         try map_segment(space, seg, image);
@@ -97,7 +118,10 @@ pub const Ops = struct {
 };
 
 fn map_segment(space: *vmm.AddressSpace, seg: elf.Segment, image: []const u8) LoadError!void {
-    try segments.map_segment(Ops, space, seg, image);
+    segments.map_segment(Ops, space, seg, image) catch |err| return switch (err) {
+        error.BadSegment => error.BadExecutable,
+        error.OutOfMemory => error.OutOfMemory,
+    };
 
     // Record the region for the page-fault + brk machinery. This part is not
     // shared: it is what the x86_64 side does with a mapped range afterwards,
@@ -128,9 +152,28 @@ fn alloc_address_space(gpa: std.mem.Allocator) LoadError!*vmm.AddressSpace {
     return space;
 }
 
+/// Give back everything the load took.
+///
+/// This used to free the PML4 and nothing else, which meant that a load
+/// failing part-way -- out of physical memory, or an executable refused at
+/// the first page of its second segment -- lost every frame it had already
+/// mapped *and* every intermediate page table describing them, for the life
+/// of the machine. The PML4 went back to the allocator while the tables it
+/// pointed at did not, so there was no longer anything that knew where they
+/// were.
+///
+/// Nothing noticed because the only images this loader has ever been given
+/// are `@embedFile`d and well-formed, so the error path had no callers. The
+/// aarch64 loader has had a `release` that walks and frees since it was
+/// written; this is the x86_64 side catching up.
+///
+/// `free_user_half` does the walk: it frees each leaf frame and each table
+/// under PML4 entries 0..255, then the PML4 itself, and zeroes `pml4_phys` to
+/// say so. It also skips the frames of device regions, which are not the
+/// allocator's to take back.
 fn destroy_address_space(space: *vmm.AddressSpace, gpa: std.mem.Allocator) void {
+    if (space.pml4_phys != 0) vmm.free_user_half(space);
     space.regions.deinit(heap.allocator());
-    pmm.free_page(space.pml4_phys);
     gpa.destroy(space);
 }
 
